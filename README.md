@@ -18,7 +18,7 @@ I can add books directly to my website's `reading.json` on GitHub.
 
 Since I want to let friends use it for certain features, like maybe a public recommendations list or something, I have a permission system:
 
-- **Owner Mode:** I have full control over everything.
+- **Owner:** I have full control over everything.
 - **Whitelists:** I can whitelist specific friends for specific "plugins" (cogs) either in the `.env` or directly via Discord commands.
 
 ### Health Monitoring
