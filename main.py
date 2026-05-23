@@ -12,7 +12,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# Initialize Sentry
+# Initialise Sentry
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 if SENTRY_DSN:
     sentry_sdk.init(
@@ -67,7 +67,7 @@ class ShishoBot(commands.Bot):
         # For all other errors, capture them in Sentry
         sentry_sdk.capture_exception(error)
 
-        # Notify the user (optional, can be customized)
+        # Notify the user (optional, can be customised)
         if ctx.command:
             await ctx.send(
                 f"An error occurred in `{ctx.command.name}`. The developers have been notified."
@@ -85,7 +85,7 @@ class ShishoBot(commands.Bot):
         print("------")
 
 
-def is_authorized_check(ctx):
+def is_authorised_check(ctx):
     # Owner always has access
     if OWNER_ID and ctx.author.id == OWNER_ID:
         return True
@@ -93,6 +93,11 @@ def is_authorized_check(ctx):
     # Check for cog-specific whitelist
     if ctx.cog:
         cog_name = ctx.cog.qualified_name.upper()
+
+        # Check if whitelist is explicitly disabled for this cog (making it public)
+        if os.getenv(f"WHITELIST_ENABLE_{cog_name}", "").lower() == "false":
+            return True
+
         whitelist_env = os.getenv(f"WHITELIST_{cog_name}", "")
         if whitelist_env:
             whitelist = [
@@ -111,7 +116,7 @@ async def main():
         print("Please copy .env.example to .env and fill in your tokens.")
         return
     bot = ShishoBot()
-    bot.add_check(is_authorized_check)
+    bot.add_check(is_authorised_check)
     async with bot:
         await bot.start(TOKEN)
 

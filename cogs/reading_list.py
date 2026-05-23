@@ -28,9 +28,7 @@ class ReadingList(commands.Cog):
         end_date: str = None,
     ):
         """Adds a book to the reading list on GitHub.
-        Usage: !addbook "Title" "Author" "2021" "9780593135211" [status] [start_date] [end_date]
         Acceptable statuses: read, reading, planned, dropped
-        Dates should be in YYYY-MM-DD format.
         """
         valid_statuses = ["read", "reading", "planned", "dropped"]
         if status.lower() not in valid_statuses:
@@ -42,7 +40,6 @@ class ReadingList(commands.Cog):
         status = status.lower()
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Determine start and end dates
         final_start_date = (
             start_date
             if start_date
@@ -52,7 +49,7 @@ class ReadingList(commands.Cog):
 
         if not self.repo_name or not self.github_token:
             await ctx.send(
-                "Error: GitHub configuration missing in environment variables (GITHUB_REPO or GITHUB_TOKEN)."
+                "Error: GitHub configuration missing in environment variables."
             )
             return
 
@@ -61,9 +58,7 @@ class ReadingList(commands.Cog):
                 repo = self.gh.get_repo(self.repo_name)
             except GithubException as e:
                 if e.status == 404:
-                    await ctx.send(
-                        f"Error: Repository '{self.repo_name}' not found. Please check your GITHUB_REPO in .env"
-                    )
+                    await ctx.send(f"Error: Repository '{self.repo_name}' not found.")
                     return
                 raise e
 
@@ -71,14 +66,13 @@ class ReadingList(commands.Cog):
             try:
                 contents = repo.get_contents(file_path)
                 if isinstance(contents, list):
-                    await ctx.send(f"Error: '{file_path}' is a directory, not a file.")
+                    await ctx.send(f"Error: '{file_path}' is a directory.")
                     return
 
                 if contents.content is None:
                     await ctx.send(f"Error: '{file_path}' has no content.")
                     return
 
-                # Decode the current content
                 current_data = json.loads(
                     base64.b64decode(contents.content).decode("utf-8")
                 )
@@ -88,13 +82,12 @@ class ReadingList(commands.Cog):
                     return
             except GithubException as e:
                 if e.status == 404:
-                    # File doesn't exist, initialize with empty list
+                    # File doesn't exist, initialise with empty list
                     current_data = []
                     sha = None
                 else:
                     raise e
 
-            # Prepare the new book entry
             new_book = {
                 "title": title,
                 "author": author,
@@ -105,11 +98,9 @@ class ReadingList(commands.Cog):
                 "isbn": isbn,
             }
 
-            # Insert at the top (index 0)
             current_data.insert(0, new_book)
             updated_content = json.dumps(current_data, indent=2)
 
-            # Commit changes
             if sha:
                 repo.update_file(
                     path=file_path,
@@ -120,7 +111,7 @@ class ReadingList(commands.Cog):
             else:
                 repo.create_file(
                     path=file_path,
-                    message=f"Initialize {file_path} and add book: {title} by {author}",
+                    message=f"Initialise {file_path} and add book: {title} by {author}",
                     content=updated_content,
                 )
 
