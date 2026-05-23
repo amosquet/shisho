@@ -71,6 +71,19 @@ class Admin(commands.Cog):
         except Exception as e:
             await ctx.send(f"Failed to unload `{extension}`: {e}")
 
+    @commands.command(name="update")
+    async def update(self, ctx):
+        """Pulls changes from GitHub and restarts the bot. (Owner only)"""
+        await ctx.send("🔄 Pulling updates and restarting...")
+        try:
+            # We use subprocess to run the script.
+            # The script will restart the service, causing the bot to go offline briefly.
+            import subprocess
+
+            subprocess.Popen(["/bin/bash", "./update_shisho.sh"])
+        except Exception as e:
+            await ctx.send(f"❌ Failed to trigger update: {e}")
+
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))

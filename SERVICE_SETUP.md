@@ -1,52 +1,85 @@
 # Shisho Service Setup
 
-Instructions for setting up and managing the Shisho Discord bot as a systemd service.
+Instructions for setting up and managing the Shisho Discord bot as a systemd service on a Proxmox Arch container (running as root).
 
-## Installation
+## Installation (Automated)
 
-1.  **Copy the service file to the systemd directory:**
+The easiest way to set everything up is using the provided script:
+
+```bash
+chmod +x setup_service.sh
+./setup_service.sh
+```
+
+## Installation (Manual)
+
+If you prefer to do it manually:
+
+1.  **Sync the environment:**
+    `bash
+uv sync
+`
+    ...
+
+2.  **Copy the service file to the systemd directory:**
+
     ```bash
-    sudo cp shisho.service /etc/systemd/system/
+    cp shisho.service /etc/systemd/system/
     ```
 
-2.  **Reload systemd to recognize the new service:**
+3.  **Reload systemd to recognize the new service:**
+
     ```bash
-    sudo systemctl daemon-reload
+    systemctl daemon-reload
     ```
 
-3.  **Enable the service to start at boot:**
+4.  **Enable the service to start at boot:**
+
     ```bash
-    sudo systemctl enable shisho.service
+    systemctl enable shisho.service
     ```
 
-4.  **Start the service now:**
+5.  **Start the service now:**
     ```bash
-    sudo systemctl start shisho.service
+    systemctl start shisho.service
     ```
 
 ## Management
 
-- **Check Status:**
+- **Update Shisho:**
+  Pulls the latest code from GitHub, syncs dependencies, and restarts the service.
+
   ```bash
-  sudo systemctl status shisho.service
+  chmod +x update_shisho.sh
+  ./update_shisho.sh
+  ```
+
+- **Check Status:**
+  ...
+
+  ```bash
+  systemctl status shisho.service
   ```
 
 - **Restart Service:**
+
   ```bash
-  sudo systemctl restart shisho.service
+  systemctl restart shisho.service
   ```
 
 - **Stop Service:**
+
   ```bash
-  sudo systemctl stop shisho.service
+  systemctl stop shisho.service
   ```
 
 - **View Logs (Real-time):**
+
   ```bash
   journalctl -u shisho.service -f
   ```
 
 - **Disable Auto-start:**
   ```bash
-  sudo systemctl disable shisho.service
+  systemctl disable shisho.service
   ```

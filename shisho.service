@@ -4,13 +4,13 @@ After=network.target
 
 [Service]
 Type=simple
-User=sadako
-Group=sadako
-WorkingDirectory=/home/sadako/Documents/github/shisho
-ExecStart=/home/sadako/Documents/github/shisho/.venv/bin/python main.py
+User=root
+Group=root
+WorkingDirectory=/root/shisho
+ExecStart=/root/shisho/.venv/bin/python main.py
 Restart=always
 RestartSec=5
-EnvironmentFile=/home/sadako/Documents/github/shisho/.env
+EnvironmentFile=/root/shisho/.env
 
 [Install]
 WantedBy=multi-user.target
