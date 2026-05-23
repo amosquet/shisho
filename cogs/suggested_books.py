@@ -2,6 +2,8 @@ import os
 import aiohttp
 from datetime import datetime
 
+import discord
+from discord import app_commands
 import sentry_sdk
 from discord.ext import commands
 from pocketbase import PocketBase
@@ -15,40 +17,35 @@ class SuggestedBooks(commands.Cog):
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
 
-    @commands.command(name="suggest")
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def suggest_book(self, ctx, *, query: str):
-        """Suggests a book. Provide "Title" "Author" and/or an ISBN.
-        Usage: !suggest "Project Hail Mary" "Andy Weir"
-        Usage: !suggest 9780593135211
-        """
-        title = ""
-        author = ""
-        isbn = ""
-
-        parts = query.split('"')
-        clean_parts = [p.strip() for p in parts if p.strip()]
-
-        if len(clean_parts) == 1:
-            if clean_parts[0].isdigit():
-                isbn = clean_parts[0]
-                display_name = f"ISBN: {isbn}"
-            else:
-                title = clean_parts[0]
-                display_name = f"**{title}**"
-        elif len(clean_parts) >= 2:
-            title = clean_parts[0]
-            author = clean_parts[1]
-            display_name = f"**{title}** by {author}"
-            if len(clean_parts) >= 3 and clean_parts[2].isdigit():
-                isbn = clean_parts[2]
-        else:
-            await ctx.send("Please provide a title, author, or ISBN.")
+    @app_commands.command(name="suggest", description="Suggests a book.")
+    @app_commands.describe(
+        title="Title of the book",
+        author="Author of the book",
+        isbn="ISBN of the book (optional, fetches details if provided alone)"
+    )
+    @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
+    async def suggest_book(
+        self, 
+        interaction: discord.Interaction, 
+        title: str | None = None, 
+        author: str | None = None, 
+        isbn: str | None = None
+    ):
+        if not title and not isbn:
+            await interaction.response.send_message("Please provide a title or an ISBN.", ephemeral=True)
             return
+            
+        await interaction.response.defer()
+
+        # Normalise variables
+        title = title or ""
+        author = author or ""
+        isbn = isbn or ""
+        display_name = ""
 
         if isbn:
             if not self.google_books_api_key:
-                await ctx.send("Error: Google Books API configuration missing. Cannot fetch book details.")
+                await interaction.followup.send("Error: Google Books API configuration missing. Cannot fetch book details.")
                 return
             try:
                 url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}&key={self.google_books_api_key}"
@@ -65,14 +62,21 @@ class SuggestedBooks(commands.Cog):
                                     title = fetched_title
                                 if fetched_authors:
                                     author = ", ".join(fetched_authors)
-                                
-                                display_name = f"**{title}** by {author}" if author else f"**{title}**"
             except Exception as e:
                 sentry_sdk.capture_exception(e)
                 # Fail gracefully and proceed with whatever we had parsed originally
+                
+        if title and author:
+            display_name = f"**{title}** by {author}"
+        elif title:
+            display_name = f"**{title}**"
+        elif isbn:
+            display_name = f"ISBN: {isbn}"
+        else:
+            display_name = "Unknown Book"
 
         if not self.pb_url or not self.pb_user or not self.pb_password:
-            await ctx.send("Error: PocketBase configuration missing.")
+            await interaction.followup.send("Error: PocketBase configuration missing.")
             return
 
         try:
@@ -85,7 +89,7 @@ class SuggestedBooks(commands.Cog):
                     "title": title,
                     "author": author,
                     "isbn": isbn,
-                    "suggestedBy": str(ctx.author),
+                    "suggestedBy": str(interaction.user),
                     "suggestedFrom": "Discord",
                     "dateSuggested": datetime.now().strftime("%Y-%m-%d"),
                 }
@@ -94,19 +98,20 @@ class SuggestedBooks(commands.Cog):
 
             await self.bot.loop.run_in_executor(None, add_to_pocketbase)
 
-            await ctx.send(
-                f"Thanks {ctx.author.mention}! {display_name} has been added to the suggested books list."
+            await interaction.followup.send(
+                f"Thanks {interaction.user.mention}! {display_name} has been added to the suggested books list."
             )
 
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            await ctx.send(f"An error occurred: {e}")
+            await interaction.followup.send(f"An error occurred: {e}")
 
-    @commands.command(name="suggestions")
-    async def list_suggestions(self, ctx):
-        """Lists the latest suggested books."""
+    @app_commands.command(name="suggestions", description="Lists the latest suggested books.")
+    async def list_suggestions(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
         if not self.pb_url or not self.pb_user or not self.pb_password:
-            await ctx.send("Error: PocketBase configuration missing.")
+            await interaction.followup.send("Error: PocketBase configuration missing.")
             return
 
         try:
@@ -118,7 +123,7 @@ class SuggestedBooks(commands.Cog):
             result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
 
             if not result.items:
-                await ctx.send("No books have been suggested yet!")
+                await interaction.followup.send("No books have been suggested yet!")
                 return
 
             response = "**Latest Suggested Books:**\n"
@@ -135,11 +140,11 @@ class SuggestedBooks(commands.Cog):
                 else:
                     response += f"{idx}. **{display_title}**\n"
 
-            await ctx.send(response)
+            await interaction.followup.send(response)
 
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            await ctx.send(f"An error occurred: {e}")
+            await interaction.followup.send(f"An error occurred: {e}")
 
 
 async def setup(bot):

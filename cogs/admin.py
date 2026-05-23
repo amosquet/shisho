@@ -1,6 +1,16 @@
 import os
+import subprocess
 
+import discord
+from discord import app_commands
 from discord.ext import commands
+
+
+def is_owner():
+    def predicate(interaction: discord.Interaction) -> bool:
+        owner_id = int(os.getenv("OWNER_ID", "0"))
+        return interaction.user.id == owner_id
+    return app_commands.check(predicate)
 
 
 class Admin(commands.Cog):
@@ -9,14 +19,17 @@ class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def cog_check(self, ctx):
-        """Only the bot owner can use commands in this cog."""
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Extra safety: Only the bot owner can use commands in this cog."""
         owner_id = int(os.getenv("OWNER_ID", "0"))
-        return ctx.author.id == owner_id
+        if interaction.user.id != owner_id:
+            raise app_commands.CheckFailure("You do not have permission to use this command.")
+        return True
 
-    @commands.command(name="reload")
-    async def reload(self, ctx, extension: str = "all"):
-        """Reloads an extension or all extensions. (Owner only)"""
+    @app_commands.command(name="reload", description="Reloads an extension or all extensions. (Owner only)")
+    @app_commands.describe(extension="The extension to reload (or 'all')")
+    @is_owner()
+    async def reload(self, interaction: discord.Interaction, extension: str = "all"):
         if extension.lower() == "all":
             reloaded = []
             errors = []
@@ -36,53 +49,52 @@ class Admin(commands.Cog):
             if errors:
                 message += "Errors:\n" + "\n".join(errors)
 
-            await ctx.send(message or "No extensions found to reload.")
+            await interaction.response.send_message(message or "No extensions found to reload.")
         else:
             try:
                 ext_path = (
                     extension if extension.startswith("cogs.") else f"cogs.{extension}"
                 )
                 await self.bot.reload_extension(ext_path)
-                await ctx.send(f"Successfully reloaded `{ext_path}`.")
+                await interaction.response.send_message(f"Successfully reloaded `{ext_path}`.")
             except Exception as e:
-                await ctx.send(f"Failed to reload `{extension}`: {e}")
+                await interaction.response.send_message(f"Failed to reload `{extension}`: {e}")
 
-    @commands.command(name="load")
-    async def load(self, ctx, extension: str):
-        """Loads an extension. (Owner only)"""
+    @app_commands.command(name="load", description="Loads an extension. (Owner only)")
+    @app_commands.describe(extension="The extension to load")
+    @is_owner()
+    async def load(self, interaction: discord.Interaction, extension: str):
         try:
             ext_path = (
                 extension if extension.startswith("cogs.") else f"cogs.{extension}"
             )
             await self.bot.load_extension(ext_path)
-            await ctx.send(f"Successfully loaded `{ext_path}`.")
+            await interaction.response.send_message(f"Successfully loaded `{ext_path}`.")
         except Exception as e:
-            await ctx.send(f"Failed to load `{extension}`: {e}")
+            await interaction.response.send_message(f"Failed to load `{extension}`: {e}")
 
-    @commands.command(name="unload")
-    async def unload(self, ctx, extension: str):
-        """Unloads an extension. (Owner only)"""
+    @app_commands.command(name="unload", description="Unloads an extension. (Owner only)")
+    @app_commands.describe(extension="The extension to unload")
+    @is_owner()
+    async def unload(self, interaction: discord.Interaction, extension: str):
         try:
             ext_path = (
                 extension if extension.startswith("cogs.") else f"cogs.{extension}"
             )
             await self.bot.unload_extension(ext_path)
-            await ctx.send(f"Successfully unloaded `{ext_path}`.")
+            await interaction.response.send_message(f"Successfully unloaded `{ext_path}`.")
         except Exception as e:
-            await ctx.send(f"Failed to unload `{extension}`: {e}")
+            await interaction.response.send_message(f"Failed to unload `{extension}`: {e}")
 
-    @commands.command(name="update")
-    async def update(self, ctx):
-        """Pulls changes from GitHub and restarts the bot. (Owner only)"""
-        await ctx.send("🔄 Pulling updates and restarting...")
+    @app_commands.command(name="update", description="Pulls changes from GitHub and restarts the bot. (Owner only)")
+    @is_owner()
+    async def update(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🔄 Pulling updates and restarting...")
         try:
-            # We use subprocess to run the script.
-            # The script will restart the service, causing the bot to go offline briefly.
-            import subprocess
-
             subprocess.Popen(["/bin/bash", "./update_shisho.sh"])
         except Exception as e:
-            await ctx.send(f"❌ Failed to trigger update: {e}")
+            # We use followup since we already sent a response
+            await interaction.followup.send(f"❌ Failed to trigger update: {e}")
 
 
 async def setup(bot):
