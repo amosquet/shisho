@@ -26,11 +26,56 @@ if SENTRY_DSN:
     )
 
 
+class CustomHelpCommand(commands.DefaultHelpCommand):
+    def __init__(self):
+        super().__init__()
+        self.show_all = False
+
+    async def filter_commands(self, cmds, *, sort=False):
+        cmds = await super().filter_commands(cmds, sort=sort)
+        
+        if self.show_all:
+            return cmds
+            
+        filtered = []
+        for cmd in cmds:
+            if OWNER_ID and self.context.author.id == OWNER_ID:
+                filtered.append(cmd)
+                continue
+                
+            if cmd.cog:
+                cog_name = cmd.cog.qualified_name.upper()
+                if os.getenv(f"WHITELIST_ENABLE_{cog_name}", "").lower() == "false":
+                    filtered.append(cmd)
+                    continue
+                    
+                whitelist_env = os.getenv(f"WHITELIST_{cog_name}", "")
+                if whitelist_env:
+                    whitelist = [int(uid.strip()) for uid in whitelist_env.split(",") if uid.strip().isdigit()]
+                    if self.context.author.id in whitelist:
+                        filtered.append(cmd)
+                        continue
+            elif not OWNER_ID:
+                filtered.append(cmd)
+                continue
+                
+        return filtered
+        
+    async def command_callback(self, ctx, *, command: str = None):
+        if command == "all":
+            self.show_all = True
+            command = None
+        else:
+            self.show_all = False
+            
+        await super().command_callback(ctx, command=command)
+
+
 class ShishoBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True  # Required for command prefix processing
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="!", intents=intents, help_command=CustomHelpCommand())
 
     async def setup_hook(self):
         # Load extensions (cogs)
