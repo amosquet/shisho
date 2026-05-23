@@ -12,14 +12,14 @@ I can add books directly to my website's `reading.json` on GitHub.
 
 - **Top-heavy:** New books are automatically inserted at the top of my list.
 - **Smart Dating:** It handles start/end dates for me based on whether I'm currently reading or just finished a book.
-- **Customizable:** I can still manually enter old dates if I'm catching up on entries.
+- **Customisable:** I can still manually enter old dates if I'm catching up on entries.
 
 ### Access Control
 
 Since I want to let friends use it for certain features, like maybe a public recommendations list or something, I have a permission system:
 
 - **Owner:** I have full control over everything.
-- **Whitelists:** I can whitelist specific friends for specific "plugins" (cogs) either in the `.env` or directly via Discord commands.
+- **Whitelists:** I can whitelist specific friends for specific plugins (cogs) either in the `.env` or directly via Discord commands.
 
 ### Health Monitoring
 
@@ -42,8 +42,15 @@ Integrated with **Sentry** so I know if something breaks.
 `!addbook "Project Hail Mary" "Andy Weir" "2021" "9780593135211" read`
 _(Status options: read, reading, planned, dropped)_
 
+### Suggested Books (Public)
+
+`!suggest 9780593135211`
+
+- Anyone can suggest books!
+- You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
+
 ### Managing Friends
 
-`!whitelist add readinglist 1234567890`
+`!whitelist add suggestedbooks 1234567890`
 
 ---

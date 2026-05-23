@@ -16,12 +16,7 @@ class Permissions(commands.Cog):
 
     @commands.command(name="whitelist")
     async def manage_whitelist(self, ctx, action: str, cog_name: str, user_id: str):
-        """Manages a plugin's whitelist.
-        Usage: !whitelist add <cog_name> <user_id>
-        Usage: !whitelist remove <cog_name> <user_id>
-        Note: This updates the environment for the current session.
-        Permanent changes should be made in the .env file.
-        """
+        """Manages a plugin's whitelist. (Owner only)"""
         action = action.lower()
         cog_name = cog_name.upper()
         env_key = f"WHITELIST_{cog_name}"
