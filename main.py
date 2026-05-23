@@ -27,12 +27,13 @@ if SENTRY_DSN:
 
 
 class CustomHelpCommand(commands.DefaultHelpCommand):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **options):
+        options['verify_checks'] = False
+        super().__init__(**options)
         self.show_all = False
 
-    async def filter_commands(self, cmds, *, sort=False):
-        cmds = await super().filter_commands(cmds, sort=sort)
+    async def filter_commands(self, cmds, *, sort=False, key=None):
+        cmds = await super().filter_commands(cmds, sort=sort, key=key)
         
         if self.show_all:
             return cmds
@@ -55,6 +56,9 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
                     if self.context.author.id in whitelist:
                         filtered.append(cmd)
                         continue
+            elif cmd.name == "help":
+                filtered.append(cmd)
+                continue
             elif not OWNER_ID:
                 filtered.append(cmd)
                 continue
@@ -110,6 +114,8 @@ class ShishoBot(commands.Bot):
             return
 
         # For all other errors, capture them in Sentry
+        import traceback
+        traceback.print_exception(type(error), error, error.__traceback__)
         sentry_sdk.capture_exception(error)
 
         # Notify the user (optional, can be customised)
@@ -131,6 +137,10 @@ class ShishoBot(commands.Bot):
 
 
 def is_authorised_check(ctx):
+    # Help command should always be publicly callable
+    if ctx.command and ctx.command.name == "help":
+        return True
+
     # Owner always has access
     if OWNER_ID and ctx.author.id == OWNER_ID:
         return True
