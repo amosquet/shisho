@@ -24,8 +24,8 @@ class ReadingList(commands.Cog):
         publish_date: str,
         isbn: str,
         status: str = "planned",
-        start_date: str = None,
-        end_date: str = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ):
         """Adds a book to the reading list on GitHub.
         Acceptable statuses: read, reading, planned, dropped
