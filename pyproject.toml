@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "discord-py>=2.7.1",
+    "pocketbase>=0.17.3",
     "PyGithub>=2.6.1",
     "python-dotenv>=1.0.1",
     "sentry-sdk>=2.60.0",

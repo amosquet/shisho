@@ -27,7 +27,7 @@ Integrated with **Sentry** so I know if something breaks.
 
 ## Setup
 
-1. **Tokens:** I keep my `DISCORD_TOKEN`, `GITHUB_TOKEN`, and `SENTRY_DSN` in a private `.env` file.
+1. **Tokens:** I keep my `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SENTRY_DSN`, and `POCKETBASE` variables in a private `.env` file.
 2. **Environment:** `uv`.
    ```bash
    uv sync

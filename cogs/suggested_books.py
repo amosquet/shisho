@@ -1,19 +1,17 @@
-import base64
-import json
 import os
 from datetime import datetime
 
 import sentry_sdk
 from discord.ext import commands
-from github import Github, GithubException
+from pocketbase import PocketBase
 
 
 class SuggestedBooks(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.github_token = os.getenv("GITHUB_TOKEN")
-        self.repo_name = os.getenv("GITHUB_REPO")
-        self.gh = Github(self.github_token)
+        self.pb_url = os.getenv("POCKETBASE_URL")
+        self.pb_user = os.getenv("POCKETBASE_USER")
+        self.pb_password = os.getenv("POCKETBASE_PASSWORD")
 
     @commands.command(name="suggest")
     async def suggest_book(self, ctx, *, query: str):
@@ -45,53 +43,71 @@ class SuggestedBooks(commands.Cog):
             await ctx.send("Please provide a title, author, or ISBN.")
             return
 
-        if not self.repo_name or not self.github_token:
-            await ctx.send("Error: GitHub configuration missing.")
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            await ctx.send("Error: PocketBase configuration missing.")
             return
 
         try:
-            repo = self.gh.get_repo(self.repo_name)
-            file_path = "src/data/suggested_books.json"
+            # We run the synchronous pocketbase calls in an executor to avoid blocking the bot's event loop
+            def add_to_pocketbase():
+                pb = PocketBase(self.pb_url)
+                pb.collection("users").auth_with_password(self.pb_user, self.pb_password)
 
-            try:
-                contents = repo.get_contents(file_path)
-                if isinstance(contents, list) or contents.content is None:
-                    raise Exception("Invalid file structure")
-                current_data = json.loads(
-                    base64.b64decode(contents.content).decode("utf-8")
-                )
-                sha = contents.sha
-            except GithubException as e:
-                if e.status == 404:
-                    current_data = []
-                    sha = None
-                else:
-                    raise e
+                entry = {
+                    "title": title,
+                    "author": author,
+                    "isbn": isbn,
+                    "suggestedBy": str(ctx.author),
+                    "suggestedFrom": "Discord",
+                    "dateSuggested": datetime.now().strftime("%Y-%m-%d"),
+                }
 
-            entry = {
-                "title": title,
-                "author": author,
-                "isbn": isbn,
-                "suggestedBy": str(ctx.author),
-                "dateSuggested": datetime.now().strftime("%Y-%m-%d"),
-            }
+                pb.collection("suggested_books").create(entry)
 
-            current_data.insert(0, entry)
-            updated_content = json.dumps(current_data, indent=2)
-
-            commit_msg = f"New suggested book: {title if title else isbn}"
-            if sha:
-                repo.update_file(file_path, commit_msg, updated_content, sha)
-            else:
-                repo.create_file(
-                    file_path,
-                    f"Initialise {file_path} and add suggested book",
-                    updated_content,
-                )
+            await self.bot.loop.run_in_executor(None, add_to_pocketbase)
 
             await ctx.send(
                 f"Thanks {ctx.author.mention}! {display_name} has been added to the suggested books list."
             )
+
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await ctx.send(f"An error occurred: {e}")
+
+    @commands.command(name="suggestions")
+    async def list_suggestions(self, ctx):
+        """Lists the latest suggested books."""
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            await ctx.send("Error: PocketBase configuration missing.")
+            return
+
+        try:
+            def get_from_pocketbase():
+                pb = PocketBase(self.pb_url)
+                pb.collection("users").auth_with_password(self.pb_user, self.pb_password)
+                return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
+
+            result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+
+            if not result.items:
+                await ctx.send("No books have been suggested yet!")
+                return
+
+            response = "**Latest Suggested Books:**\n"
+            for idx, record in enumerate(result.items, 1):
+                # PocketBase Record fields are accessible via getattr
+                title = getattr(record, "title", "")
+                isbn = getattr(record, "isbn", "")
+                author = getattr(record, "author", "")
+                
+                display_title = title if title else (f"ISBN: {isbn}" if isbn else "Unknown Book")
+                
+                if author:
+                    response += f"{idx}. **{display_title}** by {author}\n"
+                else:
+                    response += f"{idx}. **{display_title}**\n"
+
+            await ctx.send(response)
 
         except Exception as e:
             sentry_sdk.capture_exception(e)
