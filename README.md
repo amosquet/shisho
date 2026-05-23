@@ -56,8 +56,18 @@ Whenever someone mentions me in a server Shisho is in, the bot will send me a DM
 - **Automatic:** No command needed, just mention the me!
 - **Contextual:** Includes the server, channel, and a direct link to the message.
 
-### Managing Friends
+### Hot-Reloading (Owner Only)
 
-`!whitelist add suggestedbooks 1234567890`
+Shisho supports hot-reloading, which means I can update its code and apply changes without restarting the bot.
+
+- `!reload [extension]`: Reloads a specific cog (e.g., `!reload admin`) or all of them (`!reload all`).
+- `!load <extension>`: Loads a new extension.
+- `!unload <extension>`: Unloads an extension.
+
+### Managing Friends (Owner Only)
+
+- `!whitelist add <plugin> <user_id>`: Adds a user to a plugin's whitelist.
+- `!whitelist remove <plugin> <user_id>`: Removes a user from a plugin's whitelist.
+- `!showwhitelist <plugin>`: Shows the current whitelist for a plugin.
 
 ---
