@@ -70,4 +70,8 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 - `!whitelist remove <plugin> <user_id>`: Removes a user from a plugin's whitelist.
 - `!showwhitelist <plugin>`: Shows the current whitelist for a plugin.
 
+### Bot Updates (Owner Only)
+
+- `!update`: Pulls the latest code from GitHub and restarts the bot service.
+
 ---
