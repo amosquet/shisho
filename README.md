@@ -49,6 +49,13 @@ _(Status options: read, reading, planned, dropped)_
 - Anyone can suggest books!
 - You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
 
+### Notifications (Public)
+
+Whenever someone mentions me in a server Shisho is in, the bot will send me a DM with the message content and a link to jump to that message.
+
+- **Automatic:** No command needed, just mention the me!
+- **Contextual:** Includes the server, channel, and a direct link to the message.
+
 ### Managing Friends
 
 `!whitelist add suggestedbooks 1234567890`
