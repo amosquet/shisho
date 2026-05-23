@@ -25,7 +25,7 @@ Since I want to let friends use it for certain features, like maybe a public rec
 
 Integrated with **Sentry** so I know if something breaks.
 
-## My Local Setup
+## Setup
 
 1. **Tokens:** I keep my `DISCORD_TOKEN`, `GITHUB_TOKEN`, and `SENTRY_DSN` in a private `.env` file.
 2. **Environment:** `uv`.
