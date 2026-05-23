@@ -1,4 +1,5 @@
 import os
+import aiohttp
 from datetime import datetime
 
 import sentry_sdk
@@ -12,8 +13,10 @@ class SuggestedBooks(commands.Cog):
         self.pb_url = os.getenv("POCKETBASE_URL")
         self.pb_user = os.getenv("POCKETBASE_USER")
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
+        self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
 
     @commands.command(name="suggest")
+    @commands.cooldown(1, 5, commands.BucketType.user)
     async def suggest_book(self, ctx, *, query: str):
         """Suggests a book. Provide "Title" "Author" and/or an ISBN.
         Usage: !suggest "Project Hail Mary" "Andy Weir"
@@ -43,6 +46,31 @@ class SuggestedBooks(commands.Cog):
             await ctx.send("Please provide a title, author, or ISBN.")
             return
 
+        if isbn:
+            if not self.google_books_api_key:
+                await ctx.send("Error: Google Books API configuration missing. Cannot fetch book details.")
+                return
+            try:
+                url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}&key={self.google_books_api_key}"
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("items"):
+                                vol_info = data["items"][0].get("volumeInfo", {})
+                                fetched_title = vol_info.get("title")
+                                fetched_authors = vol_info.get("authors")
+                                if fetched_title:
+                                    title = fetched_title
+                                if fetched_authors:
+                                    author = ", ".join(fetched_authors)
+                                
+                                display_name = f"**{title}** by {author}" if author else f"**{title}**"
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                # Fail gracefully and proceed with whatever we had parsed originally
+
         if not self.pb_url or not self.pb_user or not self.pb_password:
             await ctx.send("Error: PocketBase configuration missing.")
             return
@@ -50,8 +78,8 @@ class SuggestedBooks(commands.Cog):
         try:
             # We run the synchronous pocketbase calls in an executor to avoid blocking the bot's event loop
             def add_to_pocketbase():
-                pb = PocketBase(self.pb_url)
-                pb.collection("users").auth_with_password(self.pb_user, self.pb_password)
+                pb = PocketBase(self.pb_url or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
 
                 entry = {
                     "title": title,
@@ -83,8 +111,8 @@ class SuggestedBooks(commands.Cog):
 
         try:
             def get_from_pocketbase():
-                pb = PocketBase(self.pb_url)
-                pb.collection("users").auth_with_password(self.pb_user, self.pb_password)
+                pb = PocketBase(self.pb_url or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
 
             result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
