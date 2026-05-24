@@ -26,7 +26,7 @@ class Reminders(commands.Cog):
     def cog_unload(self):
         self.check_reminders.cancel()
 
-    @app_commands.command(name="reminder", description="Set a reminder.")
+    @app_commands.command(name="remind", description="Set a reminder.")
     @app_commands.describe(
         when="When to remind you (e.g. 'in 5 minutes', 'tomorrow at 3pm')",
         text="What to remind you about"

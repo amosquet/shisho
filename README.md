@@ -54,6 +54,13 @@ _(Status options: read, reading, planned, dropped)_
 - You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
 - Suggestions are synced with **PocketBase**, allowing them to be seamlessly managed alongside my web-based book suggestion form.
 
+### Reminders
+
+Set custom reminders using natural language times. The bot will send you a Direct Message when it's time! (And an email if you're the owner).
+
+- `/remind <when> <text>`: Sets a reminder. Example: `/remind in 5 minutes Take out the trash`
+- `/reminders`: Lists your active, upcoming reminders.
+
 ### Notifications (Public)
 
 Whenever someone mentions me in a server Shisho is in, the bot will send me a DM with the message content and a link to jump to that message.
