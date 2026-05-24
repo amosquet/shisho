@@ -37,7 +37,7 @@ class Reminders(commands.Cog):
         # Parse the time
         parsed_time = dateparser.parse(
             when, 
-            settings={'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'UTC', 'TO_TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True}
+            settings={'PREFER_DATES_FROM': 'future', 'TO_TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True}
         )
 
         if not parsed_time:
