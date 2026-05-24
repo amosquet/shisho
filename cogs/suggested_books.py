@@ -37,20 +37,30 @@ class SuggestedBooks(commands.Cog):
             
         await interaction.response.defer()
 
-        # Normalise variables
         title = title or ""
         author = author or ""
         isbn = isbn or ""
-        isbn = isbn.replace("-", "")
-        display_name = ""
 
-        if isbn:
+        try:
+            display_name = await self.add_suggestion(title, author, isbn, str(interaction.user), "Discord")
+            await interaction.followup.send(
+                f"Thanks {interaction.user.mention}! {display_name} has been added to the suggested books list."
+            )
+
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await interaction.followup.send(f"An error occurred: {e}")
+
+    async def add_suggestion(self, title: str, author: str, isbn: str, suggested_by: str, suggested_from: str) -> str:
+        title = title or ""
+        author = author or ""
+        isbn = (isbn or "").replace("-", "")
+
+        if isbn and not (title and author):
             if not self.google_books_api_key:
-                await interaction.followup.send("Error: Google Books API configuration missing. Cannot fetch book details.")
-                return
+                raise Exception("Google Books API configuration missing. Cannot fetch book details.")
             try:
                 url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}&key={self.google_books_api_key}"
-
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url) as resp:
                         if resp.status == 200:
@@ -66,28 +76,7 @@ class SuggestedBooks(commands.Cog):
             except Exception as e:
                 sentry_sdk.capture_exception(e)
                 # Fail gracefully and proceed with whatever we had parsed originally
-                
-        if title and author:
-            display_name = f"**{title}** by {author}"
-        elif title:
-            display_name = f"**{title}**"
-        elif isbn:
-            display_name = f"ISBN: {isbn}"
-        else:
-            display_name = "Unknown Book"
 
-        try:
-            display_name = await self.add_suggestion(title, author, isbn, str(interaction.user), "Discord")
-            await interaction.followup.send(
-                f"Thanks {interaction.user.mention}! {display_name} has been added to the suggested books list."
-            )
-
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            await interaction.followup.send(f"An error occurred: {e}")
-
-    async def add_suggestion(self, title: str, author: str, isbn: str, suggested_by: str, suggested_from: str) -> str:
-        isbn = isbn.replace("-", "")
         display_name = ""
         if title and author:
             display_name = f"**{title}** by {author}"
