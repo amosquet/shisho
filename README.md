@@ -54,6 +54,14 @@ _(Status options: read, reading, planned, dropped)_
 - You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
 - Suggestions are synced with **PocketBase**, allowing them to be seamlessly managed alongside my web-based book suggestion form.
 
+### Book Information Lookup (Public)
+
+`/bookinfo <query>`
+
+- Looks up a book's details by title or ISBN.
+- Returns the book's cover image, author, synopsis, page count, and average rating.
+- Uses a local JSON cache to prevent duplicate API calls for the same book.
+
 ### Reminders
 
 Set custom reminders using natural language times. The bot will send you a Direct Message when it's time! (And an email if you're the owner).
@@ -89,6 +97,6 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 ### Remote Email/SMS Commands (Owner Only)
 
 - I can send an email (or SMS via carrier gateway) to the bot's configured address to run commands remotely.
-- Supported commands: `!addbook`, `!suggest`, `!suggestions`, and `!ping`.
+- Supported commands: `!addbook`, `!suggest`, `!suggestions`, `!reminders`, `!remind`, `!bookinfo`, and `!ping`.
 
 ---

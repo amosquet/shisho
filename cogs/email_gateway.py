@@ -119,10 +119,20 @@ class EmailGateway(commands.Cog):
                     "!suggest [Title] by [Author] OR !suggest [ISBN] - Add a book suggestion\n"
                     "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)\n"
                     "!reminders - List your active reminders\n"
-                    "!remind [Time] | [Text] - Set a reminder (e.g. !remind in 5 mins | check oven)"
+                    "!remind [Time] | [Text] - Set a reminder (e.g. !remind in 5 mins | check oven)\n"
+                    "!bookinfo [Title or ISBN] - Look up book details"
                 )
             elif cmd == "!ping":
                 response = f"Pong! Bot latency is {round(self.bot.latency * 1000)}ms"
+            elif cmd == "!bookinfo":
+                bookinfo_cog = self.bot.get_cog("BookInfo")
+                if bookinfo_cog:
+                    if args:
+                        response = await bookinfo_cog.get_book_info_text(args)
+                    else:
+                        response = "Syntax error. Use: !bookinfo [Title or ISBN]"
+                else:
+                    response = "Error: BookInfo cog not loaded."
             elif cmd == "!suggestions":
                 suggested_cog = self.bot.get_cog("SuggestedBooks")
                 if suggested_cog:
