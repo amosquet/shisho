@@ -75,29 +75,8 @@ class SuggestedBooks(commands.Cog):
         else:
             display_name = "Unknown Book"
 
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            await interaction.followup.send("Error: PocketBase configuration missing.")
-            return
-
         try:
-            # We run the synchronous pocketbase calls in an executor to avoid blocking the bot's event loop
-            def add_to_pocketbase():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-
-                entry = {
-                    "title": title,
-                    "author": author,
-                    "isbn": isbn,
-                    "suggestedBy": str(interaction.user),
-                    "suggestedFrom": "Discord",
-                    "dateSuggested": datetime.now().strftime("%Y-%m-%d"),
-                }
-
-                pb.collection("suggested_books").create(entry)
-
-            await self.bot.loop.run_in_executor(None, add_to_pocketbase)
-
+            display_name = await self.add_suggestion(title, author, isbn, str(interaction.user), "Discord")
             await interaction.followup.send(
                 f"Thanks {interaction.user.mention}! {display_name} has been added to the suggested books list."
             )
@@ -105,6 +84,38 @@ class SuggestedBooks(commands.Cog):
         except Exception as e:
             sentry_sdk.capture_exception(e)
             await interaction.followup.send(f"An error occurred: {e}")
+
+    async def add_suggestion(self, title: str, author: str, isbn: str, suggested_by: str, suggested_from: str) -> str:
+        display_name = ""
+        if title and author:
+            display_name = f"**{title}** by {author}"
+        elif title:
+            display_name = f"**{title}**"
+        elif isbn:
+            display_name = f"ISBN: {isbn}"
+        else:
+            display_name = "Unknown Book"
+
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            raise Exception("PocketBase configuration missing.")
+
+        def add_to_pocketbase():
+            pb = PocketBase(self.pb_url or "")
+            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+
+            entry = {
+                "title": title,
+                "author": author,
+                "isbn": isbn,
+                "suggestedBy": suggested_by,
+                "suggestedFrom": suggested_from,
+                "dateSuggested": datetime.now().strftime("%Y-%m-%d"),
+            }
+
+            pb.collection("suggested_books").create(entry)
+
+        await self.bot.loop.run_in_executor(None, add_to_pocketbase)
+        return display_name
 
     @app_commands.command(name="suggestions", description="Lists the latest suggested books.")
     async def list_suggestions(self, interaction: discord.Interaction):
@@ -115,36 +126,40 @@ class SuggestedBooks(commands.Cog):
             return
 
         try:
-            def get_from_pocketbase():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-                return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
-
-            result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
-
-            if not result.items:
-                await interaction.followup.send("No books have been suggested yet!")
-                return
-
-            response = "**Latest Suggested Books:**\n"
-            for idx, record in enumerate(result.items, 1):
-                # PocketBase Record fields are accessible via getattr
-                title = getattr(record, "title", "")
-                isbn = getattr(record, "isbn", "")
-                author = getattr(record, "author", "")
-                
-                display_title = title if title else (f"ISBN: {isbn}" if isbn else "Unknown Book")
-                
-                if author:
-                    response += f"{idx}. **{display_title}** by {author}\n"
-                else:
-                    response += f"{idx}. **{display_title}**\n"
-
+            response = await self.get_suggestions_text()
             await interaction.followup.send(response)
-
         except Exception as e:
             sentry_sdk.capture_exception(e)
             await interaction.followup.send(f"An error occurred: {e}")
+
+    async def get_suggestions_text(self) -> str:
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            raise Exception("PocketBase configuration missing.")
+
+        def get_from_pocketbase():
+            pb = PocketBase(self.pb_url or "")
+            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
+
+        result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+
+        if not result.items:
+            return "No books have been suggested yet!"
+
+        response = "**Latest Suggested Books:**\n"
+        for idx, record in enumerate(result.items, 1):
+            title = getattr(record, "title", "")
+            isbn = getattr(record, "isbn", "")
+            author = getattr(record, "author", "")
+            
+            display_title = title if title else (f"ISBN: {isbn}" if isbn else "Unknown Book")
+            
+            if author:
+                response += f"{idx}. **{display_title}** by {author}\n"
+            else:
+                response += f"{idx}. **{display_title}**\n"
+
+        return response
 
 
 async def setup(bot):
