@@ -74,6 +74,7 @@ class ReadingList(commands.Cog):
         final_start_date: str,
         final_end_date: str
     ):
+        isbn = isbn.replace("-", "")
         if not self.repo_name or not self.github_token:
             raise Exception("GitHub configuration missing in environment variables.")
 

@@ -41,6 +41,7 @@ class SuggestedBooks(commands.Cog):
         title = title or ""
         author = author or ""
         isbn = isbn or ""
+        isbn = isbn.replace("-", "")
         display_name = ""
 
         if isbn:
@@ -86,6 +87,7 @@ class SuggestedBooks(commands.Cog):
             await interaction.followup.send(f"An error occurred: {e}")
 
     async def add_suggestion(self, title: str, author: str, isbn: str, suggested_by: str, suggested_from: str) -> str:
+        isbn = isbn.replace("-", "")
         display_name = ""
         if title and author:
             display_name = f"**{title}** by {author}"
