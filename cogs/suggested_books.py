@@ -152,6 +152,28 @@ class SuggestedBooks(commands.Cog):
 
         return response
 
+    async def get_raw_suggestions(self) -> list:
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            raise Exception("PocketBase configuration missing.")
+
+        def get_from_pocketbase():
+            pb = PocketBase(self.pb_url or "")
+            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            return pb.collection("suggested_books").get_list(1, 50, query_params={"sort": "-dateSuggested"})
+
+        result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+        
+        books = []
+        for record in result.items:
+            books.append({
+                "title": getattr(record, "title", ""),
+                "author": getattr(record, "author", ""),
+                "isbn": getattr(record, "isbn", ""),
+                "dateSuggested": getattr(record, "date_suggested", ""),
+                "suggestedFrom": getattr(record, "suggested_from", "")
+            })
+        return books
+
 
 async def setup(bot):
     await bot.add_cog(SuggestedBooks(bot))
