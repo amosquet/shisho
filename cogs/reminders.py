@@ -33,7 +33,7 @@ class Reminders(commands.Cog):
     )
     async def set_reminder(self, interaction: discord.Interaction, when: str, text: str):
         await interaction.response.defer(ephemeral=True)
-    async def add_reminder(self, user_id: str, when: str, text: str) -> str:
+    async def add_reminder(self, user_id: str, when: str, text: str, for_discord: bool = True) -> str:
         # Parse the time
         parsed_time = dateparser.parse(
             when, 
@@ -65,13 +65,17 @@ class Reminders(commands.Cog):
 
             await self.bot.loop.run_in_executor(None, add_to_pocketbase)
             
-            formatted_time = parsed_time.strftime("%Y-%m-%d %H:%M UTC")
-            return f"Got it! I will remind you: **{text}** at `{formatted_time}`"
+            if for_discord:
+                unix_timestamp = int(parsed_time.timestamp())
+                formatted_time = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+            else:
+                formatted_time = f"`{parsed_time.strftime('%Y-%m-%d %H:%M UTC')}`"
+            return f"Got it! I will remind you: **{text}** at {formatted_time}"
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return f"An error occurred while saving the reminder: {e}"
 
-    async def get_reminders_text(self, user_id: str) -> str:
+    async def get_reminders_text(self, user_id: str, for_discord: bool = True) -> str:
         try:
             def get_from_pocketbase():
                 pb = PocketBase(self.pb_url or "")
@@ -94,11 +98,16 @@ class Reminders(commands.Cog):
                 try:
                     # Pocketbase returns dates like "2022-01-01 00:00:00.000Z"
                     parsed_dt = datetime.strptime(r_time, "%Y-%m-%d %H:%M:%S.%fZ")
-                    r_time = parsed_dt.strftime("%Y-%m-%d %H:%M UTC")
+                    if for_discord:
+                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                        unix_timestamp = int(parsed_dt.timestamp())
+                        time_display = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+                    else:
+                        time_display = f"`{parsed_dt.strftime('%Y-%m-%d %H:%M UTC')}`"
                 except ValueError:
-                    pass
+                    time_display = f"`{r_time}`"
 
-                response += f"{idx}. **{r_text}** (at `{r_time}`)\n"
+                response += f"{idx}. **{r_text}** (at {time_display})\n"
 
             return response
         except Exception as e:

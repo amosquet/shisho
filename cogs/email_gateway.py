@@ -198,7 +198,7 @@ class EmailGateway(commands.Cog):
                 reminders_cog = self.bot.get_cog("Reminders")
                 if reminders_cog:
                     owner_id = str(reminders_cog.owner_id)
-                    response = await reminders_cog.get_reminders_text(owner_id)
+                    response = await reminders_cog.get_reminders_text(owner_id, for_discord=False)
                 else:
                     response = "Error: Reminders cog not loaded."
             elif cmd == "!remind":
@@ -207,7 +207,7 @@ class EmailGateway(commands.Cog):
                     owner_id = str(reminders_cog.owner_id)
                     if " | " in args:
                         when, text = args.split(" | ", 1)
-                        response = await reminders_cog.add_reminder(owner_id, when.strip(), text.strip())
+                        response = await reminders_cog.add_reminder(owner_id, when.strip(), text.strip(), for_discord=False)
                     else:
                         response = "Syntax error. Use: !remind [Time] | [Text]"
                 else:
