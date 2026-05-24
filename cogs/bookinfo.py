@@ -31,9 +31,6 @@ class BookInfo(commands.Cog):
         except Exception as e:
             print(f"Failed to save book cache: {e}")
 
-    @app_commands.command(name="bookinfo", description="Look up a book's details by title or ISBN.")
-    @app_commands.describe(query="The title or ISBN of the book")
-    @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
     async def fetch_book_data(self, query: str):
         query_key = query.lower().strip()
 
