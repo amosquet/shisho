@@ -126,7 +126,7 @@ class ShishoBot(commands.Bot):
             try:
                 owner = await self.fetch_user(OWNER_ID)
                 if owner:
-                    await owner.send("Shisho bot is now online and ready!")
+                    await owner.send("ししょ is online and ready")
             except Exception as e:
                 print(f"Could not send startup message to owner: {e}")
 
