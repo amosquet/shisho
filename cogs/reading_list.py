@@ -55,92 +55,90 @@ class ReadingList(commands.Cog):
         )
         final_end_date = end_date if end_date else (today if status_val == "read" else "")
 
-        if not self.repo_name or not self.github_token:
-            await interaction.followup.send(
-                "Error: GitHub configuration missing in environment variables."
-            )
-            return
-
         try:
-            try:
-                repo = self.gh.get_repo(self.repo_name)
-            except GithubException as e:
-                if e.status == 404:
-                    await interaction.followup.send(f"Error: Repository '{self.repo_name}' not found.")
-                    return
-                raise e
-
-            file_path = "src/data/reading.json"
-            try:
-                # Use executor to avoid blocking the event loop on GitHub API calls
-                def get_contents():
-                    return repo.get_contents(file_path)
-                contents = await self.bot.loop.run_in_executor(None, get_contents)
-                
-                if isinstance(contents, list):
-                    await interaction.followup.send(f"Error: '{file_path}' is a directory.")
-                    return
-
-                if contents.content is None:
-                    await interaction.followup.send(f"Error: '{file_path}' has no content.")
-                    return
-
-                current_data = json.loads(
-                    base64.b64decode(contents.content).decode("utf-8")
-                )
-                sha = contents.sha
-                if sha is None:
-                    await interaction.followup.send(f"Error: Could not retrieve SHA for '{file_path}'.")
-                    return
-            except GithubException as e:
-                if e.status == 404:
-                    # File doesn't exist, initialise with empty list
-                    current_data = []
-                    sha = None
-                else:
-                    raise e
-
-            new_book = {
-                "title": title,
-                "author": author,
-                "status": status_val,
-                "startDate": final_start_date,
-                "endDate": final_end_date,
-                "publishDate": publish_date,
-                "isbn": isbn,
-            }
-
-            current_data.insert(0, new_book)
-            updated_content = json.dumps(current_data, indent=2)
-
-            def update_or_create_file():
-                if sha:
-                    repo.update_file(
-                        path=file_path,
-                        message=f"Add book: {title} by {author}",
-                        content=updated_content,
-                        sha=sha,
-                    )
-                else:
-                    repo.create_file(
-                        path=file_path,
-                        message=f"Initialise {file_path} and add book: {title} by {author}",
-                        content=updated_content,
-                    )
-            await self.bot.loop.run_in_executor(None, update_or_create_file)
-
+            await self.add_book_to_github(title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
             )
-
-        except GithubException as e:
-            sentry_sdk.capture_exception(e)
-            await interaction.followup.send(
-                f"An error occurred while interacting with GitHub: {e.data.get('message', str(e))}"
-            )
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            await interaction.followup.send(f"An unexpected error occurred: {e}")
+            await interaction.followup.send(f"An error occurred: {e}")
+
+    async def add_book_to_github(
+        self,
+        title: str,
+        author: str,
+        status_val: str,
+        publish_date: str,
+        isbn: str,
+        final_start_date: str,
+        final_end_date: str
+    ):
+        if not self.repo_name or not self.github_token:
+            raise Exception("GitHub configuration missing in environment variables.")
+
+        try:
+            repo = self.gh.get_repo(self.repo_name)
+        except GithubException as e:
+            if e.status == 404:
+                raise Exception(f"Repository '{self.repo_name}' not found.")
+            raise e
+
+        file_path = "src/data/reading.json"
+        try:
+            def get_contents():
+                return repo.get_contents(file_path)
+            contents = await self.bot.loop.run_in_executor(None, get_contents)
+            
+            if isinstance(contents, list):
+                raise Exception(f"'{file_path}' is a directory.")
+
+            if contents.content is None:
+                raise Exception(f"'{file_path}' has no content.")
+
+            current_data = json.loads(
+                base64.b64decode(contents.content).decode("utf-8")
+            )
+            sha = contents.sha
+            if sha is None:
+                raise Exception(f"Could not retrieve SHA for '{file_path}'.")
+        except GithubException as e:
+            if e.status == 404:
+                current_data = []
+                sha = None
+            else:
+                raise e
+
+        new_book = {
+            "title": title,
+            "author": author,
+            "status": status_val,
+            "startDate": final_start_date,
+            "endDate": final_end_date,
+            "publishDate": publish_date,
+            "isbn": isbn,
+        }
+
+        current_data.insert(0, new_book)
+        updated_content = json.dumps(current_data, indent=2)
+
+        def update_or_create_file():
+            if sha:
+                repo.update_file(
+                    path=file_path,
+                    message=f"Add book: {title} by {author}",
+                    content=updated_content,
+                    sha=sha,
+                )
+            else:
+                repo.create_file(
+                    path=file_path,
+                    message=f"Initialise {file_path} and add book: {title} by {author}",
+                    content=updated_content,
+                )
+        await self.bot.loop.run_in_executor(None, update_or_create_file)
+
+
 
 
 async def setup(bot):
