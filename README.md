@@ -25,9 +25,13 @@ Since I want to let friends use it for certain features, like maybe a public rec
 
 Integrated with **Sentry** so I know if something breaks.
 
+### Remote Control (Email/SMS)
+
+I can control Shisho remotely by sending commands via email or SMS (using email-to-SMS gateways). It securely processes commands only from my allowed email addresses.
+
 ## Setup
 
-1. **Tokens:** I keep my `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SENTRY_DSN`, and `POCKETBASE` variables in a private `.env` file.
+1. **Tokens:** I keep my `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SENTRY_DSN`, `POCKETBASE`, and `EMAIL_` variables in a private `.env` file.
 2. **Environment:** `uv`.
    ```bash
    uv sync
@@ -48,6 +52,7 @@ _(Status options: read, reading, planned, dropped)_
 
 - Anyone can suggest books!
 - You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
+- Suggestions are synced with **PocketBase**, allowing them to be seamlessly managed alongside my web-based book suggestion form.
 
 ### Notifications (Public)
 
@@ -73,5 +78,10 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 ### Bot Updates (Owner Only)
 
 - `!update`: Pulls the latest code from GitHub and restarts the bot service.
+
+### Remote Email/SMS Commands (Owner Only)
+
+- I can send an email (or SMS via carrier gateway) to the bot's configured address to run commands remotely.
+- Supported commands: `!addbook`, `!suggest`, `!suggestions`, and `!ping`.
 
 ---
