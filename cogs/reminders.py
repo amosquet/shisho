@@ -26,18 +26,38 @@ class Reminders(commands.Cog):
     def cog_unload(self):
         self.check_reminders.cancel()
 
-    @app_commands.command(name="remind", description="Set a reminder.")
-    @app_commands.describe(
-        when="When to remind you (e.g. 'in 5 minutes', 'tomorrow at 3pm')",
-        text="What to remind you about"
-    )
-    async def set_reminder(self, interaction: discord.Interaction, when: str, text: str):
-        await interaction.response.defer(ephemeral=True)
-    async def add_reminder(self, user_id: str, when: str, text: str, for_discord: bool = True) -> str:
-        # Parse the time
+    async def add_reminder(self, user_id: str, when: str, text: str, for_discord: bool = True, user_tz: str = None) -> str:
+        tz_map = {
+            "jp": "Asia/Tokyo",
+            "fr": "Europe/Paris",
+            "uk": "Europe/London",
+            "de": "Europe/Berlin",
+            "us": "US/Eastern",
+            "est": "US/Eastern",
+            "edt": "US/Eastern",
+            "california": "US/Pacific",
+            "ca": "US/Pacific",
+            "pt": "US/Pacific",
+            "pst": "US/Pacific",
+            "pdt": "US/Pacific",
+            "chicago": "US/Central",
+            "il": "US/Central",
+            "ct": "US/Central",
+            "cst": "US/Central",
+            "cdt": "US/Central"
+        }
+        
+        if not user_tz:
+            user_tz = "US/Eastern"
+        else:
+            user_tz = tz_map.get(user_tz.lower(), user_tz)
+
+        settings = {'PREFER_DATES_FROM': 'future', 'TO_TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True}
+        settings['TIMEZONE'] = user_tz
+            
         parsed_time = dateparser.parse(
             when, 
-            settings={'PREFER_DATES_FROM': 'future', 'TO_TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True}
+            settings=settings
         )
 
         if not parsed_time:
@@ -117,11 +137,12 @@ class Reminders(commands.Cog):
     @app_commands.command(name="remind", description="Set a reminder.")
     @app_commands.describe(
         when="When to remind you (e.g. 'in 5 minutes', 'tomorrow at 3pm')",
-        text="What to remind you about"
+        text="What to remind you about",
+        timezone="Optional timezone (defaults to Eastern Time. e.g. 'jp', 'fr', 'Asia/Tokyo')"
     )
-    async def set_reminder(self, interaction: discord.Interaction, when: str, text: str):
+    async def set_reminder(self, interaction: discord.Interaction, when: str, text: str, timezone: str = None):
         await interaction.response.defer(ephemeral=True)
-        response = await self.add_reminder(str(interaction.user.id), when, text)
+        response = await self.add_reminder(str(interaction.user.id), when, text, user_tz=timezone)
         await interaction.followup.send(response)
 
     @app_commands.command(name="reminders", description="List your active reminders.")

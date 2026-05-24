@@ -119,7 +119,7 @@ class EmailGateway(commands.Cog):
                     "!suggest [Title] by [Author] OR !suggest [ISBN] - Add a book suggestion\n"
                     "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)\n"
                     "!reminders - List your active reminders\n"
-                    "!remind [Time] | [Text] - Set a reminder (e.g. !remind in 5 mins | check oven)\n"
+                    "!remind [Time] | [Text] | [Timezone (optional)] - Set a reminder (e.g. !remind in 5 mins | check oven | jp)\n"
                     "!bookinfo [Title or ISBN] - Look up book details"
                 )
             elif cmd == "!ping":
@@ -206,10 +206,13 @@ class EmailGateway(commands.Cog):
                 if reminders_cog:
                     owner_id = str(reminders_cog.owner_id)
                     if "|" in args:
-                        when, text = args.split("|", 1)
-                        response = await reminders_cog.add_reminder(owner_id, when.strip(), text.strip(), for_discord=False)
+                        parts = args.split("|")
+                        when = parts[0].strip()
+                        text = parts[1].strip()
+                        user_tz = parts[2].strip() if len(parts) > 2 else None
+                        response = await reminders_cog.add_reminder(owner_id, when, text, for_discord=False, user_tz=user_tz)
                     else:
-                        response = "Syntax error. Use: !remind [Time] | [Text]"
+                        response = "Syntax error. Use: !remind [Time] | [Text] | [Timezone (optional)]"
                 else:
                     response = "Error: Reminders cog not loaded."
             else:

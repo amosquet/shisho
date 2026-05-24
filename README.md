@@ -66,7 +66,7 @@ _(Status options: read, reading, planned, dropped)_
 
 Set custom reminders using natural language times. The bot will send you a Direct Message when it's time! (And an email if you're the owner).
 
-- `/remind <when> <text>`: Sets a reminder. Example: `/remind in 5 minutes Take out the trash`
+- `/remind <when> <text> [timezone]`: Sets a reminder. Timezone is optional and defaults to Eastern Time. Supports abbreviations like `jp`, `fr`, `ca`, `il`. Example: `/remind in 5 minutes Take out the trash jp`
 - `/reminders`: Lists your active, upcoming reminders.
 
 ### Notifications (Public)
