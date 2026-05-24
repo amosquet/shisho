@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "dateparser>=1.4.0",
     "discord-py>=2.7.1",
     "pocketbase>=0.17.3",
     "PyGithub>=2.6.1",
