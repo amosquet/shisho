@@ -73,7 +73,7 @@ Set custom reminders using natural language times. The bot will send you a Direc
 
 Whenever someone mentions me in a server Shisho is in, the bot will send me a DM with the message content and a link to jump to that message.
 
-- **Automatic:** No command needed, just mention the me!
+- **Automatic:** No command needed, just mention me!
 - **Contextual:** Includes the server, channel, and a direct link to the message.
 
 ### Hot-Reloading (Owner Only)
