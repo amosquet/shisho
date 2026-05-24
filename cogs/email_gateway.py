@@ -110,7 +110,16 @@ class EmailGateway(commands.Cog):
 
         response = ""
         try:
-            if cmd == "!ping":
+            if cmd == "!help":
+                response = (
+                    "Available Email Commands:\n"
+                    "!help - Show this message\n"
+                    "!ping - Check bot latency\n"
+                    "!suggestions - Get a list of suggested books\n"
+                    "!suggest [Title] by [Author] OR !suggest [ISBN] - Add a book suggestion\n"
+                    "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)"
+                )
+            elif cmd == "!ping":
                 response = f"Pong! Bot latency is {round(self.bot.latency * 1000)}ms"
             elif cmd == "!suggestions":
                 suggested_cog = self.bot.get_cog("SuggestedBooks")
