@@ -33,7 +33,7 @@ class Reminders(commands.Cog):
     )
     async def set_reminder(self, interaction: discord.Interaction, when: str, text: str):
         await interaction.response.defer(ephemeral=True)
-
+    async def add_reminder(self, user_id: str, when: str, text: str) -> str:
         # Parse the time
         parsed_time = dateparser.parse(
             when, 
@@ -41,12 +41,10 @@ class Reminders(commands.Cog):
         )
 
         if not parsed_time:
-            await interaction.followup.send(f"Sorry, I couldn't understand the time '{when}'. Please try another format.")
-            return
+            return f"Sorry, I couldn't understand the time '{when}'. Please try another format."
 
         if parsed_time < datetime.now(timezone.utc):
-            await interaction.followup.send("That time is in the past! Please specify a future time.")
-            return
+            return "That time is in the past! Please specify a future time."
 
         try:
             def add_to_pocketbase():
@@ -58,7 +56,7 @@ class Reminders(commands.Cog):
                 dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
                 
                 entry = {
-                    "user_id": str(interaction.user.id),
+                    "user_id": str(user_id),
                     "reminder_text": text,
                     "remind_at": dt_str,
                     "is_sent": False
@@ -68,28 +66,24 @@ class Reminders(commands.Cog):
             await self.bot.loop.run_in_executor(None, add_to_pocketbase)
             
             formatted_time = parsed_time.strftime("%Y-%m-%d %H:%M UTC")
-            await interaction.followup.send(f"Got it! I will remind you: **{text}** at `{formatted_time}`")
+            return f"Got it! I will remind you: **{text}** at `{formatted_time}`"
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            await interaction.followup.send(f"An error occurred while saving the reminder: {e}")
+            return f"An error occurred while saving the reminder: {e}"
 
-    @app_commands.command(name="reminders", description="List your active reminders.")
-    async def list_reminders(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
+    async def get_reminders_text(self, user_id: str) -> str:
         try:
             def get_from_pocketbase():
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 # Fetch only for this user, and where is_sent = False
-                filter_str = f"user_id = '{interaction.user.id}' && is_sent = False"
+                filter_str = f"user_id = '{user_id}' && is_sent = False"
                 return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at"})
 
             records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
 
             if not records:
-                await interaction.followup.send("You have no active reminders.")
-                return
+                return "You have no active reminders."
 
             response = "**Your Active Reminders:**\n"
             for idx, record in enumerate(records, 1):
@@ -106,10 +100,26 @@ class Reminders(commands.Cog):
 
                 response += f"{idx}. **{r_text}** (at `{r_time}`)\n"
 
-            await interaction.followup.send(response)
+            return response
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            await interaction.followup.send("An error occurred while fetching your reminders. Ensure the 'reminders' collection exists in PocketBase with 'user_id', 'reminder_text', 'remind_at', and 'is_sent' fields.")
+            return "An error occurred while fetching your reminders. Ensure the 'reminders' collection exists in PocketBase with 'user_id', 'reminder_text', 'remind_at', and 'is_sent' fields."
+
+    @app_commands.command(name="remind", description="Set a reminder.")
+    @app_commands.describe(
+        when="When to remind you (e.g. 'in 5 minutes', 'tomorrow at 3pm')",
+        text="What to remind you about"
+    )
+    async def set_reminder(self, interaction: discord.Interaction, when: str, text: str):
+        await interaction.response.defer(ephemeral=True)
+        response = await self.add_reminder(str(interaction.user.id), when, text)
+        await interaction.followup.send(response)
+
+    @app_commands.command(name="reminders", description="List your active reminders.")
+    async def list_reminders(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        response = await self.get_reminders_text(str(interaction.user.id))
+        await interaction.followup.send(response)
 
     @tasks.loop(seconds=60.0)
     async def check_reminders(self):

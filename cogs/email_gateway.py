@@ -117,7 +117,9 @@ class EmailGateway(commands.Cog):
                     "!ping - Check bot latency\n"
                     "!suggestions - Get a list of suggested books\n"
                     "!suggest [Title] by [Author] OR !suggest [ISBN] - Add a book suggestion\n"
-                    "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)"
+                    "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)\n"
+                    "!reminders - List your active reminders\n"
+                    "!remind [Time] | [Text] - Set a reminder (e.g. !remind in 5 mins | check oven)"
                 )
             elif cmd == "!ping":
                 response = f"Pong! Bot latency is {round(self.bot.latency * 1000)}ms"
@@ -182,6 +184,24 @@ class EmailGateway(commands.Cog):
                     response = f"Successfully added {title or isbn} to the reading list."
                 else:
                     response = "Error: ReadingList cog not loaded."
+            elif cmd in ("!reminders", "!listreminders"):
+                reminders_cog = self.bot.get_cog("Reminders")
+                if reminders_cog:
+                    owner_id = str(reminders_cog.owner_id)
+                    response = await reminders_cog.get_reminders_text(owner_id)
+                else:
+                    response = "Error: Reminders cog not loaded."
+            elif cmd == "!remind":
+                reminders_cog = self.bot.get_cog("Reminders")
+                if reminders_cog:
+                    owner_id = str(reminders_cog.owner_id)
+                    if " | " in args:
+                        when, text = args.split(" | ", 1)
+                        response = await reminders_cog.add_reminder(owner_id, when.strip(), text.strip())
+                    else:
+                        response = "Syntax error. Use: !remind [Time] | [Text]"
+                else:
+                    response = "Error: Reminders cog not loaded."
             else:
                 response = f"Unknown command: {cmd}"
         except Exception as e:
