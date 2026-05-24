@@ -11,6 +11,10 @@ import discord
 from discord.ext import commands, tasks
 import sentry_sdk
 
+def is_isbn(s: str) -> bool:
+    clean = s.replace("-", "").replace(" ", "").strip()
+    return clean.isdigit() and len(clean) in (10, 13)
+
 class EmailGateway(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -29,7 +33,7 @@ class EmailGateway(commands.Cog):
     def cog_unload(self):
         self.check_emails.cancel()
 
-    @tasks.loop(minutes=1.0)
+    @tasks.loop(seconds=10.0)
     async def check_emails(self):
         try:
             await asyncio.to_thread(self._check_and_process)
@@ -121,10 +125,13 @@ class EmailGateway(commands.Cog):
                     title = args
                     author = ""
                     isbn = ""
-                    if " by " in args:
+                    if is_isbn(args):
+                        isbn = args.replace("-", "").strip()
+                        title = ""
+                    elif " by " in args:
                         title, author = args.split(" by ", 1)
                     await suggested_cog.add_suggestion(title.strip(), author.strip(), isbn, sender, "Email")
-                    response = f"Added suggestion: {title} by {author}"
+                    response = f"Added suggestion: {title} by {author}" if not isbn else f"Added suggestion with ISBN: {isbn}"
                 else:
                     response = "Error: SuggestedBooks cog not loaded."
             elif cmd == "!addbook":
@@ -135,11 +142,19 @@ class EmailGateway(commands.Cog):
                     title_author = parts[0] if len(parts) > 0 else "Unknown"
                     title = title_author
                     author = ""
-                    if " by " in title_author:
-                        title, author = title_author.split(" by ", 1)
-                        
-                    isbn = parts[1] if len(parts) > 1 else ""
-                    status = parts[2].lower() if len(parts) > 2 else "planned"
+                    isbn = ""
+                    status = "planned"
+                    
+                    if is_isbn(title_author):
+                        isbn = title_author.replace("-", "").strip()
+                        title = ""
+                        if len(parts) > 1:
+                            status = parts[1].lower()
+                    else:
+                        if " by " in title_author:
+                            title, author = title_author.split(" by ", 1)
+                        isbn = parts[1] if len(parts) > 1 else ""
+                        status = parts[2].lower() if len(parts) > 2 else "planned"
                     
                     publish_date = ""
                     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -155,7 +170,7 @@ class EmailGateway(commands.Cog):
                         start_date, 
                         end_date
                     )
-                    response = f"Successfully added {title} to the reading list."
+                    response = f"Successfully added {title or isbn} to the reading list."
                 else:
                     response = "Error: ReadingList cog not loaded."
             else:
