@@ -121,6 +121,14 @@ class ShishoBot(commands.Bot):
         else:
             print("Logged in, but user information is unavailable.")
         print("------")
+        
+        if OWNER_ID:
+            try:
+                owner = await self.fetch_user(OWNER_ID)
+                if owner:
+                    await owner.send("Shisho bot is now online and ready!")
+            except Exception as e:
+                print(f"Could not send startup message to owner: {e}")
 
 
 async def main():

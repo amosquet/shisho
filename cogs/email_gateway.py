@@ -33,7 +33,7 @@ class EmailGateway(commands.Cog):
     def cog_unload(self):
         self.check_emails.cancel()
 
-    @tasks.loop(seconds=10.0)
+    @tasks.loop(seconds=8.0)
     async def check_emails(self):
         try:
             await asyncio.to_thread(self._check_and_process)
@@ -179,7 +179,9 @@ class EmailGateway(commands.Cog):
             sentry_sdk.capture_exception(e)
             response = f"Error executing {cmd}: {e}"
             
-        await asyncio.to_thread(self._send_email, sender, f"Re: {subject or 'Command'}", response)
+        # Strip Discord markdown for plain text email/SMS
+        clean_response = response.replace("**", "").replace("__", "")
+        await asyncio.to_thread(self._send_email, sender, f"Re: {subject or 'Command'}", clean_response)
         
     def _send_email(self, to_addr, subject, body):
         msg = EmailMessage()
