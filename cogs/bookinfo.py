@@ -42,7 +42,12 @@ class BookInfo(commands.Cog):
         if not self.google_books_api_key:
             return "Google Books API key is not configured."
 
-        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&key={self.google_books_api_key}"
+        api_query = query
+        clean_query = query.replace("-", "").replace(" ", "").strip()
+        if clean_query.isdigit() and len(clean_query) in (10, 13):
+            api_query = f"isbn:{clean_query}"
+
+        url = f"https://www.googleapis.com/books/v1/volumes?q={api_query}&key={self.google_books_api_key}"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
