@@ -115,6 +115,7 @@ class EmailGateway(commands.Cog):
         args = parts[1] if len(parts) > 1 else ""
 
         response = ""
+        out_attachments = []
         try:
             if cmd == "!help":
                 response = (
@@ -246,7 +247,18 @@ class EmailGateway(commands.Cog):
                             if note["text"]:
                                 response += f"{note['text']}\n"
                             if note["attachment_filename"]:
-                                response += f"[Attachment included in PocketBase]\n"
+                                # Fetch attachment bytes to send with the email
+                                headers = {}
+                                if note["file_token"]:
+                                    headers["Authorization"] = note["file_token"]
+                                try:
+                                    import httpx
+                                    async with httpx.AsyncClient() as client:
+                                        resp = await client.get(note["attachment_url"], headers=headers)
+                                        if resp.status_code == 200:
+                                            out_attachments.append((note["attachment_filename"], resp.content))
+                                except Exception as e:
+                                    print(f"Failed to download attachment for email: {e}")
                             if note['created']:
                                 response += f"(Saved on {note['created']})\n"
                         else:
@@ -290,14 +302,23 @@ class EmailGateway(commands.Cog):
             
         # Strip Discord markdown for plain text email/SMS
         clean_response = response.replace("**", "").replace("__", "")
-        await asyncio.to_thread(self._send_email, sender, f"Re: {subject or 'Command'}", clean_response)
+        await asyncio.to_thread(self._send_email, sender, f"Re: {subject or 'Command'}", clean_response, out_attachments)
         
-    def _send_email(self, to_addr, subject, body):
+    def _send_email(self, to_addr, subject, body, out_attachments=None):
         msg = EmailMessage()
         msg.set_content(body)
         msg["Subject"] = subject
         msg["From"] = self.email_user
         msg["To"] = to_addr
+
+        if out_attachments:
+            import mimetypes
+            for filename, file_data in out_attachments:
+                ctype, encoding = mimetypes.guess_type(filename)
+                if ctype is None or encoding is not None:
+                    ctype = 'application/octet-stream'
+                maintype, subtype = ctype.split('/', 1)
+                msg.add_attachment(file_data, maintype=maintype, subtype=subtype, filename=filename)
 
         try:
             server = smtplib.SMTP_SSL(self.email_smtp_host, self.email_smtp_port)
