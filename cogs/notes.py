@@ -45,16 +45,17 @@ class Notes(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                filter_str = f"user_id = '{user_id}'"
+                filter_str = ""
                 if query:
                     safe_query = query.replace("'", "\\'")
-                    filter_str += f" && (title ~ '{safe_query}' || text ~ '{safe_query}')"
+                    filter_str = f"title ~ '{safe_query}' || text ~ '{safe_query}'"
+                
+                query_params = {"sort": "-created"}
+                if filter_str:
+                    query_params["filter"] = filter_str
                 
                 # Fetch recent notes
-                records = pb.collection("notes").get_list(1, limit, query_params={
-                    "filter": filter_str,
-                    "sort": "-created" # newest first
-                })
+                records = pb.collection("notes").get_list(1, limit, query_params=query_params)
                 
                 results = []
                 for record in records.items:
@@ -81,9 +82,8 @@ class Notes(commands.Cog):
             notes = await self.bot.loop.run_in_executor(None, _get_from_pb)
             return notes
         except Exception as e:
-            print(f"Error fetching notes: {e}")
             sentry_sdk.capture_exception(e)
-            return []
+            return str(e)
 
     @app_commands.command(name="note", description="Add a personal note.")
     @app_commands.describe(
@@ -111,6 +111,10 @@ class Notes(commands.Cog):
     async def slash_notes(self, interaction: discord.Interaction, name: str = None):
         await interaction.response.defer(ephemeral=True)
         notes = await self.get_notes(str(interaction.user.id), limit=10, query=name)
+        
+        if isinstance(notes, str):
+            await interaction.followup.send(f"An error occurred fetching notes: {notes}")
+            return
         
         if not notes:
             await interaction.followup.send(f"No notes found{' for that name' if name else ''}.")
