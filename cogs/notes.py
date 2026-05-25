@@ -50,7 +50,7 @@ class Notes(commands.Cog):
                     safe_query = query.replace("'", "\\'")
                     filter_str = f"title ~ '{safe_query}' || text ~ '{safe_query}'"
                 
-                query_params = {"sort": "-created"}
+                query_params = {}
                 if filter_str:
                     query_params["filter"] = filter_str
                 
