@@ -45,12 +45,12 @@ class Notes(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                filter_str = ""
+                filter_str = f"user_id = '{user_id}'"
                 if query:
                     safe_query = query.replace("'", "\\'")
-                    filter_str = f"title ~ '{safe_query}' || text ~ '{safe_query}'"
+                    filter_str += f" && (title ~ '{safe_query}' || text ~ '{safe_query}')"
                 
-                query_params = {}
+                query_params = {"sort": "-id"}
                 if filter_str:
                     query_params["filter"] = filter_str
                 
@@ -59,11 +59,16 @@ class Notes(commands.Cog):
                 
                 results = []
                 for record in records.items:
+                    # Depending on PB SDK version, created might be accessed via dict or attribute
+                    created_val = getattr(record, "created", "")
+                    if not created_val and hasattr(record, "get"):
+                        created_val = record.get("created", "")
+                        
                     note = {
                         "id": record.id,
-                        "title": getattr(record, "title", ""),
-                        "text": getattr(record, "text", ""),
-                        "created": getattr(record, "created", ""),
+                        "title": getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else ""),
+                        "text": getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else ""),
+                        "created": created_val,
                         "attachment_filename": "",
                         "attachment_url": "",
                         "file_token": ""
@@ -129,7 +134,8 @@ class Notes(commands.Cog):
             msg = f"**{title}**\n"
             if note["text"]:
                 msg += f"{note['text']}\n"
-            msg += f"*Saved on {note['created']}*"
+            date_str = f"*Saved on {note['created']}*" if note['created'] else ""
+            msg += f"{date_str}"
 
             file_attachment = discord.utils.MISSING
             if note["attachment_url"]:
@@ -159,7 +165,9 @@ class Notes(commands.Cog):
                     title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
                     if not title:
                         title = "Untitled Note"
-                msg += f"{idx}. **{title}** (*{note['created']}*)\n"
+                
+                date_str = f" (*{note['created']}*)" if note['created'] else ""
+                msg += f"{idx}. **{title}**{date_str}\n"
             
             await interaction.followup.send(msg)
 

@@ -247,7 +247,8 @@ class EmailGateway(commands.Cog):
                                 response += f"{note['text']}\n"
                             if note["attachment_filename"]:
                                 response += f"[Attachment included in PocketBase]\n"
-                            response += f"(Saved on {note['created']})\n"
+                            if note['created']:
+                                response += f"(Saved on {note['created']})\n"
                         else:
                             response = "**Your Recent Notes:**\n\n"
                             for idx, note in enumerate(reversed(notes), 1):
@@ -257,7 +258,8 @@ class EmailGateway(commands.Cog):
                                     title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
                                     if not title:
                                         title = "Untitled Note"
-                                response += f"{idx}. {title} (Saved on {note['created']})\n"
+                                date_str = f" (Saved on {note['created']})" if note['created'] else ""
+                                response += f"{idx}. {title}{date_str}\n"
                 else:
                     response = "Error: Notes cog not loaded."
             elif cmd == "!note":
