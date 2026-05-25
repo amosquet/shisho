@@ -71,28 +71,34 @@ class EmailGateway(commands.Cog):
 
                     subject = msg.get("Subject", "")
                     body = ""
+                    # Process command
+                    # We run this in the event loop so it can call other async cog methods
+                    attachments = []
+                    
                     if msg.is_multipart():
                         for part in msg.walk():
                             content_type = part.get_content_type()
                             content_disposition = str(part.get("Content-Disposition"))
                             if content_type == "text/plain" and "attachment" not in content_disposition:
                                 body = part.get_payload(decode=True).decode()
-                                break
+                            elif part.get_content_maintype() != 'multipart' and part.get('Content-Disposition') is not None:
+                                filename = part.get_filename()
+                                if filename:
+                                    att_data = part.get_payload(decode=True)
+                                    attachments.append((filename, att_data))
                     else:
                         body = part_payload = msg.get_payload(decode=True)
                         if part_payload:
                             body = part_payload.decode()
 
-                    # Process command
-                    # We run this in the event loop so it can call other async cog methods
                     asyncio.run_coroutine_threadsafe(
-                        self.process_command(sender, subject, body), 
+                        self.process_command(sender, subject, body, attachments), 
                         self.bot.loop
                     )
 
         mail.logout()
 
-    async def process_command(self, sender: str, subject: str, body: str):
+    async def process_command(self, sender: str, subject: str, body: str, attachments: list = None):
         full_text = f"{subject}\n{body}"
         command_line = ""
         for line in full_text.splitlines():
@@ -120,7 +126,9 @@ class EmailGateway(commands.Cog):
                     "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)\n"
                     "!reminders - List your active reminders\n"
                     "!remind [Time] | [Text] | [Timezone (optional)] - Set a reminder (e.g. !remind in 5 mins | check oven | jp)\n"
-                    "!bookinfo [Title or ISBN] - Look up book details"
+                    "!bookinfo [Title or ISBN] - Look up book details\n"
+                    "!notes - List your recent notes\n"
+                    "!note [Text] - Save a note (Subject becomes Title. Email attachments are supported.)"
                 )
             elif cmd == "!ping":
                 response = f"Pong! Bot latency is {round(self.bot.latency * 1000)}ms"
@@ -215,6 +223,63 @@ class EmailGateway(commands.Cog):
                         response = "Syntax error. Use: !remind [Time] | [Text] | [Timezone (optional)]"
                 else:
                     response = "Error: Reminders cog not loaded."
+            elif cmd == "!notes":
+                notes_cog = self.bot.get_cog("Notes")
+                if notes_cog:
+                    # We need the user ID. We can get it from the reminders cog owner_id, since the email is authorized and maps to owner.
+                    reminders_cog = self.bot.get_cog("Reminders")
+                    owner_id = str(reminders_cog.owner_id) if reminders_cog else "0"
+                    
+                    query = args.strip() if args else None
+                    notes = await notes_cog.get_notes(owner_id, query=query)
+                    
+                    if not notes:
+                        response = f"No notes found{' for that name' if query else ''}."
+                    else:
+                        if query:
+                            note = notes[0]
+                            response = "**Note Details:**\n\n"
+                            title = note["title"] or " ".join(note["text"].split()[:5]) + ("..." if len(note["text"].split()) > 5 else "")
+                            if not title:
+                                title = "Untitled Note"
+                            response += f"Title: {title}\n"
+                            if note["text"]:
+                                response += f"{note['text']}\n"
+                            if note["attachment_filename"]:
+                                response += f"[Attachment included in PocketBase]\n"
+                            response += f"(Saved on {note['created']})\n"
+                        else:
+                            response = "**Your Recent Notes:**\n\n"
+                            for idx, note in enumerate(reversed(notes), 1):
+                                title = note["title"]
+                                if not title:
+                                    words = note["text"].split()
+                                    title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+                                    if not title:
+                                        title = "Untitled Note"
+                                response += f"{idx}. {title} (Saved on {note['created']})\n"
+                else:
+                    response = "Error: Notes cog not loaded."
+            elif cmd == "!note":
+                notes_cog = self.bot.get_cog("Notes")
+                if notes_cog:
+                    reminders_cog = self.bot.get_cog("Reminders")
+                    owner_id = str(reminders_cog.owner_id) if reminders_cog else "0"
+                    
+                    text = args
+                    title = subject if subject else ""
+                    
+                    att_bytes = None
+                    att_name = None
+                    if attachments and len(attachments) > 0:
+                        att_name, att_bytes = attachments[0] # Only take first attachment for now
+                    
+                    if not text and not att_bytes:
+                        response = "You must provide either text or an attachment for the note."
+                    else:
+                        response = await notes_cog.add_note(owner_id, text, title, att_bytes, att_name)
+                else:
+                    response = "Error: Notes cog not loaded."
             else:
                 response = f"Unknown command: {cmd}"
         except Exception as e:
