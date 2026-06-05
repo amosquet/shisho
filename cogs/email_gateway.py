@@ -141,13 +141,13 @@ class EmailGateway(commands.Cog):
                     else:
                         response = "Syntax error. Use: !bookinfo [Title or ISBN]"
                 else:
-                    response = "Error: BookInfo cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!suggestions":
                 suggested_cog = self.bot.get_cog("SuggestedBooks")
                 if suggested_cog:
                     response = await suggested_cog.get_suggestions_text()
                 else:
-                    response = "Error: SuggestedBooks cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!suggest":
                 suggested_cog = self.bot.get_cog("SuggestedBooks")
                 if suggested_cog:
@@ -163,7 +163,7 @@ class EmailGateway(commands.Cog):
                     await suggested_cog.add_suggestion(title.strip(), author.strip(), isbn, sender, "Email")
                     response = f"Added suggestion: {title} by {author}" if not isbn else f"Added suggestion with ISBN: {isbn}"
                 else:
-                    response = "Error: SuggestedBooks cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!addbook":
                 reading_cog = self.bot.get_cog("ReadingList")
                 if reading_cog:
@@ -202,14 +202,14 @@ class EmailGateway(commands.Cog):
                     )
                     response = f"Successfully added {title or isbn} to the reading list."
                 else:
-                    response = "Error: ReadingList cog not loaded."
+                    response = "There was an error with the command."
             elif cmd in ("!reminders", "!listreminders"):
                 reminders_cog = self.bot.get_cog("Reminders")
                 if reminders_cog:
                     owner_id = str(reminders_cog.owner_id)
                     response = await reminders_cog.get_reminders_text(owner_id, for_discord=False)
                 else:
-                    response = "Error: Reminders cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!remind":
                 reminders_cog = self.bot.get_cog("Reminders")
                 if reminders_cog:
@@ -223,7 +223,7 @@ class EmailGateway(commands.Cog):
                     else:
                         response = "Syntax error. Use: !remind [Time] | [Text] | [Timezone (optional)]"
                 else:
-                    response = "Error: Reminders cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!notes":
                 notes_cog = self.bot.get_cog("Notes")
                 if notes_cog:
@@ -273,7 +273,7 @@ class EmailGateway(commands.Cog):
                                 date_str = f" (Saved on {note['created']})" if note['created'] else ""
                                 response += f"{idx}. {title}{date_str}\n"
                 else:
-                    response = "Error: Notes cog not loaded."
+                    response = "There was an error with the command."
             elif cmd == "!note":
                 notes_cog = self.bot.get_cog("Notes")
                 if notes_cog:
@@ -293,12 +293,12 @@ class EmailGateway(commands.Cog):
                     else:
                         response = await notes_cog.add_note(owner_id, text, title, att_bytes, att_name)
                 else:
-                    response = "Error: Notes cog not loaded."
+                    response = "There was an error with the command."
             else:
-                response = f"Unknown command: {cmd}"
+                response = "There was an error with the command."
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            response = f"Error executing {cmd}: {e}"
+            response = "There was an error with the command."
             
         # Strip Discord markdown for plain text email/SMS
         clean_response = response.replace("**", "").replace("__", "")
