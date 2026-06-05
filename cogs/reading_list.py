@@ -139,6 +139,30 @@ class ReadingList(commands.Cog):
                 )
         await self.bot.loop.run_in_executor(None, update_or_create_file)
 
+    async def fetch_reading_list(self) -> list[dict]:
+        if not self.repo_name or not self.github_token:
+            return []
+
+        try:
+            repo = self.gh.get_repo(self.repo_name)
+        except GithubException:
+            return []
+
+        file_path = "src/data/reading.json"
+        try:
+            def get_contents():
+                return repo.get_contents(file_path)
+            contents = await self.bot.loop.run_in_executor(None, get_contents)
+            
+            if isinstance(contents, list) or contents.content is None:
+                return []
+
+            return json.loads(
+                base64.b64decode(contents.content).decode("utf-8")
+            )
+        except Exception:
+            return []
+
 
 
 
