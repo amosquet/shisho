@@ -12,6 +12,8 @@ import sentry_sdk
 CONCIERGE_PROMPT = """You are an expert Book Concierge. You provide highly specific and thoughtful book recommendations based on the user's queries.
 You can answer questions about books, summarize plots, and suggest reading orders.
 
+Keep your responses extremely concise. Do not use conversational filler, pleasantries, or introductory/concluding remarks. Get straight to the point and only provide the requested information or recommendations.
+
 CRITICAL INSTRUCTION:
 If your response includes book recommendations or mentions specific books that the user might want to read, you MUST append a JSON block at the very end of your response containing a list of those book titles.
 
@@ -168,7 +170,7 @@ class BookConcierge(commands.Cog):
             sentry_sdk.capture_exception(e)
             return f"An unexpected error occurred: {str(e)}", []
 
-    @commands.command(name="recommend", help="Ask the AI Book Concierge for book recommendations.")
+    @commands.command(name="recommend", aliases=["ask"], help="Ask the AI Book Concierge for book recommendations.")
     async def recommend_prefix(self, ctx, *, query: str = ""):
         async with ctx.typing():
             text, titles = await self.process_query(query)
@@ -188,6 +190,12 @@ class BookConcierge(commands.Cog):
     @app_commands.command(name="recommend", description="Ask the AI Book Concierge for recommendations")
     @app_commands.describe(query="Your query (leave blank for personalized recommendations)")
     async def recommend_slash(self, interaction: discord.Interaction, query: str | None = None):
+        await self._handle_slash_command(interaction, query)
+
+    @app_commands.command(name="ask", description="Ask the AI Book Concierge a question about books")
+    @app_commands.describe(query="Your question")
+    async def ask_slash(self, interaction: discord.Interaction, query: str | None = None):
+        # ask is an alias for recommend
         await self._handle_slash_command(interaction, query)
         
     async def _handle_slash_command(self, interaction: discord.Interaction, query: str | None):

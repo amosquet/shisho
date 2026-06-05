@@ -98,6 +98,36 @@ class Admin(commands.Cog):
             # We use followup since we already sent a response
             await interaction.followup.send(f"❌ Failed to trigger update: {e}")
 
+    @app_commands.command(name="sync", description="Syncs the command tree. (Owner only)")
+    @app_commands.describe(spec="Sync specification (~ for current guild, * for copy global, ^ for clear)")
+    @is_owner()
+    async def sync_slash(self, interaction: discord.Interaction, spec: Optional[Literal["~", "*", "^"]] = None):
+        if spec == "~":
+            if interaction.guild:
+                synced = await self.bot.tree.sync(guild=interaction.guild)
+                msg = f"Synced {len(synced)} commands to the current guild."
+            else:
+                msg = "You must be in a guild to sync the current guild."
+        elif spec == "*":
+            if interaction.guild:
+                self.bot.tree.copy_global_to(guild=interaction.guild)
+                synced = await self.bot.tree.sync(guild=interaction.guild)
+                msg = f"Copied global commands and synced {len(synced)} commands to the current guild."
+            else:
+                msg = "You must be in a guild to copy global commands."
+        elif spec == "^":
+            if interaction.guild:
+                self.bot.tree.clear_commands(guild=interaction.guild)
+                await self.bot.tree.sync(guild=interaction.guild)
+                msg = "Cleared all commands from the current guild and synced."
+            else:
+                msg = "You must be in a guild to clear current guild commands."
+        else:
+            synced = await self.bot.tree.sync()
+            msg = f"Synced {len(synced)} commands globally."
+
+        await interaction.response.send_message(msg, ephemeral=True)
+
     @commands.command(name="sync")
     @commands.is_owner()
     async def sync(self, ctx: commands.Context, guilds: commands.Greedy[discord.Object], spec: Optional[Literal["~", "*", "^"]] = None) -> None:
