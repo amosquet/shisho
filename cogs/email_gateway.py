@@ -33,7 +33,7 @@ class EmailGateway(commands.Cog):
     def cog_unload(self):
         self.check_emails.cancel()
 
-    @tasks.loop(seconds=10.0)
+    @tasks.loop(minutes=1.0)
     async def check_emails(self):
         try:
             await asyncio.to_thread(self._check_and_process)
