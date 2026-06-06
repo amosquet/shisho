@@ -8,6 +8,7 @@ dependencies = [
     "dateparser>=1.4.0",
     "discord-py>=2.7.1",
     "google-genai>=2.8.0",
+    "imapclient>=3.1.0",
     "pocketbase>=0.17.3",
     "PyGithub>=2.6.1",
     "python-dotenv>=1.0.1",

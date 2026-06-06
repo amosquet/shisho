@@ -1,6 +1,7 @@
 import os
 import asyncio
 import imaplib
+from imapclient import IMAPClient
 import smtplib
 import email
 from email.message import EmailMessage
@@ -27,76 +28,95 @@ class EmailGateway(commands.Cog):
         allowed = os.getenv("ALLOWED_EMAILS", "")
         self.allowed_emails = [e.strip().lower() for e in allowed.split(",") if e.strip()]
 
+        self._is_unloaded = False
+        self._idle_task = None
+
         if self.email_host and self.email_user and self.email_pass:
-            self.check_emails.start()
+            self._idle_task = self.bot.loop.create_task(self.start_idle())
 
     def cog_unload(self):
-        self.check_emails.cancel()
+        self._is_unloaded = True
+        if self._idle_task:
+            self._idle_task.cancel()
 
-    @tasks.loop(minutes=1.0)
-    async def check_emails(self):
-        try:
-            await asyncio.to_thread(self._check_and_process)
-        except Exception as e:
-            print(f"Error in email gateway: {e}")
-            sentry_sdk.capture_exception(e)
-
-    @check_emails.before_loop
-    async def before_check_emails(self):
+    async def start_idle(self):
         await self.bot.wait_until_ready()
+        while not self._is_unloaded:
+            try:
+                await asyncio.to_thread(self._idle_loop)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error in IMAP IDLE loop: {e}")
+                sentry_sdk.capture_exception(e)
+                await asyncio.sleep(10)
 
-    def _check_and_process(self):
-        mail = imaplib.IMAP4_SSL(self.email_host, self.email_port)
-        mail.login(self.email_user, self.email_pass)
-        mail.select("inbox")
+    def _idle_loop(self):
+        with IMAPClient(self.email_host, port=self.email_port, ssl=True) as server:
+            server.login(self.email_user, self.email_pass)
+            server.select_folder('INBOX')
+            
+            # Initial check
+            self._fetch_and_process_unread(server)
+            
+            while not self._is_unloaded:
+                try:
+                    server.idle()
+                    # Block and wait for up to 5 minutes
+                    responses = server.idle_check(timeout=300)
+                    server.idle_done()
+                    
+                    if responses:
+                        self._fetch_and_process_unread(server)
+                except Exception as e:
+                    # Reraise to outer start_idle loop for reconnect
+                    try:
+                        server.idle_done()
+                    except Exception:
+                        pass
+                    raise e
 
-        status, messages = mail.search(None, "UNSEEN")
-        if status != "OK" or not messages[0]:
-            mail.logout()
+    def _fetch_and_process_unread(self, server):
+        messages = server.search(['UNSEEN'])
+        if not messages:
             return
 
-        for num in messages[0].split():
-            status, data = mail.fetch(num, "(RFC822)")
-            if status != "OK":
-                continue
+        response = server.fetch(messages, ['RFC822'])
+        for msgid, data in response.items():
+            if b'RFC822' in data:
+                msg = email.message_from_bytes(data[b'RFC822'])
+                sender = email.utils.parseaddr(msg.get("From"))[1].lower()
+                    
+                if sender not in self.allowed_emails:
+                    print(f"Unauthorized email from {sender}")
+                    continue
+
+                subject = msg.get("Subject", "")
+                body = ""
+                # Process command
+                # We run this in the event loop so it can call other async cog methods
+                attachments = []
                 
-            for response_part in data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    sender = email.utils.parseaddr(msg.get("From"))[1].lower()
-                    
-                    if sender not in self.allowed_emails:
-                        print(f"Unauthorized email from {sender}")
-                        continue
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        content_type = part.get_content_type()
+                        content_disposition = str(part.get("Content-Disposition"))
+                        if content_type == "text/plain" and "attachment" not in content_disposition:
+                            body = part.get_payload(decode=True).decode()
+                        elif part.get_content_maintype() != 'multipart' and part.get('Content-Disposition') is not None:
+                            filename = part.get_filename()
+                            if filename:
+                                att_data = part.get_payload(decode=True)
+                                attachments.append((filename, att_data))
+                else:
+                    body = part_payload = msg.get_payload(decode=True)
+                    if part_payload:
+                        body = part_payload.decode()
 
-                    subject = msg.get("Subject", "")
-                    body = ""
-                    # Process command
-                    # We run this in the event loop so it can call other async cog methods
-                    attachments = []
-                    
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            content_type = part.get_content_type()
-                            content_disposition = str(part.get("Content-Disposition"))
-                            if content_type == "text/plain" and "attachment" not in content_disposition:
-                                body = part.get_payload(decode=True).decode()
-                            elif part.get_content_maintype() != 'multipart' and part.get('Content-Disposition') is not None:
-                                filename = part.get_filename()
-                                if filename:
-                                    att_data = part.get_payload(decode=True)
-                                    attachments.append((filename, att_data))
-                    else:
-                        body = part_payload = msg.get_payload(decode=True)
-                        if part_payload:
-                            body = part_payload.decode()
-
-                    asyncio.run_coroutine_threadsafe(
-                        self.process_command(sender, subject, body, attachments), 
-                        self.bot.loop
-                    )
-
-        mail.logout()
+                asyncio.run_coroutine_threadsafe(
+                    self.process_command(sender, subject, body, attachments), 
+                    self.bot.loop
+                )
 
     async def process_command(self, sender: str, subject: str, body: str, attachments: list = None):
         full_text = f"{subject}\n{body}"
