@@ -26,8 +26,8 @@ class AIChat(commands.Cog):
                 print(f"Failed to read {prompt_file}: {e}")
         return None
 
-    @commands.command(name="gemini", help="Ask Gemini a question.")
-    async def gemini_prefix(self, ctx, *, prompt: str):
+    @commands.command(name="ask", help="Ask Gemini a question.")
+    async def ask_prefix(self, ctx, *, prompt: str):
         if not self.client:
             await ctx.send("Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
             return
@@ -60,9 +60,9 @@ class AIChat(commands.Cog):
             except Exception as e:
                 await ctx.send(f"An unexpected error occurred: {str(e)}")
 
-    @app_commands.command(name="gemini", description="Send a prompt to the Gemini API")
+    @app_commands.command(name="ask", description="Send a prompt to the Gemini API")
     @app_commands.describe(prompt="The prompt to send to Gemini")
-    async def gemini_slash(self, interaction: discord.Interaction, prompt: str):
+    async def ask_slash(self, interaction: discord.Interaction, prompt: str):
         if not self.client:
             await interaction.response.send_message("Gemini API key is not configured.", ephemeral=True)
             return
