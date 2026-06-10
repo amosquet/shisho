@@ -183,7 +183,7 @@ class BookConcierge(commands.Cog):
             )
 
             response = await self.client.aio.models.generate_content(
-                model="gemini-2.5-flash", contents=actual_query, config=config
+                model="gemini-3.1-flash", contents=actual_query, config=config
             )
 
             text = response.text

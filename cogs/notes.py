@@ -10,6 +10,11 @@ from pocketbase import PocketBase
 from pocketbase.client import FileUpload
 import httpx
 
+import mimetypes
+import json
+from google import genai
+from google.genai import types
+
 class Notes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -19,6 +24,46 @@ class Notes(commands.Cog):
 
     async def add_note(self, user_id: str, text: str = "", title: str = "", attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
         try:
+            if not text and attachment_bytes and attachment_filename:
+                mime_type, _ = mimetypes.guess_type(attachment_filename)
+                
+                # Check for Discord's common voice message format as well, which might not be guessed correctly
+                if attachment_filename.endswith('.ogg'):
+                    mime_type = 'audio/ogg'
+                    
+                if mime_type and mime_type.startswith('audio/'):
+                    api_key = os.getenv("GEMINI_API_KEY")
+                    if api_key:
+                        try:
+                            client = genai.Client(api_key=api_key)
+                            prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
+                            
+                            response = await client.aio.models.generate_content(
+                                model='gemini-3.1-flash',
+                                contents=[
+                                    types.Part.from_bytes(data=attachment_bytes, mime_type=mime_type),
+                                    prompt
+                                ]
+                            )
+                            
+                            res_text = response.text.strip()
+                            if res_text.startswith("```json"):
+                                res_text = res_text[7:-3].strip()
+                            elif res_text.startswith("```"):
+                                res_text = res_text[3:-3].strip()
+                                
+                            data = json.loads(res_text)
+                            
+                            text = data.get("text", "")
+                            if not title:
+                                title = data.get("title", "")
+                                
+                        except Exception as e:
+                            sentry_sdk.capture_exception(e)
+                            return f"Failed to transcribe audio: {e}"
+                    else:
+                        return "Gemini API key not configured for transcription."
+
             def _add_to_pb():
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
