@@ -41,7 +41,7 @@ class AIChat(commands.Cog):
                 )
                 
                 response = await self.client.aio.models.generate_content(
-                    model='gemini-3.1-flash',
+                    model='gemini-3.5-flash',
                     contents=prompt,
                     config=config
                 )
@@ -82,7 +82,7 @@ class AIChat(commands.Cog):
             )
             
             response = await self.client.aio.models.generate_content(
-                model='gemini-3.1-flash',
+                model='gemini-3.5-flash',
                 contents=prompt,
                 config=config
             )
