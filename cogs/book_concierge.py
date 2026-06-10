@@ -194,7 +194,10 @@ class BookConcierge(commands.Cog):
             return clean_text, titles
 
         except errors.APIError as e:
-            return f"API Error: {str(e)}", []
+            error_msg = str(e)
+            if "high demand" in error_msg.lower() or "503" in error_msg:
+                return "Gemini is currently experiencing high demand. Please try again later.", []
+            return f"API Error: {error_msg}", []
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return f"An unexpected error occurred: {str(e)}", []

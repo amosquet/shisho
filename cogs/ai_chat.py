@@ -56,7 +56,11 @@ class AIChat(commands.Cog):
                 for chunk in chunks:
                     await ctx.send(chunk)
             except errors.APIError as e:
-                await ctx.send(f"API Error: {str(e)}")
+                error_msg = str(e)
+                if "high demand" in error_msg.lower() or "503" in error_msg:
+                    await ctx.send("Gemini is currently experiencing high demand. Please try again later.")
+                else:
+                    await ctx.send(f"API Error: {error_msg}")
             except Exception as e:
                 await ctx.send(f"An unexpected error occurred: {str(e)}")
 
@@ -95,7 +99,11 @@ class AIChat(commands.Cog):
                 await interaction.followup.send(chunk)
                     
         except errors.APIError as e:
-            await interaction.followup.send(f"API Error: {str(e)}")
+            error_msg = str(e)
+            if "high demand" in error_msg.lower() or "503" in error_msg:
+                await interaction.followup.send("Gemini is currently experiencing high demand. Please try again later.")
+            else:
+                await interaction.followup.send(f"API Error: {error_msg}")
         except Exception as e:
             await interaction.followup.send(f"An unexpected error occurred: {str(e)}")
 
