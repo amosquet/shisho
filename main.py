@@ -127,11 +127,12 @@ class ShishoBot(commands.Bot):
 
             if self.disconnect_time:
                 duration = discord.utils.utcnow() - self.disconnect_time
-                duration_str = self._format_duration(int(duration.total_seconds()))
-                await owner.send(f"ししょ is back from a service interruption that lasted {duration_str}.")
+                duration_seconds = int(duration.total_seconds())
                 self.disconnect_time = None
-            else:
-                await owner.send("ししょ has reconnected.")
+                
+                if duration_seconds > 5:
+                    duration_str = self._format_duration(duration_seconds)
+                    await owner.send(f"ししょ is back from a service interruption that lasted {duration_str}.")
         except Exception as e:
             print(f"Could not send reconnect message to owner: {e}")
 
