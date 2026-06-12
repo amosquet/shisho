@@ -90,7 +90,7 @@ class BookSelect(discord.ui.Select):
             today = datetime.now().strftime("%Y-%m-%d")
 
             # Add to reading list
-            await readinglist_cog.add_book_to_github(
+            await readinglist_cog.add_book_to_pocketbase(
                 title=title,
                 author=author,
                 status_val=status_val,

@@ -1,5 +1,3 @@
-import base64
-import json
 import os
 from datetime import datetime
 
@@ -7,17 +5,24 @@ import discord
 from discord import app_commands
 import sentry_sdk
 from discord.ext import commands
-from github import Github, GithubException
-
+from pocketbase import PocketBase
 
 class ReadingList(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.github_token = os.getenv("GITHUB_TOKEN")
-        self.repo_name = os.getenv("GITHUB_REPO")
-        self.gh = Github(self.github_token)
+        self.pb_url = os.getenv("POCKETBASE_URL")
+        self.pb_user = os.getenv("POCKETBASE_USER")
+        self.pb_password = os.getenv("POCKETBASE_PASSWORD")
 
-    @app_commands.command(name="addbook", description="Adds a book to the reading list on GitHub.")
+    def get_pb_client(self):
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            raise Exception("PocketBase configuration missing in environment variables.")
+        url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
+        pb = PocketBase(url)
+        pb.admins.auth_with_password(self.pb_user, self.pb_password)
+        return pb
+
+    @app_commands.command(name="addbook", description="Adds a book to the reading list on PocketBase.")
     @app_commands.describe(
         title="Title of the book",
         author="Author of the book",
@@ -56,7 +61,7 @@ class ReadingList(commands.Cog):
         final_end_date = end_date if end_date else (today if status_val == "read" else "")
 
         try:
-            await self.add_book_to_github(title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
+            await self.add_book_to_pocketbase(title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
             )
@@ -64,7 +69,7 @@ class ReadingList(commands.Cog):
             sentry_sdk.capture_exception(e)
             await interaction.followup.send(f"An error occurred: {e}")
 
-    async def add_book_to_github(
+    async def add_book_to_pocketbase(
         self,
         title: str,
         author: str,
@@ -75,96 +80,46 @@ class ReadingList(commands.Cog):
         final_end_date: str
     ):
         isbn = isbn.replace("-", "")
-        if not self.repo_name or not self.github_token:
-            raise Exception("GitHub configuration missing in environment variables.")
 
-        try:
-            repo = self.gh.get_repo(self.repo_name)
-        except GithubException as e:
-            if e.status == 404:
-                raise Exception(f"Repository '{self.repo_name}' not found.")
-            raise e
+        def _add():
+            pb = self.get_pb_client()
+            new_book = {
+                "title": title,
+                "author": author,
+                "status": status_val,
+                "publishDate": publish_date,
+                "isbn": isbn,
+                "startDate": final_start_date,
+                "endDate": final_end_date,
+            }
+            pb.collection("books").create(new_book)
 
-        file_path = "src/data/reading.json"
-        try:
-            def get_contents():
-                return repo.get_contents(file_path)
-            contents = await self.bot.loop.run_in_executor(None, get_contents)
-            
-            if isinstance(contents, list):
-                raise Exception(f"'{file_path}' is a directory.")
-
-            if contents.content is None:
-                raise Exception(f"'{file_path}' has no content.")
-
-            current_data = json.loads(
-                base64.b64decode(contents.content).decode("utf-8")
-            )
-            sha = contents.sha
-            if sha is None:
-                raise Exception(f"Could not retrieve SHA for '{file_path}'.")
-        except GithubException as e:
-            if e.status == 404:
-                current_data = []
-                sha = None
-            else:
-                raise e
-
-        new_book = {
-            "title": title,
-            "author": author,
-            "status": status_val,
-            "startDate": final_start_date,
-            "endDate": final_end_date,
-            "publishDate": publish_date,
-            "isbn": isbn,
-        }
-
-        current_data.insert(0, new_book)
-        updated_content = json.dumps(current_data, indent=2)
-
-        def update_or_create_file():
-            if sha:
-                repo.update_file(
-                    path=file_path,
-                    message=f"Add book: {title} by {author}",
-                    content=updated_content,
-                    sha=sha,
-                )
-            else:
-                repo.create_file(
-                    path=file_path,
-                    message=f"Initialise {file_path} and add book: {title} by {author}",
-                    content=updated_content,
-                )
-        await self.bot.loop.run_in_executor(None, update_or_create_file)
+        await self.bot.loop.run_in_executor(None, _add)
 
     async def fetch_reading_list(self) -> list[dict]:
-        if not self.repo_name or not self.github_token:
-            return []
-
-        try:
-            repo = self.gh.get_repo(self.repo_name)
-        except GithubException:
-            return []
-
-        file_path = "src/data/reading.json"
-        try:
-            def get_contents():
-                return repo.get_contents(file_path)
-            contents = await self.bot.loop.run_in_executor(None, get_contents)
-            
-            if isinstance(contents, list) or contents.content is None:
+        def _fetch():
+            try:
+                if not self.pb_url or not self.pb_user or not self.pb_password:
+                    return []
+                pb = self.get_pb_client()
+                records = pb.collection("books").get_full_list()
+                result = []
+                for r in records:
+                    result.append({
+                        "title": getattr(r, "title", ""),
+                        "author": getattr(r, "author", ""),
+                        "status": getattr(r, "status", ""),
+                        "publishDate": getattr(r, "publishDate", ""),
+                        "isbn": getattr(r, "isbn", ""),
+                        "startDate": getattr(r, "startDate", ""),
+                        "endDate": getattr(r, "endDate", ""),
+                    })
+                return result
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
                 return []
 
-            return json.loads(
-                base64.b64decode(contents.content).decode("utf-8")
-            )
-        except Exception:
-            return []
-
-
-
+        return await self.bot.loop.run_in_executor(None, _fetch)
 
 async def setup(bot):
     await bot.add_cog(ReadingList(bot))

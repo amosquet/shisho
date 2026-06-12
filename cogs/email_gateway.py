@@ -211,7 +211,7 @@ class EmailGateway(commands.Cog):
                     start_date = today if status in ["read", "reading"] else ""
                     end_date = today if status == "read" else ""
                     
-                    await reading_cog.add_book_to_github(
+                    await reading_cog.add_book_to_pocketbase(
                         title.strip(), 
                         author.strip(), 
                         status, 

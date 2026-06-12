@@ -9,21 +9,29 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import sentry_sdk
-from github import Github, GithubException
 
 NOTIFIED_BOOKS_FILE = "notified_books.json"
 
 class AuthorTracking(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.github_token = os.getenv("GITHUB_TOKEN")
-        self.repo_name = os.getenv("GITHUB_REPO")
+        self.pb_url = os.getenv("POCKETBASE_URL")
+        self.pb_user = os.getenv("POCKETBASE_USER")
+        self.pb_password = os.getenv("POCKETBASE_PASSWORD")
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
         self.owner_id = int(os.getenv("OWNER_ID", "0"))
         
-        if self.github_token and self.repo_name and self.google_books_api_key and self.owner_id:
-            self.gh = Github(self.github_token)
+        if self.pb_url and self.pb_user and self.pb_password and self.google_books_api_key and self.owner_id:
             self.check_new_releases.start()
+
+    def get_pb_client(self):
+        from pocketbase import PocketBase
+        if not self.pb_url or not self.pb_user or not self.pb_password:
+            raise Exception("PocketBase configuration missing in environment variables.")
+        url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
+        pb = PocketBase(url)
+        pb.admins.auth_with_password(self.pb_user, self.pb_password)
+        return pb
 
     def cog_unload(self):
         self.check_new_releases.cancel()
@@ -46,34 +54,22 @@ class AuthorTracking(commands.Cog):
             print(f"Failed to save {NOTIFIED_BOOKS_FILE}: {e}")
 
     async def get_unique_authors(self) -> set:
-        if not self.repo_name or not self.github_token:
+        if not self.pb_url or not self.pb_user or not self.pb_password:
             return set()
 
         try:
-            repo = self.gh.get_repo(self.repo_name)
-            file_path = "src/data/reading.json"
-
-            def get_contents():
-                return repo.get_contents(file_path)
+            def _fetch():
+                pb = self.get_pb_client()
+                return pb.collection("books").get_full_list()
             
-            contents = await self.bot.loop.run_in_executor(None, get_contents)
+            records = await self.bot.loop.run_in_executor(None, _fetch)
             
-            if isinstance(contents, list) or contents.content is None:
-                return set()
-
-            data = json.loads(base64.b64decode(contents.content).decode("utf-8"))
             authors = set()
-            for book in data:
-                author = book.get("author")
+            for record in records:
+                author = getattr(record, "author", "")
                 if author:
-                    # Basic split to handle "Author 1, Author 2" or "Author 1 and Author 2" loosely,
-                    # but simple string is safer to start.
                     authors.add(author.strip())
             return authors
-        except GithubException as e:
-            if e.status != 404:
-                sentry_sdk.capture_exception(e)
-            return set()
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return set()
