@@ -9,6 +9,8 @@ import discord
 from discord.ext import commands
 import sentry_sdk
 from pocketbase import PocketBase
+import smtplib
+from email.message import EmailMessage
 
 class API(commands.Cog):
     def __init__(self, bot):
@@ -19,6 +21,9 @@ class API(commands.Cog):
         self.app.add_routes([
             aiohttp.web.post('/api/auth/request-pin', self.handle_request_pin),
             aiohttp.web.post('/api/auth/verify-pin', self.handle_verify_pin),
+            
+            aiohttp.web.post('/api/auth/request-email-link', self.handle_request_email_link),
+            aiohttp.web.post('/api/auth/verify-email-link', self.handle_verify_email_link),
             
             aiohttp.web.get('/api/users/me', self.handle_get_me),
             aiohttp.web.patch('/api/users/me/preferences', self.handle_patch_preferences),
@@ -43,11 +48,17 @@ class API(commands.Cog):
         self.site = None
         
         self.pending_pins = {}
+        self.pending_email_pins = {}
         self.active_tokens = {}
         
         self.pb_url = os.getenv("POCKETBASE_URL")
         self.pb_user = os.getenv("POCKETBASE_USER")
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
+        
+        self.email_smtp_host = os.getenv("EMAIL_SMTP_HOST")
+        self.email_smtp_port = int(os.getenv("EMAIL_SMTP_PORT", 465))
+        self.email_user = os.getenv("EMAIL_USER")
+        self.email_pass = os.getenv("EMAIL_PASS")
 
     def _get_pb(self):
         pb = PocketBase(self.pb_url or "")
@@ -155,6 +166,93 @@ class API(commands.Cog):
                 "record": {
                     "id": str(discord_id)
                 }
+            })
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": str(e)}, status=500)
+
+    async def handle_request_email_link(self, request: aiohttp.web.Request):
+        user_id = await self._get_user_id(request)
+        if not user_id:
+            return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
+            
+        try:
+            data = await request.json()
+            email_address = data.get('email')
+            if not email_address:
+                return aiohttp.web.json_response({"error": "Missing email"}, status=400)
+                
+            pin = f"{random.randint(100000, 999999)}"
+            self.pending_email_pins[user_id] = {
+                "pin": pin,
+                "email": email_address,
+                "expires_at": time.time() + 300 # 5 minutes
+            }
+            
+            def _send_email():
+                if not self.email_user or not self.email_pass:
+                    print("Email credentials not configured.")
+                    return
+                msg = EmailMessage()
+                msg.set_content(f"Your Shisho email verification PIN is: {pin}. This PIN expires in 5 minutes.")
+                msg["Subject"] = "Shisho Email Verification"
+                msg["From"] = self.email_user
+                msg["To"] = email_address
+                
+                try:
+                    server = smtplib.SMTP_SSL(self.email_smtp_host, self.email_smtp_port)
+                    server.login(self.email_user, self.email_pass)
+                    server.send_message(msg)
+                    server.quit()
+                except Exception as e:
+                    print(f"Failed to send email link pin: {e}")
+
+            await self.bot.loop.run_in_executor(None, _send_email)
+            return aiohttp.web.json_response({"message": "PIN sent via email"})
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": str(e)}, status=500)
+
+    async def handle_verify_email_link(self, request: aiohttp.web.Request):
+        user_id = await self._get_user_id(request)
+        if not user_id:
+            return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
+            
+        try:
+            data = await request.json()
+            pin = data.get('pin')
+            
+            if not pin:
+                return aiohttp.web.json_response({"error": "Missing pin"}, status=400)
+                
+            pending = self.pending_email_pins.get(user_id)
+            if not pending:
+                return aiohttp.web.json_response({"error": "No pending PIN found"}, status=400)
+                
+            if time.time() > pending["expires_at"]:
+                del self.pending_email_pins[user_id]
+                return aiohttp.web.json_response({"error": "PIN expired"}, status=400)
+                
+            if pending["pin"] != pin:
+                return aiohttp.web.json_response({"error": "Invalid PIN"}, status=400)
+                
+            # PIN verified
+            email_address = pending["email"]
+            del self.pending_email_pins[user_id]
+            
+            def _link_email():
+                pb = self._get_pb()
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if records:
+                    pb.collection("shisho_users").update(records[0].id, {"email": email_address})
+                else:
+                    raise Exception("User not found in pocketbase")
+            
+            await self.bot.loop.run_in_executor(None, _link_email)
+            
+            return aiohttp.web.json_response({
+                "message": "Email linked successfully",
+                "email": email_address
             })
         except Exception as e:
             sentry_sdk.capture_exception(e)
