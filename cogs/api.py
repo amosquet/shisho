@@ -296,10 +296,19 @@ class API(commands.Cog):
                             val = rec.get(field_name)
                         return val if val is not None else default
 
+                    prefs = get_field(record, "preferences", {})
+                    if isinstance(prefs, str):
+                        try:
+                            prefs = json.loads(prefs)
+                        except Exception:
+                            prefs = {}
+                    if not isinstance(prefs, dict):
+                        prefs = {}
+
                     return {
                         "discord_id": get_field(record, "discord_id"),
                         "email": get_field(record, "email", ""),
-                        "preferences": get_field(record, "preferences", {})
+                        "preferences": prefs
                     }
                 return {"discord_id": user_id, "email": "", "preferences": {}}
                 
@@ -322,12 +331,36 @@ class API(commands.Cog):
                 records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
                 if records:
                     record = records[0]
-                    current_prefs = getattr(record, "preferences", None) or record.get("preferences") or {}
+                    current_prefs = getattr(record, "preferences", None)
+                    if current_prefs is None and hasattr(record, "get"):
+                        current_prefs = record.get("preferences")
+                    
+                    if isinstance(current_prefs, str):
+                        try:
+                            current_prefs = json.loads(current_prefs)
+                        except Exception:
+                            current_prefs = {}
+                    
+                    if not isinstance(current_prefs, dict):
+                        current_prefs = {}
+                        
+
                     current_prefs.update(body)
                     updated = pb.collection("shisho_users").update(record.id, {"preferences": current_prefs})
+                    updated_prefs = getattr(updated, "preferences", None)
+                    if updated_prefs is None and hasattr(updated, "get"):
+                        updated_prefs = updated.get("preferences")
+                    if isinstance(updated_prefs, str):
+                        try:
+                            updated_prefs = json.loads(updated_prefs)
+                        except Exception:
+                            updated_prefs = {}
+                    if not isinstance(updated_prefs, dict):
+                        updated_prefs = {}
+
                     return {
                         "discord_id": getattr(updated, "discord_id", None) or updated.get("discord_id"),
-                        "preferences": getattr(updated, "preferences", None) or updated.get("preferences") or {}
+                        "preferences": updated_prefs
                     }
                 return {"error": "User not found"}
                 
