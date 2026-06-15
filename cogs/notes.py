@@ -69,15 +69,36 @@ class Notes(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
+                class MultiFileUpload(FileUpload):
+                    def __init__(self, file_data_list):
+                        self.file_data_list = file_data_list
+                    def get(self, key: str):
+                        return tuple((key, data) for data in self.file_data_list)
+
+                class BodyDict(dict):
+                    def __init__(self, regular_data, file_uploads):
+                        super().__init__(regular_data)
+                        self.regular_data = regular_data
+                        self.file_uploads = file_uploads
+                    def items(self):
+                        for k, v in self.regular_data.items():
+                            yield k, v
+                        for k, v in self.file_uploads.items():
+                            yield k, v
+
                 entry = {
                     "user_id": str(user_id),
                     "text": text,
                     "title": title
                 }
+                
                 if attachments:
-                    entry["attachment"] = [FileUpload((a_name, a_bytes)) for a_name, a_bytes in attachments]
+                    file_uploads = {"attachment": MultiFileUpload(attachments)}
+                    final_entry = BodyDict(entry, file_uploads)
+                else:
+                    final_entry = entry
                     
-                pb.collection("notes").create(entry)
+                pb.collection("notes").create(final_entry)
 
             await self.bot.loop.run_in_executor(None, _add_to_pb)
             return "Note saved successfully!"

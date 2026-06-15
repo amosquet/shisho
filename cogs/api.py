@@ -429,31 +429,64 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
     async def _parse_request_body(self, request: aiohttp.web.Request):
-        from pocketbase.client import FileUpload
+        from pocketbase.models import FileUpload
+        
+        class MultiFileUpload(FileUpload):
+            def __init__(self, file_data_list):
+                self.file_data_list = file_data_list
+
+            def get(self, key: str):
+                return tuple((key, data) for data in self.file_data_list)
+
+        class BodyDict(dict):
+            def __init__(self, regular_data, file_uploads):
+                super().__init__(regular_data)
+                self.regular_data = regular_data
+                self.file_uploads = file_uploads
+
+            def items(self):
+                for k, v in self.regular_data.items():
+                    yield k, v
+                for k, v in self.file_uploads.items():
+                    yield k, v
+
         if request.content_type == 'multipart/form-data':
             reader = await request.multipart()
-            body = {}
+            regular_data = {}
+            file_lists = {}
             while True:
                 part = await reader.next()
                 if part is None:
                     break
                 if part.filename:
-                    val = FileUpload((part.filename, bytes(await part.read())))
+                    if part.name not in file_lists:
+                        file_lists[part.name] = []
+                    file_lists[part.name].append((part.filename, bytes(await part.read())))
                 else:
                     val = await part.text()
-                    
-                if part.name in body:
-                    if not isinstance(body[part.name], list):
-                        body[part.name] = [body[part.name]]
-                    body[part.name].append(val)
-                else:
-                    body[part.name] = val
+                    if part.name in regular_data:
+                        if not isinstance(regular_data[part.name], list):
+                            regular_data[part.name] = [regular_data[part.name]]
+                        regular_data[part.name].append(val)
+                    else:
+                        regular_data[part.name] = val
             
-            if "archived" in body:
-                body["archived"] = str(body["archived"]).lower() == "true"
-            return body
+            if "archived" in regular_data:
+                regular_data["archived"] = str(regular_data["archived"]).lower() == "true"
+                
+            if "attachment" in regular_data and (regular_data["attachment"] == "" or regular_data["attachment"] == "[]"):
+                del regular_data["attachment"]
+                
+            file_uploads = {}
+            for k, f_list in file_lists.items():
+                file_uploads[k] = MultiFileUpload(f_list)
+                
+            return BodyDict(regular_data, file_uploads)
         else:
-            return await request.json()
+            body = await request.json()
+            if body.get("attachment") == "" or body.get("attachment") == []:
+                del body["attachment"]
+            return body
 
     async def _handle_post_collection(self, request: aiohttp.web.Request, collection_name: str):
         user_id = await self._get_user_id(request)
