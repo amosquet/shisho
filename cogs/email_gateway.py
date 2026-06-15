@@ -281,6 +281,8 @@ class EmailGateway(commands.Cog):
                                     print(f"Failed to download attachment for email: {e}")
                             if note['created']:
                                 response += f"(Saved on {note['created']})\n"
+                            if note.get('updated') and note.get('updated') != note.get('created'):
+                                response += f"(Updated on {note['updated']})\n"
                         else:
                             response = "**Your Recent Notes:**\n\n"
                             for idx, note in enumerate(reversed(notes), 1):
@@ -291,6 +293,8 @@ class EmailGateway(commands.Cog):
                                     if not title:
                                         title = "Untitled Note"
                                 date_str = f" (Saved on {note['created']})" if note['created'] else ""
+                                if note.get('updated') and note.get('updated') != note.get('created'):
+                                    date_str += f" (Updated on {note['updated']})"
                                 response += f"{idx}. {title}{date_str}\n"
                 else:
                     response = "There was an error with the command."

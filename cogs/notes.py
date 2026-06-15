@@ -98,36 +98,53 @@ class Notes(commands.Cog):
                 query_params = {"sort": "-id"}
                 if filter_str:
                     query_params["filter"] = filter_str
-                
-                # Fetch recent notes
-                records = pb.collection("notes").get_list(1, limit, query_params=query_params)
+                records = pb.collection("notes").get_full_list()
                 
                 results = []
-                for record in records.items:
-                    # Depending on PB SDK version, created might be accessed via dict or attribute
-                    created_val = getattr(record, "created", "")
-                    if not created_val and hasattr(record, "get"):
-                        created_val = record.get("created", "")
+                for record in records:
+                    record_user_id = getattr(record, "user_id", "") or (record.get("user_id", "") if hasattr(record, "get") else "")
+                    if record_user_id == user_id:
+                        if query:
+                            title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "")
+                            text = getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else "")
+                            if query.lower() not in title.lower() and query.lower() not in text.lower():
+                                continue
+
+                        created_val = getattr(record, "created", "")
+                        if not created_val and hasattr(record, "get"):
+                            created_val = record.get("created", "")
+                            
+                        updated_val = getattr(record, "updated", "")
+                        if not updated_val and hasattr(record, "get"):
+                            updated_val = record.get("updated", "")
+                            
+                        note = {
+                            "id": record.id,
+                            "title": getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else ""),
+                            "text": getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else ""),
+                            "created": created_val,
+                            "updated": updated_val,
+                            "attachment_filename": "",
+                            "attachment_url": "",
+                            "file_token": ""
+                        }
                         
-                    note = {
-                        "id": record.id,
-                        "title": getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else ""),
-                        "text": getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else ""),
-                        "created": created_val,
-                        "attachment_filename": "",
-                        "attachment_url": "",
-                        "file_token": ""
-                    }
-                    
-                    attachment = getattr(record, "attachment", "")
-                    if attachment:
-                        note["attachment_filename"] = attachment
-                        # Construct URL manually to be safe against SDK differences
-                        note["attachment_url"] = f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{attachment}"
-                        note["file_token"] = pb.auth_store.token
-                        
-                    results.append(note)
-                return results
+                        attachment = getattr(record, "attachment", "") or (record.get("attachment", "") if hasattr(record, "get") else "")
+                        if attachment:
+                            note["attachment_filename"] = attachment
+                            note["attachment_url"] = f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{attachment}"
+                            note["file_token"] = pb.auth_store.token
+                            
+                        results.append(note)
+                
+                def sort_key(n):
+                    updated = n.get("updated", "")
+                    created = n.get("created", "")
+                    has_updates = 1 if updated and updated != created else 0
+                    return (has_updates, updated)
+                
+                results.sort(key=sort_key, reverse=True)
+                return results[:limit]
 
             notes = await self.bot.loop.run_in_executor(None, _get_from_pb)
             return notes
@@ -180,6 +197,8 @@ class Notes(commands.Cog):
             if note["text"]:
                 msg += f"{note['text']}\n"
             date_str = f"*Saved on {note['created']}*" if note['created'] else ""
+            if note.get('updated') and note.get('updated') != note.get('created'):
+                date_str += f" *(Updated on {note['updated']})*"
             msg += f"{date_str}"
 
             file_attachment = discord.utils.MISSING
@@ -212,6 +231,8 @@ class Notes(commands.Cog):
                         title = "Untitled Note"
                 
                 date_str = f" (*{note['created']}*)" if note['created'] else ""
+                if note.get('updated') and note.get('updated') != note.get('created'):
+                    date_str += f" (*Updated {note['updated']}*)"
                 msg += f"{idx}. **{title}**{date_str}\n"
             
             await interaction.followup.send(msg)
