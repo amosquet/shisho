@@ -438,7 +438,7 @@ class API(commands.Cog):
                 if part is None:
                     break
                 if part.filename:
-                    val = FileUpload((part.filename, await part.read()))
+                    val = FileUpload((part.filename, bytes(await part.read())))
                 else:
                     val = await part.text()
                     
