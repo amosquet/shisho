@@ -428,13 +428,40 @@ class API(commands.Cog):
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
+    async def _parse_request_body(self, request: aiohttp.web.Request):
+        from pocketbase.client import FileUpload
+        if request.content_type == 'multipart/form-data':
+            reader = await request.multipart()
+            body = {}
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.filename:
+                    val = FileUpload((part.filename, await part.read()))
+                else:
+                    val = await part.text()
+                    
+                if part.name in body:
+                    if not isinstance(body[part.name], list):
+                        body[part.name] = [body[part.name]]
+                    body[part.name].append(val)
+                else:
+                    body[part.name] = val
+            
+            if "archived" in body:
+                body["archived"] = str(body["archived"]).lower() == "true"
+            return body
+        else:
+            return await request.json()
+
     async def _handle_post_collection(self, request: aiohttp.web.Request, collection_name: str):
         user_id = await self._get_user_id(request)
         if not user_id:
             return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
             
         try:
-            body = await request.json()
+            body = await self._parse_request_body(request)
             if collection_name in ["notes", "reminders"]:
                 body["user_id"] = user_id # forcefully associate with this user
                 
@@ -471,7 +498,7 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": "Missing record ID"}, status=400)
             
         try:
-            body = await request.json()
+            body = await self._parse_request_body(request)
             
             def _update():
                 pb = self._get_pb()
@@ -483,9 +510,6 @@ class API(commands.Cog):
                     
                     if "user_id" in body:
                         del body["user_id"] # don't let them change ownership
-                        
-                if body.get("attachment") == "" or body.get("attachment") == []:
-                    del body["attachment"]
                     
                 record = pb.collection(collection_name).update(record_id, body)
                 import datetime
