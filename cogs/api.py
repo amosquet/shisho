@@ -19,6 +19,8 @@ class API(commands.Cog):
         
         # Setup routes matching quick-curie's requests
         self.app.add_routes([
+            aiohttp.web.get('/api/health', self.handle_health),
+            
             aiohttp.web.post('/api/auth/request-pin', self.handle_request_pin),
             aiohttp.web.post('/api/auth/verify-pin', self.handle_verify_pin),
             
@@ -95,6 +97,9 @@ class API(commands.Cog):
             return None
             
         return await self.bot.loop.run_in_executor(None, _lookup)
+
+    async def handle_health(self, request: aiohttp.web.Request):
+        return aiohttp.web.json_response({"status": "ok", "service": "shisho-api"})
 
     async def handle_request_pin(self, request: aiohttp.web.Request):
         try:
