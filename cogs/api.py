@@ -24,6 +24,7 @@ class API(commands.Cog):
             
             aiohttp.web.post('/api/auth/request-email-link', self.handle_request_email_link),
             aiohttp.web.post('/api/auth/verify-email-link', self.handle_verify_email_link),
+            aiohttp.web.post('/api/auth/unlink-email', self.handle_unlink_email),
             
             aiohttp.web.get('/api/users/me', self.handle_get_me),
             aiohttp.web.patch('/api/users/me/preferences', self.handle_patch_preferences),
@@ -258,6 +259,26 @@ class API(commands.Cog):
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
+    async def handle_unlink_email(self, request: aiohttp.web.Request):
+        user_id = await self._get_user_id(request)
+        if not user_id:
+            return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
+            
+        try:
+            def _unlink_email():
+                pb = self._get_pb()
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if records:
+                    pb.collection("shisho_users").update(records[0].id, {"email": ""})
+                else:
+                    raise Exception("User not found in pocketbase")
+            
+            await self.bot.loop.run_in_executor(None, _unlink_email)
+            return aiohttp.web.json_response({"message": "Email unlinked successfully"})
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": str(e)}, status=500)
+
     async def handle_get_me(self, request: aiohttp.web.Request):
         user_id = await self._get_user_id(request)
         if not user_id:
@@ -271,9 +292,10 @@ class API(commands.Cog):
                     record = records[0]
                     return {
                         "discord_id": getattr(record, "discord_id", None) or record.get("discord_id"),
+                        "email": getattr(record, "email", None) or record.get("email") or "",
                         "preferences": getattr(record, "preferences", None) or record.get("preferences") or {}
                     }
-                return {"discord_id": user_id, "preferences": {}}
+                return {"discord_id": user_id, "email": "", "preferences": {}}
                 
             data = await self.bot.loop.run_in_executor(None, _fetch)
             return aiohttp.web.json_response(data)
