@@ -22,9 +22,10 @@ class Notes(commands.Cog):
         self.pb_user = os.getenv("POCKETBASE_USER")
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
 
-    async def add_note(self, user_id: str, text: str = "", title: str = "", attachment_bytes: bytes = None, attachment_filename: str = None) -> str:
+    async def add_note(self, user_id: str, text: str = "", title: str = "", attachments: list = None) -> str:
         try:
-            if not text and attachment_bytes and attachment_filename:
+            if not text and attachments and len(attachments) > 0:
+                attachment_filename, attachment_bytes = attachments[0]
                 mime_type, _ = mimetypes.guess_type(attachment_filename)
                 
                 # Check for Discord's common voice message format as well, which might not be guessed correctly
@@ -73,8 +74,8 @@ class Notes(commands.Cog):
                     "text": text,
                     "title": title
                 }
-                if attachment_bytes and attachment_filename:
-                    entry["attachment"] = FileUpload((attachment_filename, attachment_bytes))
+                if attachments:
+                    entry["attachment"] = [FileUpload((a_name, a_bytes)) for a_name, a_bytes in attachments]
                     
                 pb.collection("notes").create(entry)
 
@@ -124,15 +125,19 @@ class Notes(commands.Cog):
                             "text": getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else ""),
                             "created": created_val,
                             "updated": updated_val,
-                            "attachment_filename": "",
-                            "attachment_url": "",
+                            "attachment_filenames": [],
+                            "attachment_urls": [],
                             "file_token": ""
                         }
                         
                         attachment = getattr(record, "attachment", "") or (record.get("attachment", "") if hasattr(record, "get") else "")
                         if attachment:
-                            note["attachment_filename"] = attachment
-                            note["attachment_url"] = f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{attachment}"
+                            if isinstance(attachment, list):
+                                note["attachment_urls"] = [f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{att}" for att in attachment]
+                                note["attachment_filenames"] = attachment
+                            else:
+                                note["attachment_urls"] = [f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{attachment}"]
+                                note["attachment_filenames"] = [attachment]
                             note["file_token"] = pb.auth_store.token
                             
                         results.append(note)
@@ -156,21 +161,25 @@ class Notes(commands.Cog):
     @app_commands.describe(
         text="The content of your note",
         title="Optional title for the note",
-        attachment="Optional file attachment"
+        attachment="Optional file attachment",
+        attachment2="Optional second file attachment",
+        attachment3="Optional third file attachment",
+        attachment4="Optional fourth file attachment",
+        attachment5="Optional fifth file attachment"
     )
-    async def slash_note(self, interaction: discord.Interaction, text: str = "", title: str = "", attachment: discord.Attachment = None):
+    async def slash_note(self, interaction: discord.Interaction, text: str = "", title: str = "", attachment: discord.Attachment = None, attachment2: discord.Attachment = None, attachment3: discord.Attachment = None, attachment4: discord.Attachment = None, attachment5: discord.Attachment = None):
         await interaction.response.defer(ephemeral=True)
-        if not text and not attachment:
+        
+        atts = []
+        for att in [attachment, attachment2, attachment3, attachment4, attachment5]:
+            if att:
+                atts.append((att.filename, await att.read()))
+
+        if not text and not atts:
             await interaction.followup.send("You must provide either text or an attachment.")
             return
 
-        att_bytes = None
-        att_name = None
-        if attachment:
-            att_bytes = await attachment.read()
-            att_name = attachment.filename
-
-        response = await self.add_note(str(interaction.user.id), text, title, att_bytes, att_name)
+        response = await self.add_note(str(interaction.user.id), text, title, atts)
         await interaction.followup.send(response)
 
     @app_commands.command(name="notes", description="List your recent notes, or view a specific note by name.")
@@ -201,23 +210,25 @@ class Notes(commands.Cog):
                 date_str += f" *(Updated on {note['updated']})*"
             msg += f"{date_str}"
 
-            file_attachment = discord.utils.MISSING
-            if note["attachment_url"]:
+            file_attachments = []
+            if note.get("attachment_urls"):
                 headers = {}
-                if note["file_token"]:
+                if note.get("file_token"):
                     headers["Authorization"] = note["file_token"]
                 
                 try:
                     async with httpx.AsyncClient() as client:
-                        resp = await client.get(note["attachment_url"], headers=headers)
-                        if resp.status_code == 200:
-                            file_attachment = discord.File(io.BytesIO(resp.content), filename=note["attachment_filename"])
+                        for idx, att_url in enumerate(note["attachment_urls"]):
+                            resp = await client.get(att_url, headers=headers)
+                            if resp.status_code == 200:
+                                att_name = note["attachment_filenames"][idx]
+                                file_attachments.append(discord.File(io.BytesIO(resp.content), filename=att_name))
                 except Exception as e:
-                    print(f"Failed to download attachment: {e}")
+                    print(f"Failed to download attachments: {e}")
                     sentry_sdk.capture_exception(e)
 
-            if file_attachment is not discord.utils.MISSING:
-                await interaction.followup.send(content=msg, file=file_attachment)
+            if file_attachments:
+                await interaction.followup.send(content=msg, files=file_attachments)
             else:
                 await interaction.followup.send(content=msg)
         else:

@@ -266,17 +266,17 @@ class EmailGateway(commands.Cog):
                             response += f"Title: {title}\n"
                             if note["text"]:
                                 response += f"{note['text']}\n"
-                            if note["attachment_filename"]:
-                                # Fetch attachment bytes to send with the email
+                            if note.get("attachment_urls"):
                                 headers = {}
-                                if note["file_token"]:
+                                if note.get("file_token"):
                                     headers["Authorization"] = note["file_token"]
                                 try:
                                     import httpx
                                     async with httpx.AsyncClient() as client:
-                                        resp = await client.get(note["attachment_url"], headers=headers)
-                                        if resp.status_code == 200:
-                                            out_attachments.append((note["attachment_filename"], resp.content))
+                                        for idx, att_url in enumerate(note["attachment_urls"]):
+                                            resp = await client.get(att_url, headers=headers)
+                                            if resp.status_code == 200:
+                                                out_attachments.append((note["attachment_filenames"][idx], resp.content))
                                 except Exception as e:
                                     print(f"Failed to download attachment for email: {e}")
                             if note['created']:
@@ -307,15 +307,10 @@ class EmailGateway(commands.Cog):
                     text = args
                     title = subject if subject else ""
                     
-                    att_bytes = None
-                    att_name = None
-                    if attachments and len(attachments) > 0:
-                        att_name, att_bytes = attachments[0] # Only take first attachment for now
-                    
-                    if not text and not att_bytes:
+                    if not text and not attachments:
                         response = "You must provide either text or an attachment for the note."
                     else:
-                        response = await notes_cog.add_note(owner_id, text, title, att_bytes, att_name)
+                        response = await notes_cog.add_note(owner_id, text, title, attachments)
                 else:
                     response = "There was an error with the command."
             else:

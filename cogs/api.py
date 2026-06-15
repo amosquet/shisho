@@ -405,7 +405,7 @@ class API(commands.Cog):
             if collection_name in ["notes", "reminders"]:
                 body["user_id"] = user_id # forcefully associate with this user
                 
-            if body.get("attachment") == "":
+            if body.get("attachment") == "" or body.get("attachment") == []:
                 del body["attachment"]
             
             def _create():
@@ -451,7 +451,7 @@ class API(commands.Cog):
                     if "user_id" in body:
                         del body["user_id"] # don't let them change ownership
                         
-                if body.get("attachment") == "":
+                if body.get("attachment") == "" or body.get("attachment") == []:
                     del body["attachment"]
                     
                 record = pb.collection(collection_name).update(record_id, body)
