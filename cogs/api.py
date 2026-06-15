@@ -290,10 +290,16 @@ class API(commands.Cog):
                 records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
                 if records:
                     record = records[0]
+                    def get_field(rec, field_name, default=None):
+                        val = getattr(rec, field_name, None)
+                        if val is None and hasattr(rec, "get"):
+                            val = rec.get(field_name)
+                        return val if val is not None else default
+
                     return {
-                        "discord_id": getattr(record, "discord_id", None) or record.get("discord_id"),
-                        "email": getattr(record, "email", None) or record.get("email") or "",
-                        "preferences": getattr(record, "preferences", None) or record.get("preferences") or {}
+                        "discord_id": get_field(record, "discord_id"),
+                        "email": get_field(record, "email", ""),
+                        "preferences": get_field(record, "preferences", {})
                     }
                 return {"discord_id": user_id, "email": "", "preferences": {}}
                 
