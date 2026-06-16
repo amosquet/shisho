@@ -53,6 +53,7 @@ class API(commands.Cog):
         self.pending_pins = {}
         self.pending_email_pins = {}
         self.active_tokens = {}
+        self.rate_limits = {}
         
         self.pb_url = os.getenv("POCKETBASE_URL")
         self.pb_user = os.getenv("POCKETBASE_USER")
@@ -98,10 +99,31 @@ class API(commands.Cog):
             
         return await self.bot.loop.run_in_executor(None, _lookup)
 
+    def _check_rate_limit(self, request: aiohttp.web.Request, limit: int = 5, window: int = 300) -> bool:
+        ip = request.headers.get('X-Forwarded-For', request.remote)
+        if ip:
+            ip = ip.split(',')[0].strip()
+        else:
+            ip = "unknown"
+            
+        now = time.time()
+        
+        # Clean up old entries
+        self.rate_limits[ip] = [t for t in self.rate_limits.get(ip, []) if now - t < window]
+        
+        if len(self.rate_limits[ip]) >= limit:
+            return False
+            
+        self.rate_limits[ip].append(now)
+        return True
+
     async def handle_health(self, request: aiohttp.web.Request):
         return aiohttp.web.json_response({"status": "ok", "service": "shisho-api"})
 
     async def handle_request_pin(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request):
+            return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
+            
         try:
             data = await request.json()
             discord_id = data.get('discord_id')
@@ -113,10 +135,11 @@ class API(commands.Cog):
             except Exception:
                 return aiohttp.web.json_response({"error": "Invalid discord_id or bot cannot access user"}, status=400)
                 
-            pin = f"{random.randint(100000, 999999)}"
+            pin = f"{100000 + secrets.randbelow(900000)}"
             self.pending_pins[discord_id] = {
                 "pin": pin,
-                "expires_at": time.time() + 300 # 5 minutes
+                "expires_at": time.time() + 300, # 5 minutes
+                "attempts": 0
             }
             
             await user.send(f"Your Shisho login PIN is: **{pin}**. This PIN expires in 5 minutes.")
@@ -126,6 +149,9 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
     async def handle_verify_pin(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request):
+            return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
+            
         try:
             data = await request.json()
             discord_id = data.get('discord_id')
@@ -143,6 +169,10 @@ class API(commands.Cog):
                 return aiohttp.web.json_response({"error": "PIN expired"}, status=400)
                 
             if pending["pin"] != pin:
+                pending["attempts"] = pending.get("attempts", 0) + 1
+                if pending["attempts"] >= 5:
+                    del self.pending_pins[discord_id]
+                    return aiohttp.web.json_response({"error": "Too many failed attempts. PIN invalidated."}, status=400)
                 return aiohttp.web.json_response({"error": "Invalid PIN"}, status=400)
                 
             # PIN verified!
@@ -178,6 +208,9 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
     async def handle_request_email_link(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request):
+            return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
+            
         user_id = await self._get_user_id(request)
         if not user_id:
             return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
@@ -188,11 +221,12 @@ class API(commands.Cog):
             if not email_address:
                 return aiohttp.web.json_response({"error": "Missing email"}, status=400)
                 
-            pin = f"{random.randint(100000, 999999)}"
+            pin = f"{100000 + secrets.randbelow(900000)}"
             self.pending_email_pins[user_id] = {
                 "pin": pin,
                 "email": email_address,
-                "expires_at": time.time() + 300 # 5 minutes
+                "expires_at": time.time() + 300, # 5 minutes
+                "attempts": 0
             }
             
             def _send_email():
@@ -220,6 +254,9 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": str(e)}, status=500)
 
     async def handle_verify_email_link(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request):
+            return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
+            
         user_id = await self._get_user_id(request)
         if not user_id:
             return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
@@ -240,6 +277,10 @@ class API(commands.Cog):
                 return aiohttp.web.json_response({"error": "PIN expired"}, status=400)
                 
             if pending["pin"] != pin:
+                pending["attempts"] = pending.get("attempts", 0) + 1
+                if pending["attempts"] >= 5:
+                    del self.pending_email_pins[user_id]
+                    return aiohttp.web.json_response({"error": "Too many failed attempts. PIN invalidated."}, status=400)
                 return aiohttp.web.json_response({"error": "Invalid PIN"}, status=400)
                 
             # PIN verified
