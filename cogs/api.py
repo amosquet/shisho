@@ -45,6 +45,8 @@ class API(commands.Cog):
             aiohttp.web.patch('/api/collections/reminders/records/{id}', self.handle_patch_reminder),
             aiohttp.web.delete('/api/collections/reminders/records/{id}', self.handle_delete_record),
             
+            aiohttp.web.get('/api/announcements', self.handle_get_announcements),
+            
             aiohttp.web.get('/api/files/{collection}/{record_id}/{filename}', self.handle_get_file)
         ])
         self.runner = None
@@ -645,6 +647,17 @@ class API(commands.Cog):
     async def handle_get_reminders(self, request: aiohttp.web.Request): return await self._handle_get_collection(request, "reminders")
     async def handle_post_reminder(self, request: aiohttp.web.Request): return await self._handle_post_collection(request, "reminders")
     async def handle_patch_reminder(self, request: aiohttp.web.Request): return await self._handle_patch_collection(request, "reminders")
+
+    async def handle_get_announcements(self, request: aiohttp.web.Request):
+        try:
+            if os.path.exists("announcements.json"):
+                with open("announcements.json", "r") as f:
+                    data = json.load(f)
+                    return aiohttp.web.json_response(data)
+            return aiohttp.web.json_response([])
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": str(e)}, status=500)
 
     async def handle_get_file(self, request: aiohttp.web.Request):
         collection = request.match_info.get('collection')
