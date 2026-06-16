@@ -473,24 +473,6 @@ class API(commands.Cog):
                 for k, v in self.file_uploads.items():
                     yield k, v
 
-            def get(self, key, default=None):
-                if key in self.regular_data:
-                    return self.regular_data[key]
-                if key in self.file_uploads:
-                    return self.file_uploads[key]
-                return super().get(key, default)
-
-            def __setitem__(self, key, value):
-                super().__setitem__(key, value)
-                self.regular_data[key] = value
-
-            def __delitem__(self, key):
-                super().__delitem__(key)
-                if key in self.regular_data:
-                    del self.regular_data[key]
-                if key in self.file_uploads:
-                    del self.file_uploads[key]
-
         if request.content_type == 'multipart/form-data':
             reader = await request.multipart()
             regular_data = {}
