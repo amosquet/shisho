@@ -68,6 +68,13 @@ class API(commands.Cog):
         pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
         return pb
 
+    @staticmethod
+    def _sanitize_pb_value(value: str) -> str:
+        """Sanitize a value for use in PocketBase filter strings to prevent injection."""
+        if value is None:
+            return ""
+        return str(value).replace("\\", "").replace("'", "")
+
     async def cog_load(self):
         self.runner = aiohttp.web.AppRunner(self.app)
         await self.runner.setup()
@@ -84,11 +91,16 @@ class API(commands.Cog):
         if not auth_header or not auth_header.startswith('Bearer '):
             return None
         token = auth_header.split(' ')[1]
+
+        # Validate token format (hex only from secrets.token_hex) to prevent filter injection
+        if not all(c in '0123456789abcdef' for c in token):
+            return None
         
         def _lookup():
             pb = self._get_pb()
             try:
-                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"session_token='{token}'"})
+                safe_token = self._sanitize_pb_value(token)
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"session_token='{safe_token}'"})
                 if records:
                     # In python SDK, record fields are attributes or dictionary keys
                     return getattr(records[0], "discord_id", None) or records[0].get("discord_id")
@@ -113,7 +125,7 @@ class API(commands.Cog):
             except Exception:
                 return aiohttp.web.json_response({"error": "Invalid discord_id or bot cannot access user"}, status=400)
                 
-            pin = f"{random.randint(100000, 999999)}"
+            pin = f"{secrets.randbelow(900000) + 100000}"
             self.pending_pins[discord_id] = {
                 "pin": pin,
                 "expires_at": time.time() + 300 # 5 minutes
@@ -154,7 +166,8 @@ class API(commands.Cog):
             def _save_session():
                 pb = self._get_pb()
                 try:
-                    records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
+                    safe_id = self._sanitize_pb_value(discord_id)
+                    records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{safe_id}'"})
                     if records:
                         pb.collection("shisho_users").update(records[0].id, {"session_token": token})
                     else:
@@ -188,7 +201,7 @@ class API(commands.Cog):
             if not email_address:
                 return aiohttp.web.json_response({"error": "Missing email"}, status=400)
                 
-            pin = f"{random.randint(100000, 999999)}"
+            pin = f"{secrets.randbelow(900000) + 100000}"
             self.pending_email_pins[user_id] = {
                 "pin": pin,
                 "email": email_address,
@@ -248,7 +261,8 @@ class API(commands.Cog):
             
             def _link_email():
                 pb = self._get_pb()
-                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                safe_id = self._sanitize_pb_value(user_id)
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{safe_id}'"})
                 if records:
                     pb.collection("shisho_users").update(records[0].id, {"email": email_address})
                 else:
@@ -272,7 +286,8 @@ class API(commands.Cog):
         try:
             def _unlink_email():
                 pb = self._get_pb()
-                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                safe_id = self._sanitize_pb_value(user_id)
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{safe_id}'"})
                 if records:
                     pb.collection("shisho_users").update(records[0].id, {"email": ""})
                 else:
@@ -292,7 +307,8 @@ class API(commands.Cog):
         try:
             def _fetch():
                 pb = self._get_pb()
-                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                safe_id = self._sanitize_pb_value(user_id)
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{safe_id}'"})
                 if records:
                     record = records[0]
                     def get_field(rec, field_name, default=None):
@@ -333,7 +349,8 @@ class API(commands.Cog):
             
             def _update():
                 pb = self._get_pb()
-                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                safe_id = self._sanitize_pb_value(user_id)
+                records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{safe_id}'"})
                 if records:
                     record = records[0]
                     current_prefs = getattr(record, "preferences", None)
@@ -387,7 +404,8 @@ class API(commands.Cog):
                 pb = self._get_pb()
                 query_params = {}
                 if collection_name in ["notes", "reminders"]:
-                    query_params["filter"] = f"user_id='{user_id}'"
+                    safe_id = self._sanitize_pb_value(user_id)
+                    query_params["filter"] = f"user_id='{safe_id}'"
                 
                 records = pb.collection(collection_name).get_full_list(query_params=query_params)
                 
@@ -454,6 +472,24 @@ class API(commands.Cog):
                     yield k, v
                 for k, v in self.file_uploads.items():
                     yield k, v
+
+            def get(self, key, default=None):
+                if key in self.regular_data:
+                    return self.regular_data[key]
+                if key in self.file_uploads:
+                    return self.file_uploads[key]
+                return super().get(key, default)
+
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                self.regular_data[key] = value
+
+            def __delitem__(self, key):
+                super().__delitem__(key)
+                if key in self.regular_data:
+                    del self.regular_data[key]
+                if key in self.file_uploads:
+                    del self.file_uploads[key]
 
         if request.content_type == 'multipart/form-data':
             reader = await request.multipart()
@@ -606,16 +642,34 @@ class API(commands.Cog):
     async def handle_patch_reminder(self, request: aiohttp.web.Request): return await self._handle_patch_collection(request, "reminders")
 
     async def handle_get_file(self, request: aiohttp.web.Request):
+        user_id = await self._get_user_id(request)
+        if not user_id:
+            return aiohttp.web.json_response({"error": "Unauthorized"}, status=401)
+
         collection = request.match_info.get('collection')
         record_id = request.match_info.get('record_id')
         filename = request.match_info.get('filename')
-        
+
         query_string = request.query_string
         target_url = f"{self.pb_url}/api/files/{collection}/{record_id}/{filename}"
         if query_string:
             target_url += f"?{query_string}"
-            
-        raise aiohttp.web.HTTPFound(target_url)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(target_url) as resp:
+                    if resp.status != 200:
+                        return aiohttp.web.json_response(
+                            {"error": "File not found"}, status=resp.status
+                        )
+                    content = await resp.read()
+                    return aiohttp.web.Response(
+                        body=content,
+                        content_type=resp.content_type or 'application/octet-stream'
+                    )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": "Failed to retrieve file"}, status=500)
 
 async def setup(bot):
     await bot.add_cog(API(bot))
