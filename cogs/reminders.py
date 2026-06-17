@@ -211,6 +211,16 @@ class Reminders(commands.Cog):
                 # Can't notify if no linked discord ID
                 continue
                 
+            preferences = getattr(user_record, "preferences", {})
+            general_prefs = preferences.get("general", {}) if isinstance(preferences, dict) else {}
+            send_reminders_to_discord = general_prefs.get("send_reminders_to_discord", False)
+            
+            if not send_reminders_to_discord:
+                # User opted out of Discord reminders
+                # Still mark as sent to avoid queue building up? Yes
+                pb.collection("reminders").update(record.id, {"is_sent": True})
+                continue
+                
             user_id = int(discord_id_str)
             text = getattr(record, "reminder_text", "")
             record_id = record.id
