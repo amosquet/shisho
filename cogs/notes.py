@@ -239,8 +239,7 @@ class Notes(commands.Cog):
             
             msg = f"**{title}**\n"
             if note["text"]:
-                text_content = re.sub(r'(?<!<)(https?://[^\s>]+)(?!>)', r'<\1>', note["text"])
-                msg += f"{text_content}\n"
+                msg += f"{note['text']}\n"
 
             file_attachments = []
             if note.get("attachment_urls"):
@@ -260,9 +259,9 @@ class Notes(commands.Cog):
                     sentry_sdk.capture_exception(e)
 
             if file_attachments:
-                await interaction.followup.send(content=msg, files=file_attachments)
+                await interaction.followup.send(content=msg, files=file_attachments, suppress_embeds=True)
             else:
-                await interaction.followup.send(content=msg)
+                await interaction.followup.send(content=msg, suppress_embeds=True)
         else:
             msg = "**Your Recent Notes:**\n\n"
             for idx, note in enumerate(reversed(notes), 1):
@@ -275,7 +274,7 @@ class Notes(commands.Cog):
                 
                 msg += f"{idx}. **{title}**\n"
             
-            await interaction.followup.send(msg)
+            await interaction.followup.send(content=msg, suppress_embeds=True)
 
 async def setup(bot):
     await bot.add_cog(Notes(bot))
