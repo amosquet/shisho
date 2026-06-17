@@ -6,6 +6,7 @@ from discord import app_commands
 import sentry_sdk
 from discord.ext import commands
 from pocketbase import PocketBase
+from pocketbase.client import FileUpload
 
 class ReadingList(commands.Cog):
     def __init__(self, bot):
@@ -30,7 +31,8 @@ class ReadingList(commands.Cog):
         isbn="ISBN of the book",
         status="Status of the book",
         start_date="Start reading date (YYYY-MM-DD)",
-        end_date="Finished reading date (YYYY-MM-DD)"
+        end_date="Finished reading date (YYYY-MM-DD)",
+        cover_image="Optional cover image for the book"
     )
     @app_commands.choices(status=[
         app_commands.Choice(name="Planned", value="planned"),
@@ -48,6 +50,7 @@ class ReadingList(commands.Cog):
         status: app_commands.Choice[str],
         start_date: str | None = None,
         end_date: str | None = None,
+        cover_image: discord.Attachment = None,
     ):
         await interaction.response.defer()
         status_val = status.value
@@ -60,8 +63,14 @@ class ReadingList(commands.Cog):
         )
         final_end_date = end_date if end_date else (today if status_val == "read" else "")
 
+        cover_filename = None
+        cover_data = None
+        if cover_image:
+            cover_filename = cover_image.filename
+            cover_data = await cover_image.read()
+
         try:
-            await self.add_book_to_pocketbase(str(interaction.user.id), title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
+            await self.add_book_to_pocketbase(str(interaction.user.id), title, author, status_val, publish_date, isbn, final_start_date, final_end_date, cover_filename, cover_data)
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
             )
@@ -78,7 +87,9 @@ class ReadingList(commands.Cog):
         publish_date: str,
         isbn: str,
         final_start_date: str,
-        final_end_date: str
+        final_end_date: str,
+        cover_filename: str = None,
+        cover_data: bytes = None
     ):
         isbn = isbn.replace("-", "")
 
@@ -99,7 +110,24 @@ class ReadingList(commands.Cog):
                 "startDate": final_start_date,
                 "endDate": final_end_date,
             }
-            pb.collection("shisho_books").create(new_book)
+            
+            if cover_filename and cover_data:
+                class BodyDict(dict):
+                    def __init__(self, regular_data, file_uploads):
+                        super().__init__(regular_data)
+                        self.regular_data = regular_data
+                        self.file_uploads = file_uploads
+                    def items(self):
+                        for k, v in self.regular_data.items():
+                            yield k, v
+                        for k, v in self.file_uploads.items():
+                            yield k, v
+                file_uploads = {"cover": FileUpload((cover_filename, cover_data))}
+                final_entry = BodyDict(new_book, file_uploads)
+            else:
+                final_entry = new_book
+                
+            pb.collection("shisho_books").create(final_entry)
 
         await self.bot.loop.run_in_executor(None, _add)
 
