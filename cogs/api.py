@@ -67,11 +67,11 @@ class API(commands.Cog):
             await self.runner.cleanup()
 
     def _check_rate_limit(self, request: aiohttp.web.Request, limit: int = 5, window: int = 300) -> bool:
-        ip = request.headers.get('X-Forwarded-For', request.remote)
-        if ip:
-            ip = ip.split(',')[0].strip()
-        else:
-            ip = "unknown"
+        # Prefer CF-Connecting-IP (set by Cloudflare, cannot be spoofed by clients)
+        ip = request.headers.get('CF-Connecting-IP') \
+            or request.headers.get('X-Forwarded-For', '').split(',')[0].strip() \
+            or request.remote \
+            or "unknown"
         now = time.time()
         self.rate_limits[ip] = [t for t in self.rate_limits.get(ip, []) if now - t < window]
         if len(self.rate_limits[ip]) >= limit:
