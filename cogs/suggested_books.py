@@ -92,7 +92,7 @@ class SuggestedBooks(commands.Cog):
 
         def add_to_pocketbase():
             pb = PocketBase(self.pb_url or "")
-            pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
 
             entry = {
                 "title": title,
@@ -129,7 +129,7 @@ class SuggestedBooks(commands.Cog):
 
         def get_from_pocketbase():
             pb = PocketBase(self.pb_url or "")
-            pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
             return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
 
         result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)

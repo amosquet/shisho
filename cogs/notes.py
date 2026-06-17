@@ -67,7 +67,7 @@ class Notes(commands.Cog):
 
             def _add_to_pb():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 # Look up PocketBase user ID from Discord ID
                 user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
@@ -117,7 +117,7 @@ class Notes(commands.Cog):
         try:
             def _get_from_pb():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 # Look up PocketBase user ID from Discord ID
                 user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})

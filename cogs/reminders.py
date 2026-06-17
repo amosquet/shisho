@@ -69,7 +69,7 @@ class Reminders(commands.Cog):
         try:
             def add_to_pocketbase():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
                 if not user_records:
@@ -107,7 +107,7 @@ class Reminders(commands.Cog):
         try:
             def get_from_pocketbase():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
                 if not user_records:
@@ -182,7 +182,7 @@ class Reminders(commands.Cog):
 
     def _check_and_send(self):
         pb = PocketBase(self.pb_url or "")
-        pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
         
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
         filter_str = f"is_sent = False && remind_at <= '{now_str}'"
