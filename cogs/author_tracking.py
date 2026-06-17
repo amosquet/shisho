@@ -10,6 +10,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import sentry_sdk
 
+from utils import google_books
+
 NOTIFIED_BOOKS_FILE = "notified_books.json"
 
 class AuthorTracking(commands.Cog):
@@ -105,51 +107,46 @@ class AuthorTracking(commands.Cog):
         notified_books = self.load_notified_books()
         new_books_found = []
 
-        async with aiohttp.ClientSession() as session:
-            for author in authors:
-                query = f'inauthor:"{author}"'
-                url = f"https://www.googleapis.com/books/v1/volumes?q={query}&orderBy=newest&key={self.google_books_api_key}"
+        for author in authors:
+            query = f'inauthor:"{author}"'
+            
+            try:
+                items = await google_books.search_books(query, self.google_books_api_key, order_by="newest")
                 
-                try:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            items = data.get("items", [])
-                            
-                            for item in items:
-                                book_id = item.get("id")
-                                if not book_id or book_id in notified_books:
-                                    continue
-                                
-                                vol_info = item.get("volumeInfo", {})
-                                pub_date = vol_info.get("publishedDate", "")
-                                
-                                # Skip if not a recent or upcoming book
-                                if not self.is_recently_published(pub_date):
-                                    continue
-                                    
-                                title = vol_info.get("title", "Unknown Title")
-                                book_authors = ", ".join(vol_info.get("authors", ["Unknown Author"]))
-                                thumbnail = vol_info.get("imageLinks", {}).get("thumbnail", "")
-                                
-                                # Only notify if our author is actually in the author list (Google search can be fuzzy)
-                                if author.lower() not in book_authors.lower():
-                                    continue
+                for item in items:
+                    book_id = item.get("id")
+                    if not book_id or book_id in notified_books:
+                        continue
+                    
+                    vol_info = item.get("volumeInfo", {})
+                    pub_date = vol_info.get("publishedDate", "")
+                    
+                    # Skip if not a recent or upcoming book
+                    if not self.is_recently_published(pub_date):
+                        continue
+                        
+                    title = vol_info.get("title", "Unknown Title")
+                    book_authors = ", ".join(vol_info.get("authors", ["Unknown Author"]))
+                    thumbnail = vol_info.get("imageLinks", {}).get("thumbnail", "")
+                    
+                    # Only notify if our author is actually in the author list (Google search can be fuzzy)
+                    if author.lower() not in book_authors.lower():
+                        continue
 
-                                new_books_found.append({
-                                    "id": book_id,
-                                    "title": title,
-                                    "authors": book_authors,
-                                    "publishedDate": pub_date,
-                                    "thumbnail": thumbnail.replace("http://", "https://")
-                                })
-                                notified_books.add(book_id)
-                except Exception as e:
-                    sentry_sdk.capture_exception(e)
-                    print(f"Error fetching data for author {author}: {e}")
-                
-                # Small delay to respect rate limits
-                await asyncio.sleep(1)
+                    new_books_found.append({
+                        "id": book_id,
+                        "title": title,
+                        "authors": book_authors,
+                        "publishedDate": pub_date,
+                        "thumbnail": thumbnail.replace("http://", "https://")
+                    })
+                    notified_books.add(book_id)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                print(f"Error fetching data for author {author}: {e}")
+            
+            # Small delay to respect rate limits
+            await asyncio.sleep(1)
 
         self.save_notified_books(notified_books)
         

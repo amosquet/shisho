@@ -8,6 +8,8 @@ import sentry_sdk
 from discord.ext import commands
 from pocketbase import PocketBase
 
+from utils import google_books
+
 
 class SuggestedBooks(commands.Cog):
     def __init__(self, bot):
@@ -57,22 +59,15 @@ class SuggestedBooks(commands.Cog):
         isbn = (isbn or "").replace("-", "")
 
         if isbn and not (title and author):
-            if not self.google_books_api_key:
-                raise Exception("Google Books API configuration missing. Cannot fetch book details.")
             try:
-                url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}&key={self.google_books_api_key}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if data.get("items"):
-                                vol_info = data["items"][0].get("volumeInfo", {})
-                                fetched_title = vol_info.get("title")
-                                fetched_authors = vol_info.get("authors")
-                                if fetched_title:
-                                    title = fetched_title
-                                if fetched_authors:
-                                    author = ", ".join(fetched_authors)
+                book_data = await google_books.fetch_book_data(isbn, self.google_books_api_key)
+                if isinstance(book_data, dict):
+                    fetched_title = book_data.get("title")
+                    fetched_authors = book_data.get("authors")
+                    if fetched_title and fetched_title != "Unknown Title":
+                        title = fetched_title
+                    if fetched_authors and fetched_authors != ["Unknown Author"]:
+                        author = ", ".join(fetched_authors)
             except Exception as e:
                 sentry_sdk.capture_exception(e)
                 # Fail gracefully and proceed with whatever we had parsed originally

@@ -6,78 +6,12 @@ from discord import app_commands
 from discord.ext import commands
 import sentry_sdk
 
-CACHE_FILE = "book_cache.json"
+from utils import google_books
 
 class BookInfo(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
-        self.cache = self.load_cache()
-
-    def load_cache(self):
-        if os.path.exists(CACHE_FILE):
-            try:
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Failed to load book cache: {e}")
-                return {}
-        return {}
-
-    def save_cache(self):
-        try:
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.cache, f, indent=4)
-        except Exception as e:
-            print(f"Failed to save book cache: {e}")
-
-    async def fetch_book_data(self, query: str):
-        query_key = query.lower().strip()
-
-        # 1. Check local JSON cache first
-        if query_key in self.cache:
-            return self.cache[query_key]
-
-        # 2. If not in cache, fetch from Google Books API
-        if not self.google_books_api_key:
-            return "Google Books API key is not configured."
-
-        api_query = query
-        clean_query = query.replace("-", "").replace(" ", "").strip()
-        if clean_query.isdigit() and len(clean_query) in (10, 13):
-            api_query = f"isbn:{clean_query}"
-
-        url = f"https://www.googleapis.com/books/v1/volumes?q={api_query}&key={self.google_books_api_key}"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("items"):
-                            vol_info = data["items"][0].get("volumeInfo", {})
-                            
-                            book_data = {
-                                "title": vol_info.get("title", "Unknown Title"),
-                                "authors": vol_info.get("authors", ["Unknown Author"]),
-                                "description": vol_info.get("description", "No description available."),
-                                "pageCount": vol_info.get("pageCount", 0),
-                                "averageRating": vol_info.get("averageRating", "N/A"),
-                                "thumbnail": vol_info.get("imageLinks", {}).get("thumbnail", ""),
-                                "publishedDate": vol_info.get("publishedDate", "Unknown")
-                            }
-
-                            # 3. Store inside local JSON cache
-                            self.cache[query_key] = book_data
-                            self.save_cache()
-
-                            return book_data
-                        else:
-                            return f"No books found for query: `{query}`."
-                    else:
-                        return "Failed to fetch data from Google Books API."
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            return f"An error occurred: {e}"
 
     @app_commands.command(name="bookinfo", description="Look up a book's details by title or ISBN.")
     @app_commands.describe(query="The title or ISBN of the book")
@@ -85,7 +19,7 @@ class BookInfo(commands.Cog):
     async def bookinfo(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
         
-        result = await self.fetch_book_data(query)
+        result = await google_books.fetch_book_data(query, self.google_books_api_key)
         if isinstance(result, str):
             await interaction.followup.send(result, ephemeral=True)
             return
@@ -93,7 +27,7 @@ class BookInfo(commands.Cog):
         await self.send_book_embed(interaction, result)
 
     async def get_book_info_text(self, query: str) -> str:
-        result = await self.fetch_book_data(query)
+        result = await google_books.fetch_book_data(query, self.google_books_api_key)
         if isinstance(result, str):
             return result
             
