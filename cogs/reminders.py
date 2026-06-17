@@ -69,21 +69,29 @@ class Reminders(commands.Cog):
         try:
             def add_to_pocketbase():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if not user_records:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                pb_user_id = user_records[0].id
+
                 # We format it to standard ISO string that pocketbase can parse as a Date field, or store it as string
                 # We'll use a string formatted as ISO-8601: "2026-05-24 10:00:00.000Z"
                 dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
                 
                 entry = {
-                    "user_id": str(user_id),
+                    "user_id": str(pb_user_id),
                     "reminder_text": text,
                     "remind_at": dt_str,
                     "is_sent": False
                 }
                 pb.collection("reminders").create(entry)
+                return "success"
 
-            await self.bot.loop.run_in_executor(None, add_to_pocketbase)
+            res = await self.bot.loop.run_in_executor(None, add_to_pocketbase)
+            if res != "success":
+                return res
             
             if for_discord:
                 unix_timestamp = int(parsed_time.timestamp())
@@ -99,12 +107,21 @@ class Reminders(commands.Cog):
         try:
             def get_from_pocketbase():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if not user_records:
+                    return None
+                pb_user_id = user_records[0].id
+                
                 # Fetch only for this user, and where is_sent = False
-                filter_str = f"user_id = '{user_id}' && is_sent = False"
+                filter_str = f"user_id = '{pb_user_id}' && is_sent = False"
                 return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at"})
 
             records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+
+            if records is None:
+                return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
             if not records:
                 return "You have no active reminders."
@@ -165,15 +182,36 @@ class Reminders(commands.Cog):
 
     def _check_and_send(self):
         pb = PocketBase(self.pb_url or "")
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+        pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
         
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
         filter_str = f"is_sent = False && remind_at <= '{now_str}'"
         
         records = pb.collection("reminders").get_full_list(query_params={"filter": filter_str})
         
+        # Cache for pb_user_id to discord_id mapping
+        user_cache = {}
+        
         for record in records:
-            user_id = int(getattr(record, "user_id", "0"))
+            pb_user_id = getattr(record, "user_id", "")
+            if not pb_user_id:
+                continue
+                
+            discord_id_str = user_cache.get(pb_user_id)
+            if not discord_id_str:
+                try:
+                    user_record = pb.collection("shisho_users").get_one(pb_user_id)
+                    discord_id_str = getattr(user_record, "discord_id", None)
+                    user_cache[pb_user_id] = discord_id_str
+                except Exception:
+                    user_cache[pb_user_id] = None
+                    discord_id_str = None
+                    
+            if not discord_id_str:
+                # Can't notify if no linked discord ID
+                continue
+                
+            user_id = int(discord_id_str)
             text = getattr(record, "reminder_text", "")
             record_id = record.id
             

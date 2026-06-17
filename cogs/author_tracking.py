@@ -30,7 +30,7 @@ class AuthorTracking(commands.Cog):
             raise Exception("PocketBase configuration missing in environment variables.")
         url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
         pb = PocketBase(url)
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+        pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
         return pb
 
     def cog_unload(self):

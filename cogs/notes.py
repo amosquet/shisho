@@ -67,7 +67,13 @@ class Notes(commands.Cog):
 
             def _add_to_pb():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                
+                # Look up PocketBase user ID from Discord ID
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if not user_records:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                pb_user_id = user_records[0].id
                 
                 class MultiFileUpload(FileUpload):
                     def __init__(self, file_data_list):
@@ -87,7 +93,7 @@ class Notes(commands.Cog):
                             yield k, v
 
                 entry = {
-                    "user_id": str(user_id),
+                    "user_id": str(pb_user_id),
                     "text": text,
                     "title": title
                 }
@@ -99,9 +105,10 @@ class Notes(commands.Cog):
                     final_entry = entry
                     
                 pb.collection("notes").create(final_entry)
+                return "Note saved successfully!"
 
-            await self.bot.loop.run_in_executor(None, _add_to_pb)
-            return "Note saved successfully!"
+            res = await self.bot.loop.run_in_executor(None, _add_to_pb)
+            return res
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return f"Failed to save note: {e}"
@@ -110,9 +117,15 @@ class Notes(commands.Cog):
         try:
             def _get_from_pb():
                 pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+                pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                filter_str = f"user_id = '{user_id}'"
+                # Look up PocketBase user ID from Discord ID
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                if not user_records:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                pb_user_id = user_records[0].id
+                
+                filter_str = f"user_id = '{pb_user_id}'"
                 if query:
                     safe_query = query.replace("'", "\\'")
                     filter_str += f" && (title ~ '{safe_query}' || text ~ '{safe_query}')"
@@ -125,7 +138,7 @@ class Notes(commands.Cog):
                 results = []
                 for record in records:
                     record_user_id = getattr(record, "user_id", "") or (record.get("user_id", "") if hasattr(record, "get") else "")
-                    if record_user_id == user_id:
+                    if record_user_id == pb_user_id:
                         if query:
                             title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "")
                             text = getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else "")
