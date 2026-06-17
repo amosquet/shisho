@@ -37,6 +37,24 @@ class API(commands.Cog):
         pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
         return pb
 
+    def _validate_pb_token(self, token: str):
+        """Validate a PocketBase user token via authRefresh.
+        Returns the user record dict on success, or None on failure."""
+        try:
+            pb = PocketBase(self.pb_url or "")
+            pb.auth_store.save(token, None)
+            result = pb.collection("shisho_users").auth_refresh()
+            return result.record
+        except Exception:
+            return None
+
+    def _extract_bearer_token(self, request: aiohttp.web.Request) -> str | None:
+        """Extract the Bearer token from the Authorization header."""
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            return auth_header[7:].strip()
+        return None
+
     async def cog_load(self):
         self.runner = aiohttp.web.AppRunner(self.app)
         await self.runner.setup()
@@ -67,7 +85,16 @@ class API(commands.Cog):
     async def handle_request_pin(self, request: aiohttp.web.Request):
         if not self._check_rate_limit(request):
             return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
-            
+
+        # Require PocketBase auth
+        token = self._extract_bearer_token(request)
+        if not token:
+            return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
+
+        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        if not user_record:
+            return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
+
         try:
             data = await request.json()
             discord_id = data.get('discord_id')
@@ -90,21 +117,32 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"message": "PIN sent via DM"})
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return aiohttp.web.json_response({"error": str(e)}, status=500)
+            return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
 
     async def handle_link_discord(self, request: aiohttp.web.Request):
         if not self._check_rate_limit(request):
             return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
-            
+
+        # Require PocketBase auth
+        token = self._extract_bearer_token(request)
+        if not token:
+            return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
+
+        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        if not user_record:
+            return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
+
         try:
             data = await request.json()
             discord_id = data.get('discord_id')
             pin = data.get('pin')
-            pb_user_id = data.get('pb_user_id')
             
-            if not discord_id or not pin or not pb_user_id:
-                return aiohttp.web.json_response({"error": "Missing discord_id, pin, or pb_user_id"}, status=400)
-                
+            if not discord_id or not pin:
+                return aiohttp.web.json_response({"error": "Missing discord_id or pin"}, status=400)
+
+            # Derive pb_user_id from the validated token — not from the request body
+            pb_user_id = user_record.id
+
             pending = self.pending_pins.get(discord_id)
             if not pending:
                 return aiohttp.web.json_response({"error": "No pending PIN found for this user"}, status=400)
@@ -130,18 +168,25 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"success": True})
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return aiohttp.web.json_response({"error": str(e)}, status=500)
+            return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
 
     async def handle_unlink_discord(self, request: aiohttp.web.Request):
         if not self._check_rate_limit(request):
             return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
-            
+
+        # Require PocketBase auth
+        token = self._extract_bearer_token(request)
+        if not token:
+            return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
+
+        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        if not user_record:
+            return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
+
         try:
-            data = await request.json()
-            pb_user_id = data.get('pb_user_id')
-            if not pb_user_id:
-                return aiohttp.web.json_response({"error": "Missing pb_user_id"}, status=400)
-                
+            # Derive pb_user_id from the validated token — caller can only unlink themselves
+            pb_user_id = user_record.id
+
             def _update():
                 pb = self._get_pb()
                 pb.collection("shisho_users").update(pb_user_id, {"discord_id": ""})
@@ -150,7 +195,7 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"success": True})
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return aiohttp.web.json_response({"error": str(e)}, status=500)
+            return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
 
     async def handle_get_announcements(self, request: aiohttp.web.Request):
         try:
