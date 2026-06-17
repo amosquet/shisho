@@ -43,15 +43,19 @@ class ReadingList(commands.Cog):
     async def add_book(
         self,
         interaction: discord.Interaction,
-        title: str,
-        author: str,
-        publish_date: str,
-        isbn: str,
         status: app_commands.Choice[str],
+        title: str | None = None,
+        author: str | None = None,
+        isbn: str | None = None,
+        publish_date: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         cover_image: discord.Attachment = None,
     ):
+        if not title and not isbn:
+            await interaction.response.send_message("You must provide either a title or an ISBN.", ephemeral=True)
+            return
+            
         await interaction.response.defer()
         status_val = status.value
         today = datetime.now().strftime("%Y-%m-%d")
@@ -69,8 +73,40 @@ class ReadingList(commands.Cog):
             cover_filename = cover_image.filename
             cover_data = await cover_image.read()
 
+        fetched_image_url = ""
+        fetched_desc = ""
+        if isbn and (not title or not author):
+            api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+            if api_key:
+                from utils import google_books
+                book_data = await google_books.fetch_book_data(isbn, api_key)
+                if isinstance(book_data, dict):
+                    title = title or book_data.get("title", "Unknown Title")
+                    author = author or ", ".join(book_data.get("authors", ["Unknown Author"]))
+                    publish_date = publish_date or book_data.get("publishedDate", "")
+                    fetched_image_url = book_data.get("thumbnail", "")
+                    fetched_desc = book_data.get("description", "")
+        
+        title = title or "Unknown Title"
+        author = author or "Unknown Author"
+        publish_date = publish_date or ""
+        isbn = isbn or ""
+
         try:
-            await self.add_book_to_pocketbase(str(interaction.user.id), title, author, status_val, publish_date, isbn, final_start_date, final_end_date, cover_filename, cover_data)
+            await self.add_book_to_pocketbase(
+                str(interaction.user.id), 
+                title, 
+                author, 
+                status_val, 
+                publish_date, 
+                isbn, 
+                final_start_date, 
+                final_end_date, 
+                fetched_image_url,
+                fetched_desc,
+                cover_filename, 
+                cover_data
+            )
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
             )
@@ -88,6 +124,8 @@ class ReadingList(commands.Cog):
         isbn: str,
         final_start_date: str,
         final_end_date: str,
+        image_url: str = "",
+        description: str = "",
         cover_filename: str = None,
         cover_data: bytes = None
     ):
@@ -109,6 +147,8 @@ class ReadingList(commands.Cog):
                 "isbn": isbn,
                 "startDate": final_start_date,
                 "endDate": final_end_date,
+                "imageUrl": image_url,
+                "description": description,
             }
             
             if cover_filename and cover_data:
