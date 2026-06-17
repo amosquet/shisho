@@ -61,7 +61,7 @@ class ReadingList(commands.Cog):
         final_end_date = end_date if end_date else (today if status_val == "read" else "")
 
         try:
-            await self.add_book_to_pocketbase(title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
+            await self.add_book_to_pocketbase(str(interaction.user.id), title, author, status_val, publish_date, isbn, final_start_date, final_end_date)
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
             )
@@ -71,6 +71,7 @@ class ReadingList(commands.Cog):
 
     async def add_book_to_pocketbase(
         self,
+        discord_id: str,
         title: str,
         author: str,
         status_val: str,
@@ -83,7 +84,13 @@ class ReadingList(commands.Cog):
 
         def _add():
             pb = self.get_pb_client()
+            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
+            if not user_records:
+                raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
+            pb_user_id = user_records[0].id
+
             new_book = {
+                "user_id": str(pb_user_id),
                 "title": title,
                 "author": author,
                 "status": status_val,
@@ -92,17 +99,22 @@ class ReadingList(commands.Cog):
                 "startDate": final_start_date,
                 "endDate": final_end_date,
             }
-            pb.collection("books").create(new_book)
+            pb.collection("shisho_books").create(new_book)
 
         await self.bot.loop.run_in_executor(None, _add)
 
-    async def fetch_reading_list(self) -> list[dict]:
+    async def fetch_reading_list(self, discord_id: str) -> list[dict]:
         def _fetch():
             try:
                 if not self.pb_url or not self.pb_user or not self.pb_password:
                     return []
                 pb = self.get_pb_client()
-                records = pb.collection("books").get_full_list()
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
+                if not user_records:
+                    return []
+                pb_user_id = user_records[0].id
+
+                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
                 result = []
                 for r in records:
                     result.append({

@@ -163,7 +163,7 @@ class BookConcierge(commands.Cog):
         if not actual_query:
             reading_list_cog = self.bot.get_cog("ReadingList")
             if reading_list_cog:
-                books = await reading_list_cog.fetch_reading_list()
+                books = await reading_list_cog.fetch_reading_list(str(interaction.user.id))
                 past_books = [
                     f"- {b['title']} by {b['author']} (Status: {b['status']})"
                     for b in books
