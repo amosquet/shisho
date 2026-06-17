@@ -12,6 +12,7 @@ import httpx
 
 import mimetypes
 import json
+import re
 from google import genai
 from google.genai import types
 
@@ -238,11 +239,8 @@ class Notes(commands.Cog):
             
             msg = f"**{title}**\n"
             if note["text"]:
-                msg += f"{note['text']}\n"
-            date_str = f"*Saved on {note['created']}*" if note['created'] else ""
-            if note.get('updated') and note.get('updated') != note.get('created'):
-                date_str += f" *(Updated on {note['updated']})*"
-            msg += f"{date_str}"
+                text_content = re.sub(r'(?<!<)(https?://[^\s>]+)(?!>)', r'<\1>', note["text"])
+                msg += f"{text_content}\n"
 
             file_attachments = []
             if note.get("attachment_urls"):
@@ -275,10 +273,7 @@ class Notes(commands.Cog):
                     if not title:
                         title = "Untitled Note"
                 
-                date_str = f" (*{note['created']}*)" if note['created'] else ""
-                if note.get('updated') and note.get('updated') != note.get('created'):
-                    date_str += f" (*Updated {note['updated']}*)"
-                msg += f"{idx}. **{title}**{date_str}\n"
+                msg += f"{idx}. **{title}**\n"
             
             await interaction.followup.send(msg)
 
