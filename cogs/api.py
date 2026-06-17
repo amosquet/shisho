@@ -165,6 +165,13 @@ class API(commands.Cog):
                 pb.collection("shisho_users").update(pb_user_id, {"discord_id": str(discord_id)})
             
             await self.bot.loop.run_in_executor(None, _update)
+            
+            try:
+                user = await self.bot.fetch_user(int(discord_id))
+                await user.send("Your Discord account has been successfully linked to your Shisho app! You will now receive reminders and can manage your notes here.")
+            except Exception:
+                pass
+                
             return aiohttp.web.json_response({"success": True})
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -189,9 +196,20 @@ class API(commands.Cog):
 
             def _update():
                 pb = self._get_pb()
+                user = pb.collection("shisho_users").get_one(pb_user_id)
+                discord_id = getattr(user, "discord_id", None)
                 pb.collection("shisho_users").update(pb_user_id, {"discord_id": ""})
+                return discord_id
                 
-            await self.bot.loop.run_in_executor(None, _update)
+            discord_id = await self.bot.loop.run_in_executor(None, _update)
+            
+            if discord_id:
+                try:
+                    user = await self.bot.fetch_user(int(discord_id))
+                    await user.send("Your Discord account has been disconnected from your Shisho app.")
+                except Exception:
+                    pass
+                    
             return aiohttp.web.json_response({"success": True})
         except Exception as e:
             sentry_sdk.capture_exception(e)
