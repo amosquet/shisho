@@ -34,7 +34,7 @@ class API(commands.Cog):
 
     def _get_pb(self):
         pb = PocketBase(self.pb_url or "")
-        pb.collection("shisho_users").auth_with_password(self.pb_user or "", self.pb_password or "")
+        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
         return pb
 
     async def cog_load(self):
