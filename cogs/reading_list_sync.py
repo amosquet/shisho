@@ -1,7 +1,9 @@
 import os
 import asyncio
 import aiohttp
+import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import sentry_sdk
 from pocketbase import PocketBase
 from pocketbase.client import FileUpload
@@ -54,10 +56,17 @@ class ReadingListSync(commands.Cog):
             cover = getattr(record, "cover", "")
             
             # Check if any important metadata is missing
-            if (not isbn or not publish_date or not cover) and (title and author):
-                query = f"{title} {author}"
+            if not isbn or not publish_date or not cover:
+                query = ""
                 if isbn:
                     query = f"isbn:{isbn}"
+                elif title and author:
+                    query = f"{title} {author}"
+                elif title:
+                    query = title
+                
+                if not query:
+                    continue
                     
                 try:
                     book_data = await google_books.fetch_book_data(query, self.google_books_api_key)
@@ -118,6 +127,16 @@ class ReadingListSync(commands.Cog):
     @sync_reading_list.before_loop
     async def before_sync_reading_list(self):
         await self.bot.wait_until_ready()
+
+    @app_commands.command(name="force_sync", description="Force sync missing reading list data from Google Books API.")
+    async def force_sync(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self._sync_logic()
+            await interaction.followup.send("Sync completed successfully.")
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await interaction.followup.send(f"An error occurred during sync: {e}")
 
 async def setup(bot):
     await bot.add_cog(ReadingListSync(bot))
