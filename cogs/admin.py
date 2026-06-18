@@ -1,5 +1,7 @@
 import os
 import subprocess
+import json
+from datetime import datetime, timezone
 
 from typing import Literal, Optional
 
@@ -87,6 +89,39 @@ class Admin(commands.Cog):
             await interaction.response.send_message(f"Successfully unloaded `{ext_path}`.")
         except Exception as e:
             await interaction.response.send_message(f"Failed to unload `{extension}`: {e}")
+
+    @app_commands.command(name="announce", description="Creates a new announcement. (Owner only)")
+    @app_commands.describe(message="The message to announce")
+    @is_owner()
+    async def announce(self, interaction: discord.Interaction, message: str):
+        try:
+            filename = "announcements.json"
+            if os.path.exists(filename):
+                with open(filename, "r") as f:
+                    data = json.load(f)
+            else:
+                data = []
+
+            next_id = 1
+            if data:
+                try:
+                    next_id = max(int(item["id"]) for item in data) + 1
+                except (ValueError, KeyError):
+                    next_id = len(data) + 1
+
+            new_announcement = {
+                "id": str(next_id),
+                "message": message,
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            }
+            data.append(new_announcement)
+
+            with open(filename, "w") as f:
+                json.dump(data, f, indent=2)
+
+            await interaction.response.send_message(f"✅ Announcement created successfully! ID: {next_id}")
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to create announcement: {e}")
 
     @app_commands.command(name="update", description="Pulls changes from GitHub and restarts the bot. (Owner only)")
     @is_owner()
