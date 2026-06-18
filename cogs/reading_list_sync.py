@@ -54,9 +54,10 @@ class ReadingListSync(commands.Cog):
             isbn = getattr(record, "isbn", "")
             publish_date = getattr(record, "publishDate", "")
             cover = getattr(record, "cover", "")
+            description = getattr(record, "description", "")
             
             # Check if any important metadata is missing
-            if not isbn or not publish_date or not cover:
+            if not isbn or not publish_date or not cover or not title or not author or not description:
                 query = ""
                 if isbn:
                     query = f"isbn:{isbn}"
@@ -76,6 +77,12 @@ class ReadingListSync(commands.Cog):
                             update_data["isbn"] = book_data["isbn"]
                         if not publish_date and book_data.get("publishedDate") and book_data["publishedDate"] != "Unknown":
                             update_data["publishDate"] = book_data["publishedDate"]
+                        if not title and book_data.get("title") and book_data["title"] != "Unknown Title":
+                            update_data["title"] = book_data["title"]
+                        if not author and book_data.get("authors") and book_data["authors"] != ["Unknown Author"]:
+                            update_data["author"] = ", ".join(book_data["authors"])
+                        if not description and book_data.get("description") and book_data["description"] != "No description available.":
+                            update_data["description"] = book_data["description"]
                             
                         cover_data = None
                         cover_filename = None
