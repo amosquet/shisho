@@ -64,11 +64,11 @@ def sync_books():
             "title": title,
             "author": author,
             "status": getattr(s_book, "status", ""),
-            "publishDate": getattr(s_book, "publishDate", ""),
+            "publishDate": getattr(s_book, "publish_date", ""),
             "isbn": isbn,
-            "startDate": getattr(s_book, "startDate", ""),
-            "endDate": getattr(s_book, "endDate", ""),
-            "imageUrl": getattr(s_book, "imageUrl", ""),
+            "startDate": getattr(s_book, "start_date", ""),
+            "endDate": getattr(s_book, "end_date", ""),
+            "imageUrl": getattr(s_book, "image_url", ""),
             "description": getattr(s_book, "description", ""),
         }
         
@@ -103,48 +103,61 @@ def sync_books():
         if target_book:
             processed_books_ids.add(target_book.id)
             
+            t_data = {
+                "title": getattr(target_book, "title", ""),
+                "author": getattr(target_book, "author", ""),
+                "status": getattr(target_book, "status", ""),
+                "publishDate": getattr(target_book, "publish_date", ""),
+                "isbn": getattr(target_book, "isbn", ""),
+                "startDate": getattr(target_book, "start_date", ""),
+                "endDate": getattr(target_book, "end_date", ""),
+                "imageUrl": getattr(target_book, "image_url", ""),
+                "description": getattr(target_book, "description", ""),
+            }
+            
             s_updated = getattr(s_book, "updated", "")
             t_updated = getattr(target_book, "updated", "")
             
-            if s_updated > t_updated:
-                print(f"shisho_books -> books: Updating '{title}'...")
-                if cover_filename and cover_filename != target_cover:
-                    cover_upload = download_cover(s_book, cover_filename)
-                    if cover_upload: file_uploads["cover"] = cover_upload
-                
-                final_entry = BodyDict(data, file_uploads) if file_uploads else data
-                try:
-                    pb.collection("books").update(target_book.id, final_entry)
-                except Exception as e:
-                    print(f"Failed to update '{title}' in books: {e}")
+            # Since PocketBase 0.23+ hides/removes `updated` by default, we must fallback to checking if data differs.
+            if s_updated and t_updated and s_updated != t_updated:
+                # We have timestamps, use the newest
+                if s_updated > t_updated:
+                    print(f"shisho_books -> books: Updating '{title}'...")
+                    if cover_filename and cover_filename != target_cover:
+                        cover_upload = download_cover(s_book, cover_filename)
+                        if cover_upload: file_uploads["cover"] = cover_upload
                     
-            elif t_updated > s_updated:
-                print(f"books -> shisho_books: Updating '{title}'...")
-                
-                # Fetch data from target book to update s_book
-                t_data = {
-                    "title": getattr(target_book, "title", ""),
-                    "author": getattr(target_book, "author", ""),
-                    "status": getattr(target_book, "status", ""),
-                    "publishDate": getattr(target_book, "publishDate", ""),
-                    "isbn": getattr(target_book, "isbn", ""),
-                    "startDate": getattr(target_book, "startDate", ""),
-                    "endDate": getattr(target_book, "endDate", ""),
-                    "imageUrl": getattr(target_book, "imageUrl", ""),
-                    "description": getattr(target_book, "description", ""),
-                }
-                t_file_uploads = {}
-                if target_cover and target_cover != cover_filename:
-                    t_cover_upload = download_cover(target_book, target_cover)
-                    if t_cover_upload: t_file_uploads["cover"] = t_cover_upload
-                
-                final_entry = BodyDict(t_data, t_file_uploads) if t_file_uploads else t_data
-                try:
-                    pb.collection("shisho_books").update(s_book.id, final_entry)
-                except Exception as e:
-                    print(f"Failed to update '{title}' in shisho_books: {e}")
+                    final_entry = BodyDict(data, file_uploads) if file_uploads else data
+                    try:
+                        pb.collection("books").update(target_book.id, final_entry)
+                    except Exception as e:
+                        print(f"Failed to update '{title}' in books: {e}")
+                elif t_updated > s_updated:
+                    print(f"books -> shisho_books: Updating '{title}'...")
+                    t_file_uploads = {}
+                    if target_cover and target_cover != cover_filename:
+                        t_cover_upload = download_cover(target_book, target_cover)
+                        if t_cover_upload: t_file_uploads["cover"] = t_cover_upload
+                    
+                    final_entry = BodyDict(t_data, t_file_uploads) if t_file_uploads else t_data
+                    try:
+                        pb.collection("shisho_books").update(s_book.id, final_entry)
+                    except Exception as e:
+                        print(f"Failed to update '{title}' in shisho_books: {e}")
             else:
-                pass # Same timestamps or fully synced
+                # No timestamps or timestamps equal, check if data differs.
+                # If they differ, sync shisho_books (local user data) -> books (global)
+                if data != t_data or (cover_filename and cover_filename != target_cover):
+                    print(f"shisho_books -> books: Updating '{title}' (differences found)...")
+                    if cover_filename and cover_filename != target_cover:
+                        cover_upload = download_cover(s_book, cover_filename)
+                        if cover_upload: file_uploads["cover"] = cover_upload
+                    
+                    final_entry = BodyDict(data, file_uploads) if file_uploads else data
+                    try:
+                        pb.collection("books").update(target_book.id, final_entry)
+                    except Exception as e:
+                        print(f"Failed to update '{title}' in books: {e}")
         else:
             print(f"shisho_books -> books: Creating '{title}'...")
             if cover_filename:
@@ -171,11 +184,11 @@ def sync_books():
             "title": title,
             "author": author,
             "status": getattr(g_book, "status", ""),
-            "publishDate": getattr(g_book, "publishDate", ""),
+            "publishDate": getattr(g_book, "publish_date", ""),
             "isbn": getattr(g_book, "isbn", ""),
-            "startDate": getattr(g_book, "startDate", ""),
-            "endDate": getattr(g_book, "endDate", ""),
-            "imageUrl": getattr(g_book, "imageUrl", ""),
+            "startDate": getattr(g_book, "start_date", ""),
+            "endDate": getattr(g_book, "end_date", ""),
+            "imageUrl": getattr(g_book, "image_url", ""),
             "description": getattr(g_book, "description", ""),
         }
         

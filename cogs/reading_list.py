@@ -189,10 +189,10 @@ class ReadingList(commands.Cog):
                         "title": getattr(r, "title", ""),
                         "author": getattr(r, "author", ""),
                         "status": getattr(r, "status", ""),
-                        "publishDate": getattr(r, "publishDate", ""),
+                        "publishDate": getattr(r, "publish_date", ""),
                         "isbn": getattr(r, "isbn", ""),
-                        "startDate": getattr(r, "startDate", ""),
-                        "endDate": getattr(r, "endDate", ""),
+                        "startDate": getattr(r, "start_date", ""),
+                        "endDate": getattr(r, "end_date", ""),
                     })
                 return result
             except Exception as e:

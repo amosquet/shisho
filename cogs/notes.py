@@ -62,7 +62,7 @@ class Notes(commands.Cog):
                                 
                         except Exception as e:
                             sentry_sdk.capture_exception(e)
-                            return f"Failed to transcribe audio: {e}"
+                            return "Failed to transcribe audio. An internal error occurred."
                     else:
                         return "Gemini API key not configured for transcription."
 
@@ -112,7 +112,7 @@ class Notes(commands.Cog):
             return res
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return f"Failed to save note: {e}"
+            return "Failed to save note. An internal error occurred."
 
     async def get_notes(self, user_id: str, limit: int = 10, query: str = None):
         try:
@@ -127,14 +127,14 @@ class Notes(commands.Cog):
                 pb_user_id = user_records[0].id
                 
                 filter_str = f"user_id = '{pb_user_id}'"
-                if query:
-                    safe_query = query.replace("'", "\\'")
-                    filter_str += f" && (title ~ '{safe_query}' || text ~ '{safe_query}')"
-                
                 query_params = {"sort": "-id"}
+                if query:
+                    filter_str += " && (title ~ {:search_query} || text ~ {:search_query})"
+                    query_params["search_query"] = query
+                
                 if filter_str:
                     query_params["filter"] = filter_str
-                records = pb.collection("notes").get_full_list()
+                records = pb.collection("notes").get_full_list(query_params=query_params)
                 
                 results = []
                 for record in records:

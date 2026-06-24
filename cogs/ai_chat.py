@@ -56,13 +56,17 @@ class AIChat(commands.Cog):
                 for chunk in chunks:
                     await ctx.send(chunk)
             except errors.APIError as e:
+                import sentry_sdk
+                sentry_sdk.capture_exception(e)
                 error_msg = str(e)
                 if "high demand" in error_msg.lower() or "503" in error_msg:
                     await ctx.send("Gemini is currently experiencing high demand. Please try again later.")
                 else:
-                    await ctx.send(f"API Error: {error_msg}")
+                    await ctx.send("An error occurred while communicating with the API.")
             except Exception as e:
-                await ctx.send(f"An unexpected error occurred: {str(e)}")
+                import sentry_sdk
+                sentry_sdk.capture_exception(e)
+                await ctx.send("An unexpected error occurred.")
 
     @app_commands.command(name="ask", description="Send a prompt to the Gemini API")
     @app_commands.describe(prompt="The prompt to send to Gemini")

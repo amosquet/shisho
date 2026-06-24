@@ -224,7 +224,7 @@ class API(commands.Cog):
             return aiohttp.web.json_response([])
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return aiohttp.web.json_response({"error": str(e)}, status=500)
+            return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
 
 async def setup(bot):
     await bot.add_cog(API(bot))

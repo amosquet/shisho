@@ -62,10 +62,11 @@ async def fetch_book_data(query: str, api_key: str):
     if clean_query.isdigit() and len(clean_query) in (10, 13):
         api_query = f"isbn:{clean_query}"
 
-    url = f"https://www.googleapis.com/books/v1/volumes?q={api_query}&key={api_key}"
+    url = "https://www.googleapis.com/books/v1/volumes"
+    params = {"q": api_query, "key": api_key}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
+            async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("items"):
@@ -93,7 +94,7 @@ async def fetch_book_data(query: str, api_key: str):
                     return "Failed to fetch data from Google Books API."
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        return f"An error occurred: {e}"
+        return "An internal error occurred while fetching book data."
 
 async def search_books(query: str, api_key: str, order_by: str = None) -> list:
     """
@@ -102,13 +103,14 @@ async def search_books(query: str, api_key: str, order_by: str = None) -> list:
     if not api_key:
         return []
 
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&key={api_key}"
+    url = "https://www.googleapis.com/books/v1/volumes"
+    params = {"q": query, "key": api_key}
     if order_by:
-        url += f"&orderBy={order_by}"
+        params["orderBy"] = order_by
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
+            async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data.get("items", [])
