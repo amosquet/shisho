@@ -3,6 +3,7 @@ import os
 import discord
 from discord.ext import commands, tasks
 import sentry_sdk
+import datetime
 
 class BooksSync(commands.Cog):
     def __init__(self, bot):
@@ -12,12 +13,12 @@ class BooksSync(commands.Cog):
     def cog_unload(self):
         self.sync_task.cancel()
 
-    @tasks.loop(hours=24.0)
+    @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=datetime.timezone.utc))
     async def sync_task(self):
         try:
-            print("Starting 24h bi-directional books sync...")
+            print("Starting daily one-way books sync...")
             process = await asyncio.create_subprocess_exec(
-                "uv", "run", "sync_books.py",
+                "uv", "run", "utils/sync_books.py",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
