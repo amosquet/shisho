@@ -6,7 +6,7 @@ import time
 import secrets
 import json
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import sentry_sdk
 from pocketbase import PocketBase
 
@@ -60,9 +60,11 @@ class API(commands.Cog):
         await self.runner.setup()
         self.site = aiohttp.web.TCPSite(self.runner, '0.0.0.0', 8080)
         await self.site.start()
+        self.cleanup_task.start()
         print("Shisho API server started on port 8080")
 
     async def cog_unload(self):
+        self.cleanup_task.cancel()
         if self.runner:
             await self.runner.cleanup()
 
@@ -225,6 +227,34 @@ class API(commands.Cog):
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
+
+    @tasks.loop(minutes=5.0)
+    async def cleanup_task(self):
+        now = time.time()
+        
+        # Clean pending_pins
+        expired_pins = [
+            did for did, data in self.pending_pins.items()
+            if now > data.get("expires_at", 0)
+        ]
+        for did in expired_pins:
+            del self.pending_pins[did]
+            
+        # Clean rate_limits (300s window is used in _check_rate_limit)
+        empty_ips = []
+        for ip, times in self.rate_limits.items():
+            valid_times = [t for t in times if now - t < 300]
+            if not valid_times:
+                empty_ips.append(ip)
+            else:
+                self.rate_limits[ip] = valid_times
+                
+        for ip in empty_ips:
+            del self.rate_limits[ip]
+
+    @cleanup_task.before_loop
+    async def before_cleanup_task(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot):
     await bot.add_cog(API(bot))

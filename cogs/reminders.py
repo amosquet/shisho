@@ -71,7 +71,7 @@ class Reminders(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
                 if not user_records:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 pb_user_id = user_records[0].id
@@ -109,14 +109,14 @@ class Reminders(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
                 if not user_records:
                     return None
                 pb_user_id = user_records[0].id
                 
                 # Fetch only for this user, and where is_sent = False
-                filter_str = f"user_id = '{pb_user_id}' && is_sent = False"
-                return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at"})
+                filter_str = "user_id = {:pb_user_id} && is_sent = False"
+                return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at", "pb_user_id": pb_user_id})
 
             records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
 
@@ -185,9 +185,9 @@ class Reminders(commands.Cog):
         pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
         
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
-        filter_str = f"is_sent = False && remind_at <= '{now_str}'"
+        filter_str = "is_sent = False && remind_at <= {:now_str}"
         
-        records = pb.collection("reminders").get_full_list(query_params={"filter": filter_str})
+        records = pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "now_str": now_str})
         
         # Cache for pb_user_id to discord_id mapping
         user_cache = {}
