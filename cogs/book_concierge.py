@@ -152,7 +152,7 @@ class BookConcierge(commands.Cog):
 
         return clean_text, titles
 
-    async def process_query(self, query: str) -> tuple[str, list[str]]:
+    async def process_query(self, query: str, user_id: str) -> tuple[str, list[str]]:
         if not self.client:
             return (
                 "Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.",
@@ -163,7 +163,7 @@ class BookConcierge(commands.Cog):
         if not actual_query:
             reading_list_cog = self.bot.get_cog("ReadingList")
             if reading_list_cog:
-                books = await reading_list_cog.fetch_reading_list(str(interaction.user.id))
+                books = await reading_list_cog.fetch_reading_list(user_id)
                 past_books = [
                     f"- {b['title']} by {b['author']} (Status: {b['status']})"
                     for b in books
@@ -208,7 +208,7 @@ class BookConcierge(commands.Cog):
     )
     async def recommend_prefix(self, ctx, *, query: str = ""):
         async with ctx.typing():
-            text, titles = await self.process_query(query)
+            text, titles = await self.process_query(query, str(ctx.author.id))
 
             view = ConciergeView(titles) if titles else None
 
@@ -241,7 +241,7 @@ class BookConcierge(commands.Cog):
             await interaction.response.defer()
 
         actual_query = query or ""
-        text, titles = await self.process_query(actual_query)
+        text, titles = await self.process_query(actual_query, str(interaction.user.id))
         view = ConciergeView(titles) if titles else None
 
         chunks = [text[i : i + 1990] for i in range(0, len(text), 1990)]
