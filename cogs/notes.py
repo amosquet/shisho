@@ -71,7 +71,7 @@ class Notes(commands.Cog):
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 # Look up PocketBase user ID from Discord ID
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:user_id}'", "user_id": user_id})
                 if not user_records:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 pb_user_id = user_records[0].id
@@ -121,7 +121,7 @@ class Notes(commands.Cog):
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
                 # Look up PocketBase user ID from Discord ID
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:user_id}'", "user_id": user_id})
                 if not user_records:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 pb_user_id = user_records[0].id

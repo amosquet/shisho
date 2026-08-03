@@ -21,7 +21,7 @@ pb.collection("users").auth_with_password(pb_user, pb_password)
 
 def sync_books():
     print(f"Fetching owner discord user: {owner_id}")
-    user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:discord_id}", "discord_id": owner_id})
+    user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:discord_id}'", "discord_id": owner_id})
     if not user_records:
         print("Owner not found in shisho_users.")
         return
@@ -29,7 +29,7 @@ def sync_books():
 
     print("Fetching owner's shisho_books...")
     try:
-        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": "user_id={:pb_user_id}", "pb_user_id": pb_user_id})
+        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": "user_id='{:pb_user_id}'", "pb_user_id": pb_user_id})
     except Exception as e:
         print(f"Error fetching 'shisho_books': {e}")
         shisho_books = []
