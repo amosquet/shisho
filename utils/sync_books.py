@@ -23,13 +23,14 @@ def sync_books():
     print(f"Fetching owner discord user: {owner_id}")
     user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{owner_id}'"})
     if not user_records:
-        print("Owner not found in shisho_users.")
+        print(f"Owner not found in shisho_users for discord_id={owner_id}.")
         return
     pb_user_id = user_records[0].id
 
-    print("Fetching owner's shisho_books...")
+    print(f"Fetching owner's shisho_books for user_id={pb_user_id}...")
     try:
         shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
+        print(f"Found {len(shisho_books)} book(s) in shisho_books.")
     except Exception as e:
         print(f"Error fetching 'shisho_books': {e}")
         shisho_books = []
@@ -37,6 +38,7 @@ def sync_books():
     print("Fetching global books collection...")
     try:
         global_books = pb.collection("books").get_full_list()
+        print(f"Found {len(global_books)} book(s) in global books collection.")
     except Exception as e:
         print(f"Error fetching 'books' collection: {e}")
         global_books = []
@@ -46,9 +48,25 @@ def sync_books():
 
     # Create maps for quick lookup
     global_books_by_isbn = {clean_isbn_str(getattr(b, "isbn", "")): b for b in global_books if clean_isbn_str(getattr(b, "isbn", ""))}
-    global_books_by_title_author = {f"{getattr(b, 'title', '')}::{getattr(b, 'author', '')}": b for b in global_books}
+    global_books_by_title_author = {f"{getattr(b, 'title', '').strip().lower()}::{getattr(b, 'author', '').strip().lower()}": b for b in global_books}
 
     processed_books_ids = set()
+
+    def download_cover(record, filename, isbn_val):
+        if not filename:
+            return None
+        cover_url = pb.get_file_url(record, filename)
+        try:
+            resp = requests.get(cover_url, timeout=10)
+            if resp.status_code == 200:
+                upload_name = filename
+                if isbn_val:
+                    ext = os.path.splitext(filename)[1] or ".jpg"
+                    upload_name = f"{isbn_val}{ext}"
+                return FileUpload((upload_name, resp.content))
+        except Exception as e:
+            print(f"Failed to download cover from {cover_url}: {e}")
+        return None
 
     for s_book in shisho_books:
         title = getattr(s_book, "title", "")
@@ -60,13 +78,13 @@ def sync_books():
         if clean_s_isbn and clean_s_isbn in global_books_by_isbn:
             target_book = global_books_by_isbn[clean_s_isbn]
         else:
-            title_author_key = f"{title}::{author}"
+            title_author_key = f"{title.strip().lower()}::{author.strip().lower()}"
             if title_author_key in global_books_by_title_author:
                 target_book = global_books_by_title_author[title_author_key]
 
         # PocketBase python SDK translates camelCase schema fields (like startDate) 
         # into snake_case properties (like start_date) on the Record object.
-        # We need to map them back to the exact camelCase keys for the update payload.
+        # We map them to camelCase keys for PocketBase payload.
         data = {
             "title": getattr(s_book, "title", ""),
             "author": getattr(s_book, "author", ""),
@@ -80,36 +98,8 @@ def sync_books():
         }
         
         cover_filename = getattr(s_book, "cover", "")
-        
-        # Download cover if present (for uploading to the other side)
-        file_uploads = {}
         target_cover = getattr(target_book, "cover", "") if target_book else ""
-        
-        def download_cover(record, filename, isbn_val):
-            if not filename: return None
-            cover_url = pb.get_file_url(record, filename)
-            try:
-                resp = requests.get(cover_url)
-                if resp.status_code == 200:
-                    upload_name = filename
-                    if isbn_val:
-                        ext = os.path.splitext(filename)[1]
-                        upload_name = f"{isbn_val}{ext}"
-                    return FileUpload((upload_name, resp.content))
-            except Exception as e:
-                print(f"Failed to download cover: {e}")
-            return None
-
-        class BodyDict(dict):
-            def __init__(self, regular_data, file_uploads):
-                super().__init__(regular_data)
-                self.regular_data = regular_data
-                self.file_uploads = file_uploads
-            def items(self):
-                for k, v in self.regular_data.items():
-                    yield k, v
-                for k, v in self.file_uploads.items():
-                    yield k, v
+        file_uploads = {}
 
         if target_book:
             processed_books_ids.add(target_book.id)
@@ -132,22 +122,28 @@ def sync_books():
                 print(f"shisho_books -> books: Updating '{title}' (differences found)...")
                 if needs_cover_sync:
                     cover_upload = download_cover(s_book, cover_filename, isbn)
-                    if cover_upload: file_uploads["cover"] = cover_upload
+                    if cover_upload:
+                        file_uploads["cover"] = cover_upload
                 
-                final_entry = BodyDict(data, file_uploads) if file_uploads else data
+                final_entry = {**data, **file_uploads} if file_uploads else data
                 try:
                     pb.collection("books").update(target_book.id, final_entry)
+                    print(f"shisho_books -> books: Successfully updated '{title}'")
                 except Exception as e:
                     print(f"Failed to update '{title}' in books: {e}")
+            else:
+                print(f"shisho_books -> books: '{title}' is already up-to-date in books.")
         else:
             print(f"shisho_books -> books: Creating '{title}'...")
             if cover_filename:
                 cover_upload = download_cover(s_book, cover_filename, isbn)
-                if cover_upload: file_uploads["cover"] = cover_upload
+                if cover_upload:
+                    file_uploads["cover"] = cover_upload
             
-            final_entry = BodyDict(data, file_uploads) if file_uploads else data
+            final_entry = {**data, **file_uploads} if file_uploads else data
             try:
                 pb.collection("books").create(final_entry)
+                print(f"shisho_books -> books: Successfully created '{title}'")
             except Exception as e:
                 print(f"Failed to create '{title}' in books: {e}")
 
