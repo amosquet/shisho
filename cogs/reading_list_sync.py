@@ -36,11 +36,11 @@ class ReadingListSync(commands.Cog):
     async def _sync_logic(self):
         def _fetch_books():
             pb = self.get_pb_client()
-            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:discord_id}'", "discord_id": self.owner_id})
+            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{self.owner_id}'"})
             if not user_records:
                 return []
             pb_user_id = user_records[0].id
-            return pb.collection("shisho_books").get_full_list(query_params={"filter": "user_id='{:pb_user_id}'", "pb_user_id": pb_user_id})
+            return pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
 
         try:
             records = await self.bot.loop.run_in_executor(None, _fetch_books)
@@ -52,25 +52,40 @@ class ReadingListSync(commands.Cog):
             title = getattr(record, "title", "")
             author = getattr(record, "author", "")
             isbn = getattr(record, "isbn", "")
-            publish_date = getattr(record, "publishDate", "")
+            publish_date = getattr(record, "publish_date", getattr(record, "publishDate", ""))
             cover = getattr(record, "cover", "")
             description = getattr(record, "description", "")
             
             # Check if any important metadata is missing
             if not isbn or not publish_date or not cover or not title or not author or not description:
-                query = ""
-                if isbn:
-                    query = f"isbn:{isbn}"
-                elif title and author:
-                    query = f"{title} {author}"
-                elif title:
-                    query = title
+                queries_to_try = []
+                clean_isbn = isbn.replace("-", "").replace(" ", "").strip() if isbn else ""
+                if clean_isbn and clean_isbn.isdigit() and len(clean_isbn) in (10, 13):
+                    queries_to_try.append(f"isbn:{clean_isbn}")
+                elif isbn:
+                    queries_to_try.append(f"isbn:{isbn}")
                 
-                if not query:
+                if title and author:
+                    queries_to_try.append(f"{title} {author}")
+                elif title:
+                    queries_to_try.append(title)
+                
+                if not queries_to_try:
                     continue
                     
                 try:
-                    book_data = await google_books.fetch_book_data(query, self.google_books_api_key)
+                    book_data = None
+                    for query in queries_to_try:
+                        res = await google_books.fetch_book_data(query, self.google_books_api_key)
+                        if isinstance(res, dict):
+                            # If we are missing publish_date and this result has it, or if it has valid info
+                            if not publish_date and (not res.get("publishedDate") or res.get("publishedDate") == "Unknown"):
+                                if book_data is None:
+                                    book_data = res
+                                continue
+                            book_data = res
+                            break
+
                     if isinstance(book_data, dict):
                         update_data = {}
                         if not isbn and book_data.get("isbn"):

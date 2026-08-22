@@ -133,7 +133,7 @@ class ReadingList(commands.Cog):
 
         def _add():
             pb = self.get_pb_client()
-            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:discord_id}'", "discord_id": discord_id})
+            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
             if not user_records:
                 raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
             pb_user_id = user_records[0].id
@@ -177,22 +177,22 @@ class ReadingList(commands.Cog):
                 if not self.pb_url or not self.pb_user or not self.pb_password:
                     return []
                 pb = self.get_pb_client()
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:discord_id}'", "discord_id": discord_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
                 if not user_records:
                     return []
                 pb_user_id = user_records[0].id
 
-                records = pb.collection("shisho_books").get_full_list(query_params={"filter": "user_id='{:pb_user_id}'", "pb_user_id": pb_user_id})
+                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
                 result = []
                 for r in records:
                     result.append({
                         "title": getattr(r, "title", ""),
                         "author": getattr(r, "author", ""),
                         "status": getattr(r, "status", ""),
-                        "publishDate": getattr(r, "publish_date", ""),
+                        "publishDate": getattr(r, "publish_date", getattr(r, "publishDate", "")),
                         "isbn": getattr(r, "isbn", ""),
-                        "startDate": getattr(r, "start_date", ""),
-                        "endDate": getattr(r, "end_date", ""),
+                        "startDate": getattr(r, "start_date", getattr(r, "startDate", "")),
+                        "endDate": getattr(r, "end_date", getattr(r, "endDate", "")),
                     })
                 return result
             except Exception as e:

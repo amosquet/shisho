@@ -21,7 +21,7 @@ pb.collection("users").auth_with_password(pb_user, pb_password)
 
 def sync_books():
     print(f"Fetching owner discord user: {owner_id}")
-    user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:discord_id}'", "discord_id": owner_id})
+    user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{owner_id}'"})
     if not user_records:
         print("Owner not found in shisho_users.")
         return
@@ -29,7 +29,7 @@ def sync_books():
 
     print("Fetching owner's shisho_books...")
     try:
-        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": "user_id='{:pb_user_id}'", "pb_user_id": pb_user_id})
+        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
     except Exception as e:
         print(f"Error fetching 'shisho_books': {e}")
         shisho_books = []
@@ -41,8 +41,11 @@ def sync_books():
         print(f"Error fetching 'books' collection: {e}")
         global_books = []
 
+    def clean_isbn_str(val):
+        return (val or "").replace("-", "").replace(" ", "").strip()
+
     # Create maps for quick lookup
-    global_books_by_isbn = {b.isbn: b for b in global_books if getattr(b, "isbn", None)}
+    global_books_by_isbn = {clean_isbn_str(getattr(b, "isbn", "")): b for b in global_books if clean_isbn_str(getattr(b, "isbn", ""))}
     global_books_by_title_author = {f"{getattr(b, 'title', '')}::{getattr(b, 'author', '')}": b for b in global_books}
 
     processed_books_ids = set()
@@ -51,10 +54,11 @@ def sync_books():
         title = getattr(s_book, "title", "")
         author = getattr(s_book, "author", "")
         isbn = getattr(s_book, "isbn", "")
+        clean_s_isbn = clean_isbn_str(isbn)
         
         target_book = None
-        if isbn and isbn in global_books_by_isbn:
-            target_book = global_books_by_isbn[isbn]
+        if clean_s_isbn and clean_s_isbn in global_books_by_isbn:
+            target_book = global_books_by_isbn[clean_s_isbn]
         else:
             title_author_key = f"{title}::{author}"
             if title_author_key in global_books_by_title_author:
@@ -67,10 +71,10 @@ def sync_books():
             "title": getattr(s_book, "title", ""),
             "author": getattr(s_book, "author", ""),
             "status": getattr(s_book, "status", ""),
-            "publishDate": getattr(s_book, "publish_date", ""),
+            "publishDate": getattr(s_book, "publish_date", getattr(s_book, "publishDate", "")),
             "isbn": getattr(s_book, "isbn", ""),
-            "startDate": getattr(s_book, "start_date", ""),
-            "endDate": getattr(s_book, "end_date", ""),
+            "startDate": getattr(s_book, "start_date", getattr(s_book, "startDate", "")),
+            "endDate": getattr(s_book, "end_date", getattr(s_book, "endDate", "")),
             "description": getattr(s_book, "description", ""),
             "completed": getattr(s_book, "completed", ""),
         }
@@ -114,18 +118,19 @@ def sync_books():
                 "title": getattr(target_book, "title", ""),
                 "author": getattr(target_book, "author", ""),
                 "status": getattr(target_book, "status", ""),
-                "publishDate": getattr(target_book, "publish_date", ""),
+                "publishDate": getattr(target_book, "publish_date", getattr(target_book, "publishDate", "")),
                 "isbn": getattr(target_book, "isbn", ""),
-                "startDate": getattr(target_book, "start_date", ""),
-                "endDate": getattr(target_book, "end_date", ""),
+                "startDate": getattr(target_book, "start_date", getattr(target_book, "startDate", "")),
+                "endDate": getattr(target_book, "end_date", getattr(target_book, "endDate", "")),
                 "description": getattr(target_book, "description", ""),
                 "completed": getattr(target_book, "completed", ""),
             }
             
-            # One-way sync: if data differs, update the global books collection
-            if data != t_data or (cover_filename and cover_filename != target_cover):
+            # One-way sync: if data differs or cover is missing in target, update the global books collection
+            needs_cover_sync = bool(cover_filename and not target_cover)
+            if data != t_data or needs_cover_sync:
                 print(f"shisho_books -> books: Updating '{title}' (differences found)...")
-                if cover_filename and cover_filename != target_cover:
+                if needs_cover_sync:
                     cover_upload = download_cover(s_book, cover_filename, isbn)
                     if cover_upload: file_uploads["cover"] = cover_upload
                 

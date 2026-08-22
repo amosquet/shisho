@@ -49,18 +49,26 @@ async def fetch_book_data(query: str, api_key: str):
     query_key = query.lower().strip()
     cache = _load_cache()
 
-    # 1. Check local JSON cache first
+    # 1. Check local JSON cache first (only if it has valid publication date)
     if query_key in cache:
-        return cache[query_key]
+        cached = cache[query_key]
+        if isinstance(cached, dict) and cached.get("publishedDate") and cached.get("publishedDate") != "Unknown":
+            return cached
 
     # 2. If not in cache, fetch from Google Books API
     if not api_key:
         return "Google Books API key is not configured."
 
-    api_query = query
-    clean_query = query.replace("-", "").replace(" ", "").strip()
-    if clean_query.isdigit() and len(clean_query) in (10, 13):
-        api_query = f"isbn:{clean_query}"
+    raw_query = query.strip()
+    isbn_clean = raw_query.lower()
+    if isbn_clean.startswith("isbn:"):
+        isbn_clean = isbn_clean[5:].strip()
+    isbn_clean = isbn_clean.replace("-", "").replace(" ", "").strip()
+
+    if isbn_clean.isdigit() and len(isbn_clean) in (10, 13):
+        api_query = f"isbn:{isbn_clean}"
+    else:
+        api_query = raw_query
 
     url = "https://www.googleapis.com/books/v1/volumes"
     params = {"q": api_query, "key": api_key}
@@ -83,9 +91,10 @@ async def fetch_book_data(query: str, api_key: str):
                             "isbn": _extract_isbn(vol_info.get("industryIdentifiers", []))
                         }
 
-                        # 3. Store inside local JSON cache
-                        cache[query_key] = book_data
-                        _save_cache()
+                        # 3. Store inside local JSON cache if meaningful data was found
+                        if book_data.get("publishedDate") != "Unknown":
+                            cache[query_key] = book_data
+                            _save_cache()
 
                         return book_data
                     else:
