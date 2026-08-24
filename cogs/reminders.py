@@ -71,7 +71,7 @@ class Reminders(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:user_id}'", "user_id": user_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
                 if not user_records:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 pb_user_id = user_records[0].id
@@ -109,13 +109,13 @@ class Reminders(commands.Cog):
                 pb = PocketBase(self.pb_url or "")
                 pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
                 
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id='{:user_id}'", "user_id": user_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:user_id}", "user_id": user_id})
                 if not user_records:
                     return None
                 pb_user_id = user_records[0].id
                 
                 # Fetch only for this user, and where is_sent = False
-                filter_str = "owner = '{:pb_user_id}' && is_sent = False"
+                filter_str = "owner = {:pb_user_id} && is_sent = False"
                 return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at", "pb_user_id": pb_user_id})
 
             records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
