@@ -94,7 +94,7 @@ class Notes(commands.Cog):
                             yield k, v
 
                 entry = {
-                    "user_id": str(pb_user_id),
+                    "owner": str(pb_user_id),
                     "text": text,
                     "title": title
                 }
@@ -126,7 +126,7 @@ class Notes(commands.Cog):
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 pb_user_id = user_records[0].id
                 
-                filter_str = "user_id = {:pb_user_id}"
+                filter_str = "owner = {:pb_user_id}"
                 query_params = {"sort": "-id", "pb_user_id": pb_user_id}
                 if query:
                     filter_str += " && (title ~ {:search_query} || text ~ {:search_query})"
@@ -138,8 +138,8 @@ class Notes(commands.Cog):
                 
                 results = []
                 for record in records:
-                    record_user_id = getattr(record, "user_id", "") or (record.get("user_id", "") if hasattr(record, "get") else "")
-                    if record_user_id == pb_user_id:
+                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
+                    if record_owner == pb_user_id:
                         if query:
                             title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "")
                             text = getattr(record, "text", "") or (record.get("text", "") if hasattr(record, "get") else "")
