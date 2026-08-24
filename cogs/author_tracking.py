@@ -62,12 +62,12 @@ class AuthorTracking(commands.Cog):
         try:
             def _fetch():
                 pb = self.get_pb_client()
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": "discord_id={:discord_id}", "discord_id": self.owner_id})
+                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{self.owner_id}'"})
                 if not user_records:
                     print(f"Owner not found in shisho_users for discord_id={self.owner_id}. Cannot track authors.")
                     return []
                 pb_user_id = user_records[0].id
-                return pb.collection("shisho_books").get_full_list(query_params={"filter": "owner={:pb_user_id}", "pb_user_id": pb_user_id})
+                return pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
             
             records = await self.bot.loop.run_in_executor(None, _fetch)
             
