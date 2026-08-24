@@ -27,9 +27,9 @@ def sync_books():
         return
     pb_user_id = user_records[0].id
 
-    print(f"Fetching owner's shisho_books for user_id={pb_user_id}...")
+    print(f"Fetching owner's shisho_books for owner={pb_user_id}...")
     try:
-        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
+        shisho_books = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
         print(f"Found {len(shisho_books)} book(s) in shisho_books.")
     except Exception as e:
         print(f"Error fetching 'shisho_books': {e}")

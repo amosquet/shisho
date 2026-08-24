@@ -40,7 +40,7 @@ class ReadingListSync(commands.Cog):
             if not user_records:
                 return []
             pb_user_id = user_records[0].id
-            return pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
+            return pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
 
         try:
             records = await self.bot.loop.run_in_executor(None, _fetch_books)

@@ -139,7 +139,7 @@ class ReadingList(commands.Cog):
             pb_user_id = user_records[0].id
 
             new_book = {
-                "user_id": str(pb_user_id),
+                "owner": str(pb_user_id),
                 "title": title,
                 "author": author,
                 "status": status_val,
@@ -182,7 +182,7 @@ class ReadingList(commands.Cog):
                     return []
                 pb_user_id = user_records[0].id
 
-                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"user_id='{pb_user_id}'"})
+                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
                 result = []
                 for r in records:
                     result.append({

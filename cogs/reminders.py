@@ -81,7 +81,7 @@ class Reminders(commands.Cog):
                 dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
                 
                 entry = {
-                    "user_id": str(pb_user_id),
+                    "owner": str(pb_user_id),
                     "reminder_text": text,
                     "remind_at": dt_str,
                     "is_sent": False
@@ -115,7 +115,7 @@ class Reminders(commands.Cog):
                 pb_user_id = user_records[0].id
                 
                 # Fetch only for this user, and where is_sent = False
-                filter_str = "user_id = '{:pb_user_id}' && is_sent = False"
+                filter_str = "owner = '{:pb_user_id}' && is_sent = False"
                 return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at", "pb_user_id": pb_user_id})
 
             records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
@@ -149,7 +149,7 @@ class Reminders(commands.Cog):
             return response
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return "An error occurred while fetching your reminders. Ensure the 'reminders' collection exists in PocketBase with 'user_id', 'reminder_text', 'remind_at', and 'is_sent' fields."
+            return "An error occurred while fetching your reminders. Ensure the 'reminders' collection exists in PocketBase with 'owner', 'reminder_text', 'remind_at', and 'is_sent' fields."
 
     @app_commands.command(name="remind", description="Set a reminder.")
     @app_commands.describe(
@@ -193,7 +193,7 @@ class Reminders(commands.Cog):
         user_cache = {}
         
         for record in records:
-            pb_user_id = getattr(record, "user_id", "")
+            pb_user_id = getattr(record, "owner", "")
             if not pb_user_id:
                 continue
                 
