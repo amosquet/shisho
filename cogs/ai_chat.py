@@ -593,10 +593,11 @@ class AIChat(commands.Cog):
             ),
         )
 
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
         max_tool_turns = 5
         for _ in range(max_tool_turns):
             response = await self.client.aio.models.generate_content(
-                model="gemini-3.7-flash", contents=contents_list, config=config
+                model=model_name, contents=contents_list, config=config
             )
 
             # Check if the model requested any tool calls

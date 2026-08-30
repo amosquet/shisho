@@ -343,8 +343,9 @@ class BookConcierge(commands.Cog):
             system_instruction=CONCIERGE_PROMPT, tools=[{"google_search": {}}]
         )
 
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
         response = await self.client.aio.models.generate_content(
-            model="gemini-3.7-flash", contents=contents, config=config
+            model=model_name, contents=contents, config=config
         )
 
         text = response.text or ""
