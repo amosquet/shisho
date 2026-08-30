@@ -626,9 +626,9 @@ class AIChat(commands.Cog):
                     )
                 )
 
-            # Append the tool response turn
+            # Append the tool response turn (Gemini API requires role='user' for function responses)
             contents_list.append(
-                types.Content(role="tool", parts=tool_response_parts)
+                types.Content(role="user", parts=tool_response_parts)
             )
 
         return response.text or ""
