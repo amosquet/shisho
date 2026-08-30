@@ -40,7 +40,7 @@ class Notes(commands.Cog):
                             client = genai.Client(api_key=api_key)
                             prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
                             
-                            model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+                            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
                             response = await client.aio.models.generate_content(
                                 model=model_name,
                                 contents=[

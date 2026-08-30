@@ -129,7 +129,6 @@ LIST_REMINDERS_TOOL = types.FunctionDeclaration(
 
 AI_CHAT_TOOLS = [
     types.Tool(
-        google_search=types.GoogleSearch(),
         function_declarations=[
             ADD_BOOK_TOOL,
             SET_REMINDER_TOOL,
@@ -613,12 +612,9 @@ class AIChat(commands.Cog):
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt if sys_prompt else None,
             tools=AI_CHAT_TOOLS,
-            tool_config=types.ToolConfig(
-                include_server_side_tool_invocations=True
-            ),
         )
 
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         max_tool_turns = 5
         for _ in range(max_tool_turns):
             response = await self.client.aio.models.generate_content(
