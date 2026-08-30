@@ -278,7 +278,9 @@ class BookConcierge(commands.Cog):
                         raw_turns.append({"role": "user", "text": clean})
 
         try:
-            async for msg in thread.history(limit=50, oldest_first=True):
+            recent_msgs = [m async for m in thread.history(limit=30)]
+            recent_msgs.reverse()
+            for msg in recent_msgs:
                 content = msg.clean_content.strip()
                 if not content:
                     continue

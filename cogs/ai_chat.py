@@ -386,7 +386,9 @@ class AIChat(commands.Cog):
                         raw_turns.append({"role": "user", "parts": user_parts})
 
         try:
-            async for msg in channel.history(limit=30, oldest_first=True):
+            recent_msgs = [m async for m in channel.history(limit=15)]
+            recent_msgs.reverse()
+            for msg in recent_msgs:
                 if msg.author.bot:
                     if msg.author.id == self.bot.user.id:
                         content = msg.clean_content.strip()
@@ -399,6 +401,7 @@ class AIChat(commands.Cog):
                             or content.startswith("What would you like an update on")
                             or content.startswith("Here is your status update")
                             or content.startswith("Here is your quick status update")
+                            or content.startswith("Update on what, exactly")
                         ):
                             continue
                         if content:
