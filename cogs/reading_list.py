@@ -182,7 +182,7 @@ class ReadingList(commands.Cog):
                     return []
                 pb_user_id = user_records[0].id
 
-                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'", "sort": "-created"})
+                records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
                 result = []
                 for r in records:
                     result.append({

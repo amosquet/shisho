@@ -364,7 +364,7 @@ class BookConcierge(commands.Cog):
                 if b.get("status") in ["read", "reading"]
             ]
             if past_books:
-                books_str = "\n".join(past_books[:30])  # limit to 30 recent books
+                books_str = "\n".join(past_books[::-1][:30])  # limit to 30 most recent books
                 return (
                     f"I am looking for book recommendations tailored to my tastes. Here are some books I have read or am currently reading:\n"
                     f"{books_str}\n\n"
