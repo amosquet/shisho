@@ -334,43 +334,44 @@ class AIChat(commands.Cog):
         ]
         return contents
 
-    async def _build_thread_contents(
-        self, thread: discord.Thread, additional_parts: list[types.Part] | str | None = None
+    async def _build_channel_contents(
+        self, channel: discord.Thread | discord.DMChannel | discord.abc.Messageable, additional_parts: list[types.Part] | str | None = None
     ) -> list[types.Content]:
         raw_turns: list[dict] = []
 
-        starter_msg = thread.starter_message
-        if not starter_msg and thread.parent and hasattr(thread.parent, "fetch_message"):
-            try:
-                starter_msg = await thread.parent.fetch_message(thread.id)
-            except Exception:
-                starter_msg = None
+        if isinstance(channel, discord.Thread):
+            starter_msg = channel.starter_message
+            if not starter_msg and channel.parent and hasattr(channel.parent, "fetch_message"):
+                try:
+                    starter_msg = await channel.parent.fetch_message(channel.id)
+                except Exception:
+                    starter_msg = None
 
-        if starter_msg:
-            if starter_msg.author.id == self.bot.user.id:
-                content = starter_msg.clean_content.strip()
-                match = re.search(
-                    r"\*\*(?:Question|Ask):\*\*\s*(.+)",
-                    content,
-                    re.DOTALL | re.IGNORECASE,
-                )
-                if match:
-                    raw_turns.append({
-                        "role": "user",
-                        "parts": [types.Part.from_text(text=match.group(1).strip())]
-                    })
-                elif content:
-                    raw_turns.append({
-                        "role": "model",
-                        "parts": [types.Part.from_text(text=content)]
-                    })
-            else:
-                user_parts = await self._extract_message_parts(starter_msg, is_prefix=True)
-                if user_parts:
-                    raw_turns.append({"role": "user", "parts": user_parts})
+            if starter_msg:
+                if starter_msg.author.id == self.bot.user.id:
+                    content = starter_msg.clean_content.strip()
+                    match = re.search(
+                        r"\*\*(?:Question|Ask):\*\*\s*(.+)",
+                        content,
+                        re.DOTALL | re.IGNORECASE,
+                    )
+                    if match:
+                        raw_turns.append({
+                            "role": "user",
+                            "parts": [types.Part.from_text(text=match.group(1).strip())]
+                        })
+                    elif content:
+                        raw_turns.append({
+                            "role": "model",
+                            "parts": [types.Part.from_text(text=content)]
+                        })
+                else:
+                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True)
+                    if user_parts:
+                        raw_turns.append({"role": "user", "parts": user_parts})
 
         try:
-            async for msg in thread.history(limit=50, oldest_first=True):
+            async for msg in channel.history(limit=30, oldest_first=True):
                 if msg.author.bot:
                     if msg.author.id == self.bot.user.id:
                         content = msg.clean_content.strip()
@@ -393,7 +394,7 @@ class AIChat(commands.Cog):
                     if user_parts:
                         raw_turns.append({"role": "user", "parts": user_parts})
         except Exception as e:
-            print(f"Error reading thread history: {e}")
+            print(f"Error reading channel history: {e}")
 
         if additional_parts:
             if isinstance(additional_parts, str):
@@ -410,6 +411,9 @@ class AIChat(commands.Cog):
                 })
 
         return self._consolidate_turns(raw_turns)
+
+    # Alias for backward compatibility
+    _build_thread_contents = _build_channel_contents
 
     async def _is_ai_chat_thread(self, thread: discord.Thread) -> bool:
         if thread.name.startswith("Recommend: ") or thread.name.startswith("Recommendations: "):
@@ -878,11 +882,13 @@ class AIChat(commands.Cog):
 
         is_bot_mentioned = self.bot.user and any(m.id == self.bot.user.id for m in message.mentions)
         is_in_thread = isinstance(message.channel, discord.Thread)
+        is_dm = isinstance(message.channel, discord.DMChannel)
 
         # We respond if:
-        # 1. The bot was @mentioned anywhere (guild text channel, thread, or DM), OR
-        # 2. The message is inside an active AI chat thread
-        if not is_bot_mentioned:
+        # 1. The message is in DMs (talking directly to the bot), OR
+        # 2. The bot was @mentioned anywhere, OR
+        # 3. The message is inside an active AI chat thread
+        if not is_dm and not is_bot_mentioned:
             if not is_in_thread:
                 return
             if not await self._is_ai_chat_thread(message.channel):
@@ -933,7 +939,7 @@ class AIChat(commands.Cog):
                 self.active_threads.add(message.channel.id)
                 async with message.channel.typing():
                     try:
-                        contents = await self._build_thread_contents(message.channel)
+                        contents = await self._build_channel_contents(message.channel)
                         if not contents:
                             parts = await self._extract_message_parts(message, is_prefix=False)
                             if parts:
@@ -958,14 +964,17 @@ class AIChat(commands.Cog):
                         await message.channel.send("An unexpected error occurred.")
             return
 
-        # Case 2: Message is in DM
-        if isinstance(message.channel, discord.DMChannel):
+        # Case 2: Message is in DM (Maintains multi-turn context from DM history)
+        if is_dm:
             async with message.channel.typing():
                 try:
-                    parts = await self._extract_message_parts(message, is_prefix=False)
-                    if not parts:
+                    contents = await self._build_channel_contents(message.channel)
+                    if not contents:
+                        parts = await self._extract_message_parts(message, is_prefix=False)
+                        if parts:
+                            contents = [types.Content(role="user", parts=parts)]
+                    if not contents:
                         return
-                    contents = [types.Content(role="user", parts=parts)]
                     text = await self._generate_ai_response(contents, user_id=user_id_str)
                     if not text or text.strip() == "[NO_ACTION]":
                         return
