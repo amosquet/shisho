@@ -588,6 +588,9 @@ class AIChat(commands.Cog):
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt if sys_prompt else None,
             tools=AI_CHAT_TOOLS,
+            tool_config=types.ToolConfig(
+                include_server_side_tool_invocations=True
+            ),
         )
 
         max_tool_turns = 5
