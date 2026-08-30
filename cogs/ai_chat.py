@@ -101,19 +101,29 @@ GET_NOTES_TOOL = types.FunctionDeclaration(
 
 GET_READING_LIST_TOOL = types.FunctionDeclaration(
     name="get_reading_list",
-    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped).",
+    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped). Use this whenever the user asks about their reading list or books they have saved/read.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
-        properties={},
+        properties={
+            "status": types.Schema(
+                type=types.Type.STRING,
+                description="Optional filter by status: 'planned', 'reading', 'read', 'dropped', or 'all'",
+            ),
+        },
     ),
 )
 
 LIST_REMINDERS_TOOL = types.FunctionDeclaration(
     name="list_reminders",
-    description="Lists the user's active, upcoming reminders.",
+    description="Lists the user's active, upcoming reminders. Use this whenever the user asks what reminders they have scheduled.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
-        properties={},
+        properties={
+            "limit": types.Schema(
+                type=types.Type.INTEGER,
+                description="Maximum number of reminders to return (optional)",
+            ),
+        },
     ),
 )
 
@@ -181,16 +191,18 @@ class AIChat(commands.Cog):
                 print(f"Failed to read {prompt_file}: {e}")
 
         behavior_instruction = (
-            "You are responding inside a Discord server.\n"
-            "- When users @mention you, evaluate whether they are addressing you with a question, command, or request. "
-            "If the mention is merely ambient, conversational talk about you to another user, or does not warrant any response, "
-            "reply ONLY with '[NO_ACTION]' so you remain silent.\n"
-            "- When the user provides an audio recording or voice memo: listen to the audio carefully. "
-            "If it requests a specific action (such as setting a reminder, adding a book to the reading list, "
-            "or taking a note), execute the appropriate tool. If the user records thoughts or a voice memo "
-            "without an explicit command, automatically save it as a note using the add_note tool and reply "
-            "with a brief confirmation and summary.\n"
-            "- For quick confirmations (e.g. note saved, reminder set, book added) or simple answers, keep your response short and concise."
+            "You are Shisho (ししょ) responding inside Discord.\n"
+            "You have direct access to database tools and Google Search:\n"
+            "- Reading List: Call `get_reading_list` to see the user's books. Call `add_book` to add books.\n"
+            "- Reminders: Call `set_reminder` to set a reminder. Call `list_reminders` to see upcoming reminders.\n"
+            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes.\n"
+            "- Google Search: Search the web whenever up-to-date or factual knowledge is needed.\n\n"
+            "Guidelines:\n"
+            "1. When the user asks about their reading list, notes, or reminders, immediately invoke the appropriate tool to fetch their real data.\n"
+            "2. When the user asks for book recommendations, provide creative, engaging book recommendations directly (you may call `get_reading_list` to check their reading history first).\n"
+            "3. For general conversation, questions, or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona. Never respond with a generic 'What would you like to update?'.\n"
+            "4. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
+            "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`."
         )
 
         if base_prompt:
@@ -380,6 +392,8 @@ class AIChat(commands.Cog):
                             or content.startswith("API Error:")
                             or content.startswith("An unexpected error occurred")
                             or content.startswith("Gemini is currently experiencing high demand")
+                            or content.startswith("What would you like to update")
+                            or content.startswith("What would you like an update on")
                         ):
                             continue
                         if content:
@@ -551,9 +565,14 @@ class AIChat(commands.Cog):
                 reading_list_cog = self.bot.get_cog("ReadingList")
                 if not reading_list_cog:
                     return "Error: ReadingList cog is unavailable."
+                status_filter = str(args.get("status", "")).strip().lower()
                 books = await reading_list_cog.fetch_reading_list(user_id)
                 if not books:
                     return "No books found in reading list."
+                if status_filter and status_filter != "all":
+                    filtered_books = [b for b in books if b.get("status", "").lower() == status_filter]
+                    if filtered_books:
+                        books = filtered_books
                 formatted = [
                     f"- {b.get('title', 'Unknown')} by {b.get('author', 'Unknown')} (Status: {b.get('status', 'unknown')})"
                     for b in books
