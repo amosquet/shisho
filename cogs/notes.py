@@ -41,7 +41,7 @@ class Notes(commands.Cog):
                             prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
                             
                             response = await client.aio.models.generate_content(
-                                model='gemini-3.5-flash',
+                                model='gemini-3.7-flash',
                                 contents=[
                                     types.Part.from_bytes(data=attachment_bytes, mime_type=mime_type),
                                     prompt
