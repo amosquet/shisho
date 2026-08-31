@@ -98,7 +98,12 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
 }
 
 
-async def execute_tool(bot: Any, name: str, args: dict, user_id: str) -> str:
+import inspect
+
+
+async def execute_tool(
+    bot: Any, name: str, args: dict, user_id: str, context: dict | None = None
+) -> str:
     """
     Executes a tool call requested by Gemini.
 
@@ -107,6 +112,7 @@ async def execute_tool(bot: Any, name: str, args: dict, user_id: str) -> str:
         name: The name of the tool function to call.
         args: Dictionary of keyword arguments provided by the model.
         user_id: The Discord user ID of the caller as a string.
+        context: Optional dictionary containing execution context (e.g. message attachments).
 
     Returns:
         String result message to feed back to the model.
@@ -116,6 +122,9 @@ async def execute_tool(bot: Any, name: str, args: dict, user_id: str) -> str:
         return f"Error: Unknown tool '{name}'."
 
     try:
+        sig = inspect.signature(handler)
+        if "context" in sig.parameters:
+            return await handler(bot, args, user_id, context=context)
         return await handler(bot, args, user_id)
     except Exception as e:
         sentry_sdk.capture_exception(e)
