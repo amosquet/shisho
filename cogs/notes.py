@@ -170,10 +170,71 @@ class Notes(commands.Cog):
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return str(e)
-            return notes
+
+    async def delete_note(self, user_id: str, note_id_or_query: str) -> str:
+        try:
+            def _delete_from_pb():
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+
+                clean_target = note_id_or_query.strip()
+                if not clean_target:
+                    return "Error: Please specify a note title, ID, or keyword to delete."
+
+                # Try finding by exact ID first
+                try:
+                    record = pb.collection("notes").get_one(clean_target)
+                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
+                    if record_owner == pb_user_id:
+                        title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "") or "Untitled Note"
+                        pb.collection("notes").delete(record.id)
+                        return f"Successfully deleted note: **{title}**"
+                except Exception:
+                    pass
+
+                # Search notes owned by user
+                safe_query = clean_target.replace("'", "\\'")
+                filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || text ~ '{safe_query}')"
+                records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
+                if not records:
+                    return f"No notes found matching '{clean_target}'."
+
+                # Prefer exact title match if multiple
+                matched_record = None
+                for r in records:
+                    r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
+                    if r_title.lower() == clean_target.lower():
+                        matched_record = r
+                        break
+                if not matched_record:
+                    matched_record = records[0]
+
+                title = getattr(matched_record, "title", "") or (matched_record.get("title", "") if hasattr(matched_record, "get") else "") or "Untitled Note"
+                pb.collection("notes").delete(matched_record.id)
+                return f"Successfully deleted note: **{title}**"
+
+            return await run_in_executor(_delete_from_pb)
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return str(e)
+            return f"Failed to delete note: {e}"
+
+    async def note_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            notes = await self.get_notes(str(interaction.user.id), limit=25, query=current if current else None)
+            if isinstance(notes, str) or not notes:
+                return []
+            choices = []
+            for n in notes:
+                title = n.get("title") or " ".join(n.get("text", "").split()[:5]) or "Untitled Note"
+                name_preview = title[:100]
+                choices.append(app_commands.Choice(name=name_preview, value=n.get("id", name_preview)))
+            return choices[:25]
+        except Exception:
+            return []
 
     @app_commands.command(name="note", description="Add a personal note.")
     @app_commands.describe(
@@ -258,6 +319,19 @@ class Notes(commands.Cog):
                 msg += f"{idx}. **{title}**\n"
             
             await interaction.followup.send(content=msg, suppress_embeds=True)
+
+    @app_commands.command(name="deletenote", description="Delete a personal note.")
+    @app_commands.describe(note="The note to delete (select from list or type title/ID)")
+    async def slash_deletenote(self, interaction: discord.Interaction, note: str):
+        await interaction.response.defer(ephemeral=True)
+        response = await self.delete_note(str(interaction.user.id), note)
+        await interaction.followup.send(response)
+
+    @slash_deletenote.autocomplete("note")
+    async def slash_deletenote_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.note_autocomplete(interaction, current)
 
 async def setup(bot):
     await bot.add_cog(Notes(bot))

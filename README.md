@@ -43,16 +43,14 @@ I can control Shisho remotely by sending commands via email or SMS (using email-
 
 ### Managing Books
 
-`!addbook "Project Hail Mary" "Andy Weir" "2021" "9780593135211" read`
-_(Status options: read, reading, planned, dropped)_
+- `/addbook [status] [title] [author] [publish_date] [isbn] [start_date] [end_date] [cover_image]`: Adds a book to the PocketBase reading list.
+- `/deletebook <book>`: Removes a book from your reading list (supports title, ISBN, or interactive autocomplete).
 
 ### Suggested Books (Public)
 
-`!suggest 9780593135211`
-
-- Anyone can suggest books!
-- You can suggest using an ISBN, or manually: `!suggest "Title" "Author"`
-- Suggestions are synced with **PocketBase**, allowing them to be seamlessly managed alongside my web-based book suggestion form.
+- `/suggest [title] [author] [isbn]`: Anyone can suggest books! You can suggest using an ISBN, or title/author. Suggestions are synced with PocketBase.
+- `/suggestions`: Lists the latest suggested books.
+- `/deletesuggestion <suggestion>`: Removes a book from the suggested books list (supports title, ISBN, or interactive autocomplete for your suggestions).
 
 ### Book Information Lookup (Public)
 
@@ -68,6 +66,13 @@ Set custom reminders using natural language times. The bot will send you a Direc
 
 - `/remind <when> <text> [timezone]`: Sets a reminder. Timezone is optional and defaults to Eastern Time. Supports abbreviations like `jp`, `fr`, `ca`, `il`. Example: `/remind in 5 minutes Take out the trash jp`
 - `/reminders`: Lists your active, upcoming reminders.
+- `/deletereminder <reminder>`: Deletes or cancels an active reminder (supports index number like `1`, text keyword, ID, autocomplete, or `all`).
+
+### Notes
+
+- `/note <text> [title] [attachment...]`: Saves a personal note (with optional file/audio attachments).
+- `/notes [name]`: Lists your recent notes or views a specific note in detail.
+- `/deletenote <note>`: Deletes a personal note (supports title, keyword, ID, or interactive autocomplete).
 
 ### Notifications (Public)
 
@@ -97,6 +102,7 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 ### Remote Email/SMS Commands (Owner Only)
 
 - I can send an email (or SMS via carrier gateway) to the bot's configured address to run commands remotely.
-- Supported commands: `!addbook`, `!suggest`, `!suggestions`, `!reminders`, `!remind`, `!bookinfo`, and `!ping`.
+- Supported commands: `!addbook`, `!deletebook` / `!removebook`, `!suggest`, `!suggestions`, `!deletesuggestion`, `!reminders`, `!remind`, `!deletereminder` / `!cancelreminder`, `!notes`, `!note`, `!deletenote`, `!bookinfo`, and `!ping`.
 
 ---
+

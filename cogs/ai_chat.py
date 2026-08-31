@@ -134,12 +134,60 @@ LIST_REMINDERS_TOOL = types.FunctionDeclaration(
     ),
 )
 
+DELETE_BOOK_TOOL = types.FunctionDeclaration(
+    name="delete_book",
+    description="Removes a book from the user's reading list on PocketBase by title, author, ISBN, or ID.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query": types.Schema(
+                type=types.Type.STRING,
+                description="The title, author, ISBN, or ID of the book to remove",
+            ),
+        },
+        required=["query"],
+    ),
+)
+
+DELETE_REMINDER_TOOL = types.FunctionDeclaration(
+    name="delete_reminder",
+    description="Deletes or cancels an active reminder for the user by reminder text keyword, index number, ID, or 'all' to delete all active reminders.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query": types.Schema(
+                type=types.Type.STRING,
+                description="The reminder text keyword, index number, ID, or 'all'",
+            ),
+        },
+        required=["query"],
+    ),
+)
+
+DELETE_NOTE_TOOL = types.FunctionDeclaration(
+    name="delete_note",
+    description="Deletes a personal note from the user's PocketBase notes by note title, text keyword, or note ID.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query": types.Schema(
+                type=types.Type.STRING,
+                description="The title, keyword, or ID of the note to delete",
+            ),
+        },
+        required=["query"],
+    ),
+)
+
 AI_CHAT_TOOLS = [
     types.Tool(
         function_declarations=[
             ADD_BOOK_TOOL,
+            DELETE_BOOK_TOOL,
             SET_REMINDER_TOOL,
+            DELETE_REMINDER_TOOL,
             ADD_NOTE_TOOL,
+            DELETE_NOTE_TOOL,
             GET_NOTES_TOOL,
             GET_READING_LIST_TOOL,
             LIST_REMINDERS_TOOL,
@@ -183,9 +231,9 @@ class AIChat(commands.Cog):
         behavior_instruction = (
             "You are Shisho (ししょ) responding inside Discord.\n"
             "You have direct access to database tools and Google Search:\n"
-            "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books.\n"
-            "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders.\n"
-            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes.\n"
+            "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `delete_book` to remove books.\n"
+            "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders. Call `delete_reminder` to cancel/delete reminders.\n"
+            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes. Call `delete_note` to delete notes.\n"
             "- Google Search: Search the web whenever up-to-date or factual knowledge is needed.\n\n"
             "CRITICAL SCOPING RULES:\n"
             "1. ONLY answer what the user explicitly asks for. NEVER bundle unprompted status updates or combine categories:\n"
@@ -679,6 +727,36 @@ class AIChat(commands.Cog):
                     return "Error: Reminders cog is unavailable."
                 res = await reminders_cog.get_reminders_text(user_id, for_discord=False)
                 return res or "No active reminders."
+
+            elif name == "delete_book":
+                reading_list_cog = self.bot.get_cog("ReadingList")
+                if not reading_list_cog:
+                    return "Error: ReadingList cog is unavailable."
+                query = str(args.get("query", args.get("title", ""))).strip()
+                if not query:
+                    return "Error: Book title, ISBN, or ID is required."
+                res = await reading_list_cog.delete_book_from_pocketbase(user_id, query)
+                return res
+
+            elif name == "delete_reminder":
+                reminders_cog = self.bot.get_cog("Reminders")
+                if not reminders_cog:
+                    return "Error: Reminders cog is unavailable."
+                query = str(args.get("query", args.get("reminder", ""))).strip()
+                if not query:
+                    return "Error: Reminder text, index, ID, or 'all' is required."
+                res = await reminders_cog.delete_reminder(user_id, query)
+                return res
+
+            elif name == "delete_note":
+                notes_cog = self.bot.get_cog("Notes")
+                if not notes_cog:
+                    return "Error: Notes cog is unavailable."
+                query = str(args.get("query", args.get("title", ""))).strip()
+                if not query:
+                    return "Error: Note title, keyword, or ID is required."
+                res = await notes_cog.delete_note(user_id, query)
+                return res
 
             return f"Error: Unknown tool '{name}'."
         except Exception as e:

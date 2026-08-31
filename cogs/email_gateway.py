@@ -40,12 +40,19 @@ class EmailGateway(commands.Cog):
             "!bookinfo": self._handle_bookinfo,
             "!suggestions": self._handle_suggestions,
             "!suggest": self._handle_suggest,
+            "!deletesuggestion": self._handle_deletesuggestion,
             "!addbook": self._handle_addbook,
+            "!deletebook": self._handle_deletebook,
+            "!removebook": self._handle_deletebook,
             "!reminders": self._handle_reminders,
             "!listreminders": self._handle_reminders,
             "!remind": self._handle_remind,
+            "!deletereminder": self._handle_deletereminder,
+            "!cancelreminder": self._handle_deletereminder,
             "!notes": self._handle_notes,
             "!note": self._handle_note,
+            "!deletenote": self._handle_deletenote,
+            "!delnote": self._handle_deletenote,
         }
 
         if self.email_host and self.email_user and self.email_pass:
@@ -146,12 +153,16 @@ class EmailGateway(commands.Cog):
             "!ping - Check bot latency\n"
             "!suggestions - Get a list of suggested books\n"
             "!suggest [Title] by [Author] OR !suggest [ISBN] - Add a book suggestion\n"
+            "!deletesuggestion [Title or ISBN] - Delete a book suggestion\n"
             "!addbook [Title] by [Author] | [ISBN] | [Status] OR !addbook [ISBN] | [Status] - Add a book to reading list (default status: planned)\n"
+            "!deletebook [Title or ISBN] - Remove a book from reading list\n"
             "!reminders - List your active reminders\n"
             "!remind [Time] | [Text] | [Timezone (optional)] - Set a reminder (e.g. !remind in 5 mins | check oven | jp)\n"
+            "!deletereminder [Text or 'all'] - Delete a reminder\n"
             "!bookinfo [Title or ISBN] - Look up book details\n"
             "!notes - List your recent notes\n"
-            "!note [Text] - Save a note (Subject becomes Title. Email attachments are supported.)"
+            "!note [Text] - Save a note (Subject becomes Title. Email attachments are supported.)\n"
+            "!deletenote [Title or ID] - Delete a note"
         )
         return response, []
 
@@ -193,6 +204,15 @@ class EmailGateway(commands.Cog):
         response = f"Added suggestion: {title} by {author}" if not isbn else f"Added suggestion with ISBN: {isbn}"
         return response, []
 
+    async def _handle_deletesuggestion(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
+        suggested_cog = self.bot.get_cog("SuggestedBooks")
+        if not suggested_cog:
+            return "There was an error with the command.", []
+        if not args:
+            return "Syntax error. Use: !deletesuggestion [Title, ISBN, or ID]", []
+        response = await suggested_cog.delete_suggestion(args.strip(), user_name=sender, is_owner=True)
+        return response, []
+
     async def _handle_addbook(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
         reading_cog = self.bot.get_cog("ReadingList")
         if not reading_cog:
@@ -232,6 +252,16 @@ class EmailGateway(commands.Cog):
         )
         return f"Successfully added {title or isbn} to the reading list.", []
 
+    async def _handle_deletebook(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
+        reading_cog = self.bot.get_cog("ReadingList")
+        if not reading_cog:
+            return "There was an error with the command.", []
+        if not args:
+            return "Syntax error. Use: !deletebook [Title or ISBN]", []
+        owner_id = self._get_owner_id()
+        response = await reading_cog.delete_book_from_pocketbase(owner_id, args.strip())
+        return response, []
+
     async def _handle_reminders(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
         reminders_cog = self.bot.get_cog("Reminders")
         if not reminders_cog:
@@ -254,6 +284,16 @@ class EmailGateway(commands.Cog):
             response = await reminders_cog.add_reminder(owner_id, when, text, for_discord=False, user_tz=user_tz)
         else:
             response = "Syntax error. Use: !remind [Time] | [Text] | [Timezone (optional)]"
+        return response, []
+
+    async def _handle_deletereminder(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
+        reminders_cog = self.bot.get_cog("Reminders")
+        if not reminders_cog:
+            return "There was an error with the command.", []
+        if not args:
+            return "Syntax error. Use: !deletereminder [Text, Index, or 'all']", []
+        owner_id = self._get_owner_id()
+        response = await reminders_cog.delete_reminder(owner_id, args.strip())
         return response, []
 
     async def _handle_notes(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
@@ -324,6 +364,16 @@ class EmailGateway(commands.Cog):
             response = "You must provide either text or an attachment for the note."
         else:
             response = await notes_cog.add_note(owner_id, text, title, attachments)
+        return response, []
+
+    async def _handle_deletenote(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
+        notes_cog = self.bot.get_cog("Notes")
+        if not notes_cog:
+            return "There was an error with the command.", []
+        if not args:
+            return "Syntax error. Use: !deletenote [Title, Keyword, or ID]", []
+        owner_id = self._get_owner_id()
+        response = await notes_cog.delete_note(owner_id, args.strip())
         return response, []
 
     async def process_command(self, sender: str, subject: str, body: str, attachments: list = None):

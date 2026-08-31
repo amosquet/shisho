@@ -178,6 +178,7 @@ class ReadingList(commands.Cog):
                 result = []
                 for r in records:
                     result.append({
+                        "id": getattr(r, "id", ""),
                         "title": getattr(r, "title", ""),
                         "author": getattr(r, "author", ""),
                         "status": getattr(r, "status", ""),
@@ -192,6 +193,97 @@ class ReadingList(commands.Cog):
                 return []
 
         return await run_in_executor(_fetch)
+
+    async def delete_book_from_pocketbase(self, discord_id: str, query_or_id: str) -> str:
+        def _delete():
+            pb = self.get_pb_client()
+            pb_user_id = get_discord_user_id(pb, discord_id)
+            if not pb_user_id:
+                return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+
+            clean_target = query_or_id.strip()
+            if not clean_target:
+                return "Error: Please specify a book title, ISBN, or ID to delete."
+
+            # 1. Try exact ID
+            try:
+                record = pb.collection("shisho_books").get_one(clean_target)
+                record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
+                if record_owner == pb_user_id:
+                    title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "") or "Unknown Title"
+                    author = getattr(record, "author", "") or (record.get("author", "") if hasattr(record, "get") else "")
+                    pb.collection("shisho_books").delete(record.id)
+                    author_str = f" by {author}" if author else ""
+                    return f"Successfully removed **{title}**{author_str} from your reading list."
+            except Exception:
+                pass
+
+            # 2. Search books owned by user
+            clean_isbn = clean_target.replace("-", "").replace(" ", "").strip()
+            safe_query = clean_target.replace("'", "\\'")
+            filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || author ~ '{safe_query}' || isbn ~ '{clean_isbn}')"
+            records = pb.collection("shisho_books").get_full_list(query_params={"filter": filter_str})
+            if not records:
+                return f"No book found matching '{clean_target}' on your reading list."
+
+            # Prefer exact title or ISBN match
+            matched = None
+            for r in records:
+                r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
+                r_isbn = getattr(r, "isbn", "") or (r.get("isbn", "") if hasattr(r, "get") else "")
+                if r_title.lower() == clean_target.lower() or (clean_isbn and r_isbn == clean_isbn):
+                    matched = r
+                    break
+            if not matched:
+                matched = records[0]
+
+            title = getattr(matched, "title", "") or (matched.get("title", "") if hasattr(matched, "get") else "") or "Unknown Title"
+            author = getattr(matched, "author", "") or (matched.get("author", "") if hasattr(matched, "get") else "")
+            pb.collection("shisho_books").delete(matched.id)
+            author_str = f" by {author}" if author else ""
+            return f"Successfully removed **{title}**{author_str} from your reading list."
+
+        try:
+            return await run_in_executor(_delete)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"Failed to delete book: {e}"
+
+    async def book_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            books = await self.fetch_reading_list(str(interaction.user.id))
+            if not books:
+                return []
+            choices = []
+            clean_cur = current.lower().strip()
+            for b in books:
+                title = b.get("title", "Unknown Title")
+                author = b.get("author", "")
+                isbn = b.get("isbn", "")
+                display = f"{title} by {author}" if author else title
+                if clean_cur and clean_cur not in display.lower() and clean_cur not in isbn.lower():
+                    continue
+                name_preview = display[:100]
+                book_id = b.get("id") or title
+                choices.append(app_commands.Choice(name=name_preview, value=book_id))
+            return choices[:25]
+        except Exception:
+            return []
+
+    @app_commands.command(name="deletebook", description="Removes a book from your reading list.")
+    @app_commands.describe(book="The book to remove (select from list or type title/ISBN/ID)")
+    async def delete_book_cmd(self, interaction: discord.Interaction, book: str):
+        await interaction.response.defer(ephemeral=True)
+        res = await self.delete_book_from_pocketbase(str(interaction.user.id), book)
+        await interaction.followup.send(res)
+
+    @delete_book_cmd.autocomplete("book")
+    async def delete_book_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.book_autocomplete(interaction, current)
 
 async def setup(bot):
     await bot.add_cog(ReadingList(bot))

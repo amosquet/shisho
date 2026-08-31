@@ -135,6 +135,111 @@ class SuggestedBooks(commands.Cog):
 
         return response
 
+    async def delete_suggestion(self, query_or_id: str, user_name: str = None, is_owner: bool = False) -> str:
+        try:
+            def _delete():
+                pb = get_pb_client()
+                clean_target = query_or_id.strip()
+                if not clean_target:
+                    return "Error: Please specify a book title, ISBN, or ID to delete."
+
+                # 1. Try finding by exact ID first
+                try:
+                    record = pb.collection("suggested_books").get_one(clean_target)
+                    s_by = getattr(record, "suggestedBy", "") or (record.get("suggestedBy", "") if hasattr(record, "get") else "")
+                    if is_owner or (user_name and s_by == user_name):
+                        title = getattr(record, "title", "") or getattr(record, "isbn", "") or "Unknown Book"
+                        pb.collection("suggested_books").delete(record.id)
+                        return f"Successfully removed **{title}** from the suggested books list."
+                    else:
+                        return "You can only delete suggestions that you created."
+                except Exception:
+                    pass
+
+                # 2. Search suggestions
+                clean_isbn = clean_target.replace("-", "").replace(" ", "").strip()
+                safe_query = clean_target.replace("'", "\\'")
+                filter_str = f"title ~ '{safe_query}' || author ~ '{safe_query}' || isbn ~ '{clean_isbn}'"
+                records = pb.collection("suggested_books").get_full_list(query_params={"filter": filter_str})
+                if not records:
+                    return f"No book suggestion found matching '{clean_target}'."
+
+                # If caller is not owner, filter to caller's suggestions
+                if not is_owner and user_name:
+                    user_records = [r for r in records if (getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")) == user_name]
+                    if not user_records:
+                        return "You can only delete suggestions that you created."
+                    records = user_records
+
+                # Prefer exact title or ISBN match
+                matched = None
+                for r in records:
+                    r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
+                    r_isbn = getattr(r, "isbn", "") or (r.get("isbn", "") if hasattr(r, "get") else "")
+                    if r_title.lower() == clean_target.lower() or (clean_isbn and r_isbn == clean_isbn):
+                        matched = r
+                        break
+                if not matched:
+                    matched = records[0]
+
+                title = getattr(matched, "title", "") or getattr(matched, "isbn", "") or "Unknown Book"
+                pb.collection("suggested_books").delete(matched.id)
+                return f"Successfully removed **{title}** from the suggested books list."
+
+            return await run_in_executor(_delete)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"Failed to delete suggestion: {e}"
+
+    async def suggestion_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            owner_id_str = os.getenv("OWNER_ID", "0")
+            is_owner = str(interaction.user.id) == owner_id_str
+
+            def _fetch():
+                pb = get_pb_client()
+                return pb.collection("suggested_books").get_full_list(query_params={"sort": "-dateSuggested"})
+
+            records = await run_in_executor(_fetch)
+            if not records:
+                return []
+
+            user_name = str(interaction.user)
+            clean_cur = current.lower().strip()
+            choices = []
+            for r in records:
+                s_by = getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")
+                if not is_owner and s_by != user_name:
+                    continue
+                title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
+                author = getattr(r, "author", "") or (r.get("author", "") if hasattr(r, "get") else "")
+                isbn = getattr(r, "isbn", "") or (r.get("isbn", "") if hasattr(r, "get") else "")
+                display = f"{title} by {author}" if (title and author) else (title or f"ISBN: {isbn}")
+                if clean_cur and clean_cur not in display.lower() and clean_cur not in isbn.lower():
+                    continue
+                name_preview = display[:100]
+                choices.append(app_commands.Choice(name=name_preview, value=r.id))
+            return choices[:25]
+        except Exception:
+            return []
+
+    @app_commands.command(name="deletesuggestion", description="Removes a book from the suggested books list.")
+    @app_commands.describe(suggestion="The suggestion to delete (select from list or type title/ISBN/ID)")
+    async def slash_delete_suggestion(self, interaction: discord.Interaction, suggestion: str):
+        await interaction.response.defer()
+        owner_id_str = os.getenv("OWNER_ID", "0")
+        is_owner = str(interaction.user.id) == owner_id_str
+        response = await self.delete_suggestion(suggestion, user_name=str(interaction.user), is_owner=is_owner)
+        await interaction.followup.send(response)
+
+    @slash_delete_suggestion.autocomplete("suggestion")
+    async def slash_delete_suggestion_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.suggestion_autocomplete(interaction, current)
+
 
 async def setup(bot):
     await bot.add_cog(SuggestedBooks(bot))

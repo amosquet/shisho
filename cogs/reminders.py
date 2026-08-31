@@ -163,6 +163,120 @@ class Reminders(commands.Cog):
         response = await self.get_reminders_text(str(interaction.user.id))
         await interaction.followup.send(response)
 
+    async def delete_reminder(self, user_id: str, reminder_id_or_query: str) -> str:
+        try:
+            def _delete_from_pb():
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+
+                clean_target = reminder_id_or_query.strip()
+                if not clean_target:
+                    return "Error: Please specify a reminder ID, text keyword, index number, or 'all'."
+
+                # If user says "all", delete all active reminders
+                if clean_target.lower() == "all":
+                    filter_str = f"owner = '{pb_user_id}' && is_sent = False"
+                    records = pb.collection("reminders").get_full_list(query_params={"filter": filter_str})
+                    if not records:
+                        return "You have no active reminders to delete."
+                    for r in records:
+                        pb.collection("reminders").delete(r.id)
+                    return f"Successfully deleted all ({len(records)}) active reminder(s)."
+
+                # 1. Try finding by exact ID first
+                try:
+                    record = pb.collection("reminders").get_one(clean_target)
+                    record_owner = getattr(record, "owner", "")
+                    if record_owner == pb_user_id:
+                        text = getattr(record, "reminder_text", "Reminder")
+                        pb.collection("reminders").delete(record.id)
+                        return f"Successfully deleted reminder: **{text}**"
+                except Exception:
+                    pass
+
+                # 2. Try index number (e.g. "1", "2") based on active reminders sorted by remind_at
+                filter_active = f"owner = '{pb_user_id}' && is_sent = False"
+                active_records = pb.collection("reminders").get_full_list(query_params={"filter": filter_active, "sort": "remind_at"})
+                if clean_target.isdigit():
+                    idx = int(clean_target)
+                    if 1 <= idx <= len(active_records):
+                        target = active_records[idx - 1]
+                        text = getattr(target, "reminder_text", "Reminder")
+                        pb.collection("reminders").delete(target.id)
+                        return f"Successfully deleted reminder #{idx}: **{text}**"
+
+                # 3. Search by text keyword among active reminders
+                safe_query = clean_target.replace("'", "\\'")
+                filter_str = f"owner = '{pb_user_id}' && is_sent = False && reminder_text ~ '{safe_query}'"
+                records = pb.collection("reminders").get_full_list(query_params={"filter": filter_str})
+                if not records:
+                    return f"No active reminder found matching '{clean_target}'."
+
+                # Prefer exact text match if available
+                matched = None
+                for r in records:
+                    r_text = getattr(r, "reminder_text", "")
+                    if r_text.lower() == clean_target.lower():
+                        matched = r
+                        break
+                if not matched:
+                    matched = records[0]
+
+                text = getattr(matched, "reminder_text", "Reminder")
+                pb.collection("reminders").delete(matched.id)
+                return f"Successfully deleted reminder: **{text}**"
+
+            return await run_in_executor(_delete_from_pb)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"Failed to delete reminder: {e}"
+
+    async def reminder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            def _fetch_active():
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, str(interaction.user.id))
+                if not pb_user_id:
+                    return []
+                filter_str = f"owner = '{pb_user_id}' && is_sent = False"
+                return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at"})
+
+            records = await run_in_executor(_fetch_active)
+            if not records:
+                return []
+
+            choices = []
+            if not current or "all".startswith(current.lower()):
+                choices.append(app_commands.Choice(name="[Delete All Active Reminders]", value="all"))
+
+            clean_cur = current.lower().strip()
+            for idx, r in enumerate(records, 1):
+                text = getattr(r, "reminder_text", "Reminder")
+                if clean_cur and clean_cur != "all" and clean_cur not in text.lower() and str(idx) != clean_cur:
+                    continue
+                name_preview = f"#{idx}: {text}"[:100]
+                choices.append(app_commands.Choice(name=name_preview, value=r.id))
+            return choices[:25]
+        except Exception:
+            return []
+
+    @app_commands.command(name="deletereminder", description="Delete or cancel an active reminder.")
+    @app_commands.describe(reminder="The reminder to delete (select from list, type #index, text keyword, or 'all')")
+    async def slash_delete_reminder(self, interaction: discord.Interaction, reminder: str):
+        await interaction.response.defer(ephemeral=True)
+        response = await self.delete_reminder(str(interaction.user.id), reminder)
+        await interaction.followup.send(response)
+
+    @slash_delete_reminder.autocomplete("reminder")
+    async def slash_delete_reminder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.reminder_autocomplete(interaction, current)
+
     @tasks.loop(seconds=60.0)
     async def check_reminders(self):
         try:
