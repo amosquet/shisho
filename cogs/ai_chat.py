@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 from google.genai import errors, types
 
-from tools import AI_CHAT_TOOLS, execute_tool
+from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
 from utils.discord_helpers import split_message, is_user_authorized
 from utils.llm import (
     get_gemini_client,
@@ -56,12 +56,11 @@ class AIChat(commands.Cog):
         behavior_instruction = (
             "You are Shisho (ししょ) responding inside Discord.\n"
             f"Current date and time: {now_str}\n\n"
-            "You have direct access to database tools and Google Search:\n"
+            "You have direct access to database tools:\n"
             "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `delete_book` to remove books.\n"
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders. Call `delete_reminder` to cancel/delete reminders.\n"
-            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, or archived status.\n"
-            "- Google Search: Search the web whenever up-to-date or factual knowledge is needed.\n\n"
+            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, or archived status.\n\n"
             "CRITICAL SCOPING RULES:\n"
             "1. ONLY answer what the user explicitly asks for. NEVER bundle unprompted status updates or combine categories:\n"
             "   - When asked about the reading list (e.g. 'what\\'s on my reading list'), call ONLY `get_reading_list` and respond ONLY about the user\\'s books. DO NOT mention reminders, notes, or unrelated features.\n"
@@ -644,19 +643,25 @@ class AIChat(commands.Cog):
             if not function_calls:
                 return response.text or ""
 
+            valid_function_calls = [
+                fc for fc in function_calls if fc.name in TOOL_HANDLERS
+            ]
+            if not valid_function_calls:
+                return response.text or ""
+
             # Append the model turn that requested tool calls
             candidate_parts = []
             if response.candidates and response.candidates[0].content:
                 candidate_parts = response.candidates[0].content.parts
             else:
                 candidate_parts = [
-                    types.Part(function_call=fc) for fc in function_calls
+                    types.Part(function_call=fc) for fc in valid_function_calls
                 ]
             contents_list.append(types.Content(role="model", parts=candidate_parts))
 
             # Execute tool calls and collect responses
             tool_response_parts = []
-            for fc in function_calls:
+            for fc in valid_function_calls:
                 args = fc.args if isinstance(fc.args, dict) else {}
                 result_str = await self._execute_tool(fc.name, args, user_id)
                 tool_response_parts.append(

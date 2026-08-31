@@ -287,9 +287,18 @@ class Reminders(commands.Cog):
                                 current_id = value
             except asyncio.CancelledError:
                 break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(
+                    f"PocketBase reminders SSE stream disconnected ({type(e).__name__}: {e}). Reconnecting in {backoff}s..."
+                )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    break
+                backoff = min(backoff * 2, 60)
             except Exception as e:
                 print(
-                    f"PocketBase reminders SSE connection error: {e}. Reconnecting in {backoff}s..."
+                    f"PocketBase reminders SSE unexpected error: {e}. Reconnecting in {backoff}s..."
                 )
                 sentry_sdk.capture_exception(e)
                 try:
