@@ -5,10 +5,14 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import sentry_sdk
-from pocketbase import PocketBase
-from pocketbase.client import FileUpload
 
 from utils import google_books
+from utils.db import (
+    get_pb_client,
+    get_discord_user_id,
+    prepare_file_upload_payload,
+    run_in_executor,
+)
 
 class ReadingListSync(commands.Cog):
     def __init__(self, bot):
@@ -23,12 +27,7 @@ class ReadingListSync(commands.Cog):
             self.sync_reading_list.start()
 
     def get_pb_client(self):
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            raise Exception("PocketBase configuration missing in environment variables.")
-        url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
-        pb = PocketBase(url)
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-        return pb
+        return get_pb_client()
 
     def cog_unload(self):
         self.sync_reading_list.cancel()
@@ -36,14 +35,13 @@ class ReadingListSync(commands.Cog):
     async def _sync_logic(self):
         def _fetch_books():
             pb = self.get_pb_client()
-            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{self.owner_id}'"})
-            if not user_records:
+            pb_user_id = get_discord_user_id(pb, self.owner_id)
+            if not pb_user_id:
                 return []
-            pb_user_id = user_records[0].id
             return pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
 
         try:
-            records = await self.bot.loop.run_in_executor(None, _fetch_books)
+            records = await run_in_executor(_fetch_books)
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return
@@ -114,25 +112,11 @@ class ReadingListSync(commands.Cog):
                         if update_data or (cover_data and cover_filename):
                             def _update():
                                 pb = self.get_pb_client()
-                                if cover_data and cover_filename:
-                                    class BodyDict(dict):
-                                        def __init__(self, regular_data, file_uploads):
-                                            super().__init__(regular_data)
-                                            self.regular_data = regular_data
-                                            self.file_uploads = file_uploads
-                                        def items(self):
-                                            for k, v in self.regular_data.items():
-                                                yield k, v
-                                            for k, v in self.file_uploads.items():
-                                                yield k, v
-                                    file_uploads = {"cover": FileUpload((cover_filename, cover_data))}
-                                    final_entry = BodyDict(update_data, file_uploads)
-                                else:
-                                    final_entry = update_data
-                                    
+                                files = {"cover": (cover_filename, cover_data)} if cover_data and cover_filename else None
+                                final_entry = prepare_file_upload_payload(update_data, files)
                                 pb.collection("shisho_books").update(record.id, final_entry)
                                 
-                            await self.bot.loop.run_in_executor(None, _update)
+                            await run_in_executor(_update)
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
                 

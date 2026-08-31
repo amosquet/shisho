@@ -8,8 +8,15 @@ import discord
 import sentry_sdk
 from discord import app_commands
 from discord.ext import commands
-from google import genai
 from google.genai import errors, types
+
+from utils.discord_helpers import split_message, is_user_authorized
+from utils.llm import (
+    get_gemini_client,
+    get_gemini_model,
+    format_gemini_error,
+    generate_content_with_retry,
+)
 
 ADD_BOOK_TOOL = types.FunctionDeclaration(
     name="add_book",
@@ -147,10 +154,7 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        if self.api_key:
-            self.client = genai.Client(api_key=self.api_key)
-        else:
-            self.client = None
+        self.client = get_gemini_client(self.api_key)
         self.active_threads: set[int] = set()
         self._thread_locks: dict[int, asyncio.Lock] = {}
 
@@ -160,34 +164,21 @@ class AIChat(commands.Cog):
         return self._thread_locks[thread_id]
 
     def is_user_authorized(self, user_id: int) -> bool:
-        owner_id = int(os.getenv("OWNER_ID", "0"))
-        if owner_id and user_id == owner_id:
-            return True
-
-        cog_name = "AICHAT"
-        if os.getenv(f"WHITELIST_ENABLE_{cog_name}", "").lower() == "false":
-            return True
-
-        whitelist_env = os.getenv(f"WHITELIST_{cog_name}", "")
-        if whitelist_env:
-            whitelist = [
-                int(uid.strip())
-                for uid in whitelist_env.split(",")
-                if uid.strip().isdigit()
-            ]
-            return user_id in whitelist
-
-        return not owner_id
+        return is_user_authorized(user_id, "AIChat")
 
     def get_system_instruction(self) -> str | None:
-        prompt_file = "gemini_prompt.txt"
-        base_prompt = ""
-        if os.path.exists(prompt_file):
-            try:
-                with open(prompt_file, "r", encoding="utf-8") as f:
-                    base_prompt = f.read().strip()
-            except Exception as e:
-                print(f"Failed to read {prompt_file}: {e}")
+        if not hasattr(self, "_cached_prompt") or self._cached_prompt is None:
+            prompt_file = "gemini_prompt.txt"
+            base_prompt = ""
+            if os.path.exists(prompt_file):
+                try:
+                    with open(prompt_file, "r", encoding="utf-8") as f:
+                        base_prompt = f.read().strip()
+                except Exception as e:
+                    print(f"Failed to read {prompt_file}: {e}")
+            self._cached_prompt = base_prompt
+        else:
+            base_prompt = self._cached_prompt
 
         behavior_instruction = (
             "You are Shisho (ししょ) responding inside Discord.\n"
@@ -292,26 +283,6 @@ class AIChat(commands.Cog):
         else:
             title = prefix + clean
         return title or "Ask: Gemini Chat"
-
-    def _split_message(self, text: str, max_len: int = 1990) -> list[str]:
-        if not text:
-            return []
-        if len(text) <= max_len:
-            return [text]
-        chunks = []
-        remaining = text
-        while remaining:
-            if len(remaining) <= max_len:
-                chunks.append(remaining)
-                break
-            split_idx = remaining.rfind("\n", 0, max_len)
-            if split_idx == -1 or split_idx < max_len // 2:
-                split_idx = remaining.rfind(" ", 0, max_len)
-            if split_idx == -1 or split_idx < max_len // 2:
-                split_idx = max_len
-            chunks.append(remaining[:split_idx].rstrip())
-            remaining = remaining[split_idx:].lstrip()
-        return [c for c in chunks if c]
 
     def _consolidate_turns(
         self, raw_turns: list[dict]
@@ -617,11 +588,14 @@ class AIChat(commands.Cog):
             tools=AI_CHAT_TOOLS,
         )
 
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name = get_gemini_model()
         max_tool_turns = 5
         for _ in range(max_tool_turns):
-            response = await self.client.aio.models.generate_content(
-                model=model_name, contents=contents_list, config=config
+            response = await generate_content_with_retry(
+                self.client,
+                model=model_name,
+                contents=contents_list,
+                config=config,
             )
 
             # Check if the model requested any tool calls
@@ -688,18 +662,10 @@ class AIChat(commands.Cog):
                         if not text:
                             await ctx.send("Received empty response from Gemini.")
                             return
-                        for chunk in self._split_message(text):
+                        for chunk in split_message(text):
                             await ctx.send(chunk)
-                    except errors.APIError as e:
-                        sentry_sdk.capture_exception(e)
-                        error_msg = str(e)
-                        if "high demand" in error_msg.lower() or "503" in error_msg:
-                            await ctx.send("Gemini is currently experiencing high demand. Please try again later.")
-                        else:
-                            await ctx.send("An error occurred while communicating with the API.")
                     except Exception as e:
-                        sentry_sdk.capture_exception(e)
-                        await ctx.send("An unexpected error occurred.")
+                        await ctx.send(format_gemini_error(e, include_details=False))
             return
 
         # Case 2: Direct Message (Threads not supported in DMs)
@@ -711,18 +677,10 @@ class AIChat(commands.Cog):
                     if not text:
                         await ctx.send("Received empty response from Gemini.")
                         return
-                    for chunk in self._split_message(text):
+                    for chunk in split_message(text):
                         await ctx.send(chunk)
-                except errors.APIError as e:
-                    sentry_sdk.capture_exception(e)
-                    error_msg = str(e)
-                    if "high demand" in error_msg.lower() or "503" in error_msg:
-                        await ctx.send("Gemini is currently experiencing high demand. Please try again later.")
-                    else:
-                        await ctx.send("An error occurred while communicating with the API.")
                 except Exception as e:
-                    sentry_sdk.capture_exception(e)
-                    await ctx.send("An unexpected error occurred.")
+                    await ctx.send(format_gemini_error(e, include_details=False))
             return
 
         # Case 3: Guild Text Channel (Create a thread)
@@ -733,20 +691,11 @@ class AIChat(commands.Cog):
                 if not text:
                     await ctx.send("Received empty response from Gemini.")
                     return
-            except errors.APIError as e:
-                sentry_sdk.capture_exception(e)
-                error_msg = str(e)
-                if "high demand" in error_msg.lower() or "503" in error_msg:
-                    await ctx.send("Gemini is currently experiencing high demand. Please try again later.")
-                else:
-                    await ctx.send("An error occurred while communicating with the API.")
-                return
             except Exception as e:
-                sentry_sdk.capture_exception(e)
-                await ctx.send("An unexpected error occurred.")
+                await ctx.send(format_gemini_error(e, include_details=False))
                 return
 
-            chunks = self._split_message(text)
+            chunks = split_message(text)
             thread = None
             if hasattr(ctx.message, "create_thread"):
                 try:
@@ -820,19 +769,11 @@ class AIChat(commands.Cog):
                     if not text:
                         await interaction.followup.send("Received empty response from Gemini.")
                         return
-                    chunks = self._split_message(text)
+                    chunks = split_message(text)
                     for chunk in chunks:
                         await interaction.followup.send(chunk)
-                except errors.APIError as e:
-                    sentry_sdk.capture_exception(e)
-                    error_msg = str(e)
-                    if "high demand" in error_msg.lower() or "503" in error_msg:
-                        await interaction.followup.send("Gemini is currently experiencing high demand. Please try again later.")
-                    else:
-                        await interaction.followup.send(f"API Error: {error_msg}")
                 except Exception as e:
-                    sentry_sdk.capture_exception(e)
-                    await interaction.followup.send(f"An unexpected error occurred: {str(e)}")
+                    await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
 
         # Case 2: DM Channel (no threads)
@@ -843,19 +784,11 @@ class AIChat(commands.Cog):
                 if not text:
                     await interaction.followup.send("Received empty response from Gemini.")
                     return
-                chunks = self._split_message(text)
+                chunks = split_message(text)
                 for chunk in chunks:
                     await interaction.followup.send(chunk)
-            except errors.APIError as e:
-                sentry_sdk.capture_exception(e)
-                error_msg = str(e)
-                if "high demand" in error_msg.lower() or "503" in error_msg:
-                    await interaction.followup.send("Gemini is currently experiencing high demand. Please try again later.")
-                else:
-                    await interaction.followup.send(f"API Error: {error_msg}")
             except Exception as e:
-                sentry_sdk.capture_exception(e)
-                await interaction.followup.send(f"An unexpected error occurred: {str(e)}")
+                await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
 
         # Case 3: Guild Text Channel (Create a thread)
@@ -865,20 +798,11 @@ class AIChat(commands.Cog):
             if not text:
                 await interaction.followup.send("Received empty response from Gemini.")
                 return
-        except errors.APIError as e:
-            sentry_sdk.capture_exception(e)
-            error_msg = str(e)
-            if "high demand" in error_msg.lower() or "503" in error_msg:
-                await interaction.followup.send("Gemini is currently experiencing high demand. Please try again later.")
-            else:
-                await interaction.followup.send(f"API Error: {error_msg}")
-            return
         except Exception as e:
-            sentry_sdk.capture_exception(e)
-            await interaction.followup.send(f"An unexpected error occurred: {str(e)}")
+            await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
 
-        chunks = self._split_message(text)
+        chunks = split_message(text)
         thread = None
         try:
             starter_label = f"💬 **Question:** {clean_prompt}" if clean_prompt else "🎙️ **Audio Prompt**"
@@ -977,19 +901,11 @@ class AIChat(commands.Cog):
                         text = await self._generate_ai_response(contents, user_id=user_id_str)
                         if not text or text.strip() == "[NO_ACTION]":
                             return
-                        chunks = self._split_message(text)
+                        chunks = split_message(text)
                         for chunk in chunks:
                             await message.channel.send(chunk)
-                    except errors.APIError as e:
-                        sentry_sdk.capture_exception(e)
-                        error_msg = str(e)
-                        if "high demand" in error_msg.lower() or "503" in error_msg:
-                            await message.channel.send("Gemini is currently experiencing high demand. Please try again later.")
-                        else:
-                            await message.channel.send("An error occurred while communicating with the API.")
                     except Exception as e:
-                        sentry_sdk.capture_exception(e)
-                        await message.channel.send("An unexpected error occurred.")
+                        await message.channel.send(format_gemini_error(e, include_details=False))
             return
 
         # Case 2: Message is in DM (Maintains multi-turn context from DM history)
@@ -1006,19 +922,11 @@ class AIChat(commands.Cog):
                     text = await self._generate_ai_response(contents, user_id=user_id_str)
                     if not text or text.strip() == "[NO_ACTION]":
                         return
-                    chunks = self._split_message(text)
+                    chunks = split_message(text)
                     for chunk in chunks:
                         await message.channel.send(chunk)
-                except errors.APIError as e:
-                    sentry_sdk.capture_exception(e)
-                    error_msg = str(e)
-                    if "high demand" in error_msg.lower() or "503" in error_msg:
-                        await message.channel.send("Gemini is currently experiencing high demand. Please try again later.")
-                    else:
-                        await message.channel.send("An error occurred while communicating with the API.")
                 except Exception as e:
-                    sentry_sdk.capture_exception(e)
-                    await message.channel.send("An unexpected error occurred.")
+                    await message.channel.send(format_gemini_error(e, include_details=False))
             return
 
         # Case 3: Message is in a Guild Text Channel
@@ -1031,20 +939,11 @@ class AIChat(commands.Cog):
                 text = await self._generate_ai_response(contents, user_id=user_id_str)
                 if not text or text.strip() == "[NO_ACTION]":
                     return
-            except errors.APIError as e:
-                sentry_sdk.capture_exception(e)
-                error_msg = str(e)
-                if "high demand" in error_msg.lower() or "503" in error_msg:
-                    await message.channel.send("Gemini is currently experiencing high demand. Please try again later.")
-                else:
-                    await message.channel.send("An error occurred while communicating with the API.")
-                return
             except Exception as e:
-                sentry_sdk.capture_exception(e)
-                await message.channel.send("An unexpected error occurred.")
+                await message.channel.send(format_gemini_error(e, include_details=False))
                 return
 
-            chunks = self._split_message(text)
+            chunks = split_message(text)
             should_create_thread = self._should_create_thread(clean_text, text, chunks)
 
             thread = None

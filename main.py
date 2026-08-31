@@ -8,50 +8,56 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
+from utils.discord_helpers import is_user_authorized
+
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+_raw_owner_id = os.getenv("OWNER_ID", "0")
+OWNER_ID = int(_raw_owner_id) if _raw_owner_id.isdigit() else 0
 
 # Initialise Sentry
 SENTRY_DSN = os.getenv("SENTRY_DSN")
-if SENTRY_DSN:
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        # Set traces_sample_rate to 1.0 to capture 100%
-        # of transactions for performance monitoring.
-        traces_sample_rate=1.0,
-        # Set profiles_sample_rate to 1.0 to capture 100%
-        # of transactions for profiling.
-        profiles_sample_rate=1.0,
-    )
+if SENTRY_DSN and SENTRY_DSN.startswith(("http://", "https://")):
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            # Set traces_sample_rate to 1.0 to capture 100%
+            # of transactions for performance monitoring.
+            traces_sample_rate=1.0,
+            # Set profiles_sample_rate to 1.0 to capture 100%
+            # of transactions for profiling.
+            profiles_sample_rate=1.0,
+        )
+    except Exception as e:
+        print(f"Failed to initialize Sentry: {e}")
+
+
+def ensure_data_dir() -> str:
+    """Ensure data directory exists and migrate legacy root JSON files if present."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, "data")
+    os.makedirs(data_dir, exist_ok=True)
+
+    legacy_files = ["announcements.json", "book_cache.json", "notified_books.json"]
+    for filename in legacy_files:
+        old_path = os.path.join(base_dir, filename)
+        new_path = os.path.join(data_dir, filename)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                import shutil
+                shutil.move(old_path, new_path)
+                print(f"Migrated legacy file {old_path} -> {new_path}")
+            except Exception as e:
+                print(f"Failed to migrate {old_path} to {new_path}: {e}")
+    return data_dir
+
 
 
 async def is_authorised_interaction_check(interaction: discord.Interaction) -> bool:
-    # Owner always has access
-    if OWNER_ID and interaction.user.id == OWNER_ID:
-        return True
-
-    # Check for cog-specific whitelist
-    if interaction.command:
-        cog = getattr(interaction.command, 'binding', None)  # type: ignore
-        if cog:
-            cog_name = cog.__cog_name__.upper()
-
-            # Check if whitelist is explicitly disabled for this cog (making it public)
-            if os.getenv(f"WHITELIST_ENABLE_{cog_name}", "").lower() == "false":
-                return True
-
-            whitelist_env = os.getenv(f"WHITELIST_{cog_name}", "")
-            if whitelist_env:
-                whitelist = [
-                    int(uid.strip())
-                    for uid in whitelist_env.split(",")
-                    if uid.strip().isdigit()
-                ]
-                return interaction.user.id in whitelist
-
-    return not OWNER_ID
+    cog = getattr(interaction.command, "binding", None) if interaction.command else None
+    cog_name = getattr(cog, "__cog_name__", "") if cog else ""
+    return is_user_authorized(interaction.user.id, cog_name)
 
 
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -137,6 +143,9 @@ class ShishoBot(commands.Bot):
             print(f"Could not send reconnect message to owner: {e}")
 
     async def setup_hook(self):
+        # Ensure data directory exists and legacy files are migrated
+        ensure_data_dir()
+
         # Load extensions (cogs)
         for filename in os.listdir("./cogs"):
             if filename.endswith(".py") and filename != "__init__.py":
@@ -181,6 +190,7 @@ class ShishoBot(commands.Bot):
 
 
 async def main():
+    ensure_data_dir()
     if not TOKEN:
         print("Error: DISCORD_TOKEN not found in environment variables.")
         print("Please copy .env.example to .env and fill in your tokens.")

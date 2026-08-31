@@ -1,13 +1,14 @@
-import os
-import subprocess
+import asyncio
 import json
+import os
 from datetime import datetime, timezone
-
 from typing import Literal, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from utils.db import run_in_executor
 
 
 def is_owner():
@@ -94,10 +95,15 @@ class Admin(commands.Cog):
     @app_commands.describe(message="The message to announce")
     @is_owner()
     async def announce(self, interaction: discord.Interaction, message: str):
-        try:
-            filename = "announcements.json"
+        def _save_announcement():
+            data_dir = "data"
+            os.makedirs(data_dir, exist_ok=True)
+            filename = os.path.join(data_dir, "announcements.json")
+            if not os.path.exists(filename) and os.path.exists("announcements.json"):
+                filename = "announcements.json"
+
             if os.path.exists(filename):
-                with open(filename, "r") as f:
+                with open(filename, "r", encoding="utf-8") as f:
                     data = json.load(f)
             else:
                 data = []
@@ -116,9 +122,14 @@ class Admin(commands.Cog):
             }
             data.append(new_announcement)
 
-            with open(filename, "w") as f:
+            target_file = os.path.join(data_dir, "announcements.json")
+            with open(target_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
+            return next_id
+
+        try:
+            next_id = await run_in_executor(_save_announcement)
             await interaction.response.send_message(f"✅ Announcement created successfully! ID: {next_id}")
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed to create announcement: {e}")
@@ -128,7 +139,7 @@ class Admin(commands.Cog):
     async def update(self, interaction: discord.Interaction):
         await interaction.response.send_message("🔄 Pulling updates and restarting...")
         try:
-            subprocess.Popen(["/bin/bash", "./update_shisho.sh"])
+            await asyncio.create_subprocess_exec("/bin/bash", "./update_shisho.sh")
         except Exception as e:
             # We use followup since we already sent a response
             await interaction.followup.send(f"❌ Failed to trigger update: {e}")

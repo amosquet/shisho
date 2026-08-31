@@ -6,9 +6,9 @@ import discord
 from discord import app_commands
 import sentry_sdk
 from discord.ext import commands
-from pocketbase import PocketBase
 
 from utils import google_books
+from utils.db import get_pb_client, run_in_executor
 
 
 class SuggestedBooks(commands.Cog):
@@ -82,12 +82,8 @@ class SuggestedBooks(commands.Cog):
         else:
             display_name = "Unknown Book"
 
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            raise Exception("PocketBase configuration missing.")
-
         def add_to_pocketbase():
-            pb = PocketBase(self.pb_url or "")
-            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            pb = get_pb_client()
 
             entry = {
                 "title": title,
@@ -100,17 +96,13 @@ class SuggestedBooks(commands.Cog):
 
             pb.collection("suggested_books").create(entry)
 
-        await self.bot.loop.run_in_executor(None, add_to_pocketbase)
+        await run_in_executor(add_to_pocketbase)
         return display_name
 
     @app_commands.command(name="suggestions", description="Lists the latest suggested books.")
     async def list_suggestions(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            await interaction.followup.send("Error: PocketBase configuration missing.")
-            return
-
         try:
             response = await self.get_suggestions_text()
             await interaction.followup.send(response)
@@ -119,15 +111,11 @@ class SuggestedBooks(commands.Cog):
             await interaction.followup.send(f"An error occurred: {e}")
 
     async def get_suggestions_text(self) -> str:
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            raise Exception("PocketBase configuration missing.")
-
         def get_from_pocketbase():
-            pb = PocketBase(self.pb_url or "")
-            pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+            pb = get_pb_client()
             return pb.collection("suggested_books").get_list(1, 10, query_params={"sort": "-dateSuggested"})
 
-        result = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+        result = await run_in_executor(get_from_pocketbase)
 
         if not result.items:
             return "No books have been suggested yet!"

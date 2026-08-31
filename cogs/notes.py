@@ -6,15 +6,21 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import sentry_sdk
-from pocketbase import PocketBase
-from pocketbase.client import FileUpload
 import httpx
 
 import mimetypes
 import json
 import re
-from google import genai
 from google.genai import types
+
+from utils.db import (
+    get_pb_client,
+    get_pb_url,
+    get_discord_user_id,
+    prepare_file_upload_payload,
+    run_in_executor,
+)
+from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
 class Notes(commands.Cog):
     def __init__(self, bot):
@@ -34,14 +40,13 @@ class Notes(commands.Cog):
                     mime_type = 'audio/ogg'
                     
                 if mime_type and mime_type.startswith('audio/'):
-                    api_key = os.getenv("GEMINI_API_KEY")
-                    if api_key:
+                    client = get_gemini_client()
+                    if client:
                         try:
-                            client = genai.Client(api_key=api_key)
                             prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
-                            
-                            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-                            response = await client.aio.models.generate_content(
+                            model_name = get_gemini_model()
+                            response = await generate_content_with_retry(
+                                client,
                                 model=model_name,
                                 contents=[
                                     types.Part.from_bytes(data=attachment_bytes, mime_type=mime_type),
@@ -68,31 +73,10 @@ class Notes(commands.Cog):
                         return "Gemini API key not configured for transcription."
 
             def _add_to_pb():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-                
-                # Look up PocketBase user ID from Discord ID
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
-                if not user_records:
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
-                pb_user_id = user_records[0].id
-                
-                class MultiFileUpload(FileUpload):
-                    def __init__(self, file_data_list):
-                        self.file_data_list = file_data_list
-                    def get(self, key: str):
-                        return tuple((key, data) for data in self.file_data_list)
-
-                class BodyDict(dict):
-                    def __init__(self, regular_data, file_uploads):
-                        super().__init__(regular_data)
-                        self.regular_data = regular_data
-                        self.file_uploads = file_uploads
-                    def items(self):
-                        for k, v in self.regular_data.items():
-                            yield k, v
-                        for k, v in self.file_uploads.items():
-                            yield k, v
 
                 entry = {
                     "owner": str(pb_user_id),
@@ -100,16 +84,13 @@ class Notes(commands.Cog):
                     "title": title
                 }
                 
-                if attachments:
-                    file_uploads = {"attachment": MultiFileUpload(attachments)}
-                    final_entry = BodyDict(entry, file_uploads)
-                else:
-                    final_entry = entry
+                files = {"attachment": attachments} if attachments else None
+                final_entry = prepare_file_upload_payload(entry, files)
                     
                 pb.collection("notes").create(final_entry)
                 return "Note saved successfully!"
 
-            res = await self.bot.loop.run_in_executor(None, _add_to_pb)
+            res = await run_in_executor(_add_to_pb)
             return res
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -118,14 +99,10 @@ class Notes(commands.Cog):
     async def get_notes(self, user_id: str, limit: int = 10, query: str = None):
         try:
             def _get_from_pb():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-                
-                # Look up PocketBase user ID from Discord ID
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
-                if not user_records:
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
-                pb_user_id = user_records[0].id
                 
                 filter_str = f"owner = '{pb_user_id}'"
                 query_params = {"sort": "-id"}
@@ -137,6 +114,7 @@ class Notes(commands.Cog):
                     query_params["filter"] = filter_str
                 records = pb.collection("notes").get_full_list(query_params=query_params)
                 
+                base_url = get_pb_url(self.pb_url)
                 results = []
                 for record in records:
                     record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
@@ -169,10 +147,10 @@ class Notes(commands.Cog):
                         attachment = getattr(record, "attachment", "") or (record.get("attachment", "") if hasattr(record, "get") else "")
                         if attachment:
                             if isinstance(attachment, list):
-                                note["attachment_urls"] = [f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{att}" for att in attachment]
+                                note["attachment_urls"] = [f"{base_url}/api/files/{record.collection_id}/{record.id}/{att}" for att in attachment]
                                 note["attachment_filenames"] = attachment
                             else:
-                                note["attachment_urls"] = [f"{self.pb_url}/api/files/{record.collection_id}/{record.id}/{attachment}"]
+                                note["attachment_urls"] = [f"{base_url}/api/files/{record.collection_id}/{record.id}/{attachment}"]
                                 note["attachment_filenames"] = [attachment]
                             note["file_token"] = pb.auth_store.token
                             
@@ -187,7 +165,11 @@ class Notes(commands.Cog):
                 results.sort(key=sort_key, reverse=True)
                 return results[:limit]
 
-            notes = await self.bot.loop.run_in_executor(None, _get_from_pb)
+            notes = await run_in_executor(_get_from_pb)
+            return notes
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return str(e)
             return notes
         except Exception as e:
             sentry_sdk.capture_exception(e)

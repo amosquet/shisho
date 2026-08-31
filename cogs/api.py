@@ -8,7 +8,8 @@ import json
 import discord
 from discord.ext import commands, tasks
 import sentry_sdk
-from pocketbase import PocketBase
+
+from utils.db import get_pb_client, validate_pb_token, run_in_executor
 
 class API(commands.Cog):
     def __init__(self, bot):
@@ -33,20 +34,10 @@ class API(commands.Cog):
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
 
     def _get_pb(self):
-        pb = PocketBase(self.pb_url or "")
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-        return pb
+        return get_pb_client()
 
     def _validate_pb_token(self, token: str):
-        """Validate a PocketBase user token via authRefresh.
-        Returns the user record dict on success, or None on failure."""
-        try:
-            pb = PocketBase(self.pb_url or "")
-            pb.auth_store.save(token, None)
-            result = pb.collection("shisho_users").auth_refresh()
-            return result.record
-        except Exception:
-            return None
+        return validate_pb_token(token)
 
     def _extract_bearer_token(self, request: aiohttp.web.Request) -> str | None:
         """Extract the Bearer token from the Authorization header."""
@@ -93,7 +84,7 @@ class API(commands.Cog):
         if not token:
             return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
 
-        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        user_record = await run_in_executor(validate_pb_token, token)
         if not user_record:
             return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
 
@@ -130,7 +121,7 @@ class API(commands.Cog):
         if not token:
             return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
 
-        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        user_record = await run_in_executor(validate_pb_token, token)
         if not user_record:
             return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
 
@@ -166,7 +157,7 @@ class API(commands.Cog):
                 pb = self._get_pb()
                 pb.collection("shisho_users").update(pb_user_id, {"discord_id": str(discord_id)})
             
-            await self.bot.loop.run_in_executor(None, _update)
+            await run_in_executor(_update)
             
             try:
                 user = await self.bot.fetch_user(int(discord_id))
@@ -188,7 +179,7 @@ class API(commands.Cog):
         if not token:
             return aiohttp.web.json_response({"error": "Authorization required"}, status=401)
 
-        user_record = await self.bot.loop.run_in_executor(None, self._validate_pb_token, token)
+        user_record = await run_in_executor(validate_pb_token, token)
         if not user_record:
             return aiohttp.web.json_response({"error": "Invalid or expired token"}, status=401)
 
@@ -203,7 +194,7 @@ class API(commands.Cog):
                 pb.collection("shisho_users").update(pb_user_id, {"discord_id": ""})
                 return discord_id
                 
-            discord_id = await self.bot.loop.run_in_executor(None, _update)
+            discord_id = await run_in_executor(_update)
             
             if discord_id:
                 try:
@@ -218,12 +209,19 @@ class API(commands.Cog):
             return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
 
     async def handle_get_announcements(self, request: aiohttp.web.Request):
+        def _read_announcements():
+            filename = os.path.join("data", "announcements.json")
+            if not os.path.exists(filename) and os.path.exists("announcements.json"):
+                filename = "announcements.json"
+
+            if os.path.exists(filename):
+                with open(filename, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            return []
+
         try:
-            if os.path.exists("announcements.json"):
-                with open("announcements.json", "r") as f:
-                    data = json.load(f)
-                    return aiohttp.web.json_response(data)
-            return aiohttp.web.json_response([])
+            data = await run_in_executor(_read_announcements)
+            return aiohttp.web.json_response(data)
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)

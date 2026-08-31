@@ -3,6 +3,8 @@ import os
 import discord
 from discord.ext import commands
 
+from utils.discord_helpers import is_user_authorized
+
 
 class Notifications(commands.Cog):
     def __init__(self, bot):
@@ -21,20 +23,8 @@ class Notifications(commands.Cog):
         if self.owner_id and any(
             mention.id == self.owner_id for mention in message.mentions
         ):
-            # Respect the permission/whitelist toggle
-            is_public = (
-                os.getenv("WHITELIST_ENABLE_NOTIFICATIONS", "false").lower() == "false"
-            )
-
-            if not is_public:
-                whitelist_env = os.getenv("WHITELIST_NOTIFICATIONS", "")
-                whitelist = [
-                    int(uid.strip())
-                    for uid in whitelist_env.split(",")
-                    if uid.strip().isdigit()
-                ]
-                if message.author.id not in whitelist:
-                    return
+            if not is_user_authorized(message.author.id, "NOTIFICATIONS"):
+                return
 
             owner = self.bot.get_user(self.owner_id)
             if not owner:

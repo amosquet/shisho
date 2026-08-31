@@ -5,8 +5,13 @@ import discord
 from discord import app_commands
 import sentry_sdk
 from discord.ext import commands
-from pocketbase import PocketBase
-from pocketbase.client import FileUpload
+
+from utils.db import (
+    get_pb_client,
+    get_discord_user_id,
+    prepare_file_upload_payload,
+    run_in_executor,
+)
 
 class ReadingList(commands.Cog):
     def __init__(self, bot):
@@ -16,12 +21,7 @@ class ReadingList(commands.Cog):
         self.pb_password = os.getenv("POCKETBASE_PASSWORD")
 
     def get_pb_client(self):
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            raise Exception("PocketBase configuration missing in environment variables.")
-        url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
-        pb = PocketBase(url)
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-        return pb
+        return get_pb_client()
 
     @app_commands.command(name="addbook", description="Adds a book to the reading list on PocketBase.")
     @app_commands.describe(
@@ -133,10 +133,9 @@ class ReadingList(commands.Cog):
 
         def _add():
             pb = self.get_pb_client()
-            user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
-            if not user_records:
+            pb_user_id = get_discord_user_id(pb, discord_id)
+            if not pb_user_id:
                 raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
-            pb_user_id = user_records[0].id
 
             new_book = {
                 "owner": str(pb_user_id),
@@ -151,36 +150,20 @@ class ReadingList(commands.Cog):
                 "description": description,
             }
             
-            if cover_filename and cover_data:
-                class BodyDict(dict):
-                    def __init__(self, regular_data, file_uploads):
-                        super().__init__(regular_data)
-                        self.regular_data = regular_data
-                        self.file_uploads = file_uploads
-                    def items(self):
-                        for k, v in self.regular_data.items():
-                            yield k, v
-                        for k, v in self.file_uploads.items():
-                            yield k, v
-                file_uploads = {"cover": FileUpload((cover_filename, cover_data))}
-                final_entry = BodyDict(new_book, file_uploads)
-            else:
-                final_entry = new_book
+            files = {"cover": (cover_filename, cover_data)} if cover_filename and cover_data else None
+            final_entry = prepare_file_upload_payload(new_book, files)
                 
             pb.collection("shisho_books").create(final_entry)
 
-        await self.bot.loop.run_in_executor(None, _add)
+        await run_in_executor(_add)
 
     async def fetch_reading_list(self, discord_id: str) -> list[dict]:
         def _fetch():
             try:
-                if not self.pb_url or not self.pb_user or not self.pb_password:
-                    return []
                 pb = self.get_pb_client()
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{discord_id}'"})
-                if not user_records:
+                pb_user_id = get_discord_user_id(pb, discord_id)
+                if not pb_user_id:
                     return []
-                pb_user_id = user_records[0].id
 
                 records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
                 result = []
@@ -199,7 +182,7 @@ class ReadingList(commands.Cog):
                 sentry_sdk.capture_exception(e)
                 return []
 
-        return await self.bot.loop.run_in_executor(None, _fetch)
+        return await run_in_executor(_fetch)
 
 async def setup(bot):
     await bot.add_cog(ReadingList(bot))

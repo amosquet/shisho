@@ -14,3 +14,13 @@ wheels/
 
 # Configuration files
 gemini_prompt.txt
+
+# Data runtime caches
+data/book_cache.json
+data/notified_books.json
+data/permissions.json
+book_cache.json
+notified_books.json
+
+# Agent artifacts
+.agents/

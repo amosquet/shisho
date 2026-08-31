@@ -11,8 +11,9 @@ from discord.ext import commands, tasks
 import sentry_sdk
 
 from utils import google_books
+from utils.db import get_pb_client, get_discord_user_id, run_in_executor
 
-NOTIFIED_BOOKS_FILE = "notified_books.json"
+NOTIFIED_BOOKS_FILE = os.path.join("data", "notified_books.json")
 
 class AuthorTracking(commands.Cog):
     def __init__(self, bot):
@@ -27,49 +28,44 @@ class AuthorTracking(commands.Cog):
             self.check_new_releases.start()
 
     def get_pb_client(self):
-        from pocketbase import PocketBase
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            raise Exception("PocketBase configuration missing in environment variables.")
-        url = self.pb_url if "://" in self.pb_url else f"https://{self.pb_url}"
-        pb = PocketBase(url)
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-        return pb
+        return get_pb_client()
 
     def cog_unload(self):
         self.check_new_releases.cancel()
 
     def load_notified_books(self) -> set:
-        if os.path.exists(NOTIFIED_BOOKS_FILE):
+        target_file = NOTIFIED_BOOKS_FILE
+        if not os.path.exists(target_file) and os.path.exists("notified_books.json"):
+            target_file = "notified_books.json"
+
+        if os.path.exists(target_file):
             try:
-                with open(NOTIFIED_BOOKS_FILE, "r", encoding="utf-8") as f:
+                with open(target_file, "r", encoding="utf-8") as f:
                     return set(json.load(f))
             except Exception as e:
-                print(f"Failed to load {NOTIFIED_BOOKS_FILE}: {e}")
+                print(f"Failed to load {target_file}: {e}")
                 return set()
         return set()
 
     def save_notified_books(self, notified_books: set):
         try:
+            os.makedirs(os.path.dirname(NOTIFIED_BOOKS_FILE) or ".", exist_ok=True)
             with open(NOTIFIED_BOOKS_FILE, "w", encoding="utf-8") as f:
                 json.dump(list(notified_books), f, indent=4)
         except Exception as e:
             print(f"Failed to save {NOTIFIED_BOOKS_FILE}: {e}")
 
     async def get_unique_authors(self) -> set:
-        if not self.pb_url or not self.pb_user or not self.pb_password:
-            return set()
-
         try:
             def _fetch():
                 pb = self.get_pb_client()
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{self.owner_id}'"})
-                if not user_records:
+                pb_user_id = get_discord_user_id(pb, self.owner_id)
+                if not pb_user_id:
                     print(f"Owner not found in shisho_users for discord_id={self.owner_id}. Cannot track authors.")
                     return []
-                pb_user_id = user_records[0].id
                 return pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
             
-            records = await self.bot.loop.run_in_executor(None, _fetch)
+            records = await run_in_executor(_fetch)
             
             authors = set()
             for record in records:
@@ -105,7 +101,7 @@ class AuthorTracking(commands.Cog):
         if not authors:
             return 0
 
-        notified_books = self.load_notified_books()
+        notified_books = await run_in_executor(self.load_notified_books)
         new_books_found = []
 
         for author in authors:
@@ -149,7 +145,7 @@ class AuthorTracking(commands.Cog):
             # Small delay to respect rate limits
             await asyncio.sleep(1)
 
-        self.save_notified_books(notified_books)
+        await run_in_executor(self.save_notified_books, notified_books)
         
         if new_books_found:
             owner = self.bot.get_user(self.owner_id)

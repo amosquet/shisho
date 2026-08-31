@@ -7,7 +7,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import sentry_sdk
-from pocketbase import PocketBase
+
+from utils.db import get_pb_client, get_discord_user_id, run_in_executor
 
 class Reminders(commands.Cog):
     def __init__(self, bot):
@@ -68,13 +69,10 @@ class Reminders(commands.Cog):
 
         try:
             def add_to_pocketbase():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-                
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
-                if not user_records:
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
-                pb_user_id = user_records[0].id
 
                 # We format it to standard ISO string that pocketbase can parse as a Date field, or store it as string
                 # We'll use a string formatted as ISO-8601: "2026-05-24 10:00:00.000Z"
@@ -89,7 +87,7 @@ class Reminders(commands.Cog):
                 pb.collection("reminders").create(entry)
                 return "success"
 
-            res = await self.bot.loop.run_in_executor(None, add_to_pocketbase)
+            res = await run_in_executor(add_to_pocketbase)
             if res != "success":
                 return res
             
@@ -106,19 +104,16 @@ class Reminders(commands.Cog):
     async def get_reminders_text(self, user_id: str, for_discord: bool = True) -> str:
         try:
             def get_from_pocketbase():
-                pb = PocketBase(self.pb_url or "")
-                pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
-                
-                user_records = pb.collection("shisho_users").get_full_list(query_params={"filter": f"discord_id='{user_id}'"})
-                if not user_records:
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
                     return None
-                pb_user_id = user_records[0].id
                 
                 # Fetch only for this user, and where is_sent = False
                 filter_str = f"owner = '{pb_user_id}' && is_sent = False"
                 return pb.collection("reminders").get_full_list(query_params={"filter": filter_str, "sort": "remind_at"})
 
-            records = await self.bot.loop.run_in_executor(None, get_from_pocketbase)
+            records = await run_in_executor(get_from_pocketbase)
 
             if records is None:
                 return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
@@ -181,8 +176,7 @@ class Reminders(commands.Cog):
         await self.bot.wait_until_ready()
 
     def _check_and_send(self):
-        pb = PocketBase(self.pb_url or "")
-        pb.collection("users").auth_with_password(self.pb_user or "", self.pb_password or "")
+        pb = get_pb_client()
         
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
         filter_str = f"is_sent = False && remind_at <= '{now_str}'"

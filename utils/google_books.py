@@ -1,18 +1,23 @@
-import os
+import asyncio
 import json
+import os
+
 import aiohttp
 import sentry_sdk
 
-CACHE_FILE = "book_cache.json"
+CACHE_FILE = os.path.join("data", "book_cache.json")
 _cache = None
 
 def _load_cache():
     global _cache
     if _cache is not None:
         return _cache
-    if os.path.exists(CACHE_FILE):
+    target_file = CACHE_FILE
+    if not os.path.exists(target_file) and os.path.exists("book_cache.json"):
+        target_file = "book_cache.json"
+    if os.path.exists(target_file):
         try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 _cache = json.load(f)
                 return _cache
         except Exception as e:
@@ -27,6 +32,7 @@ def _save_cache():
     if _cache is None:
         return
     try:
+        os.makedirs(os.path.dirname(CACHE_FILE) or ".", exist_ok=True)
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(_cache, f, indent=4)
     except Exception as e:
@@ -94,7 +100,7 @@ async def fetch_book_data(query: str, api_key: str):
                         # 3. Store inside local JSON cache if meaningful data was found
                         if book_data.get("publishedDate") != "Unknown":
                             cache[query_key] = book_data
-                            _save_cache()
+                            await asyncio.to_thread(_save_cache)
 
                         return book_data
                     else:
