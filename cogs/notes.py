@@ -36,14 +36,27 @@ class Notes(commands.Cog):
                 mime_type, _ = mimetypes.guess_type(attachment_filename)
                 
                 # Check for Discord's common voice message format as well, which might not be guessed correctly
-                if attachment_filename.endswith('.ogg'):
+                if attachment_filename.lower().endswith(('.jpg', '.jpeg')):
+                    mime_type = 'image/jpeg'
+                elif attachment_filename.lower().endswith('.png'):
+                    mime_type = 'image/png'
+                elif attachment_filename.lower().endswith('.webp'):
+                    mime_type = 'image/webp'
+                elif attachment_filename.lower().endswith('.gif'):
+                    mime_type = 'image/gif'
+                elif attachment_filename.lower().endswith(('.heic', '.heif')):
+                    mime_type = 'image/heic'
+                elif attachment_filename.endswith('.ogg'):
                     mime_type = 'audio/ogg'
                     
-                if mime_type and mime_type.startswith('audio/'):
+                if mime_type and (mime_type.startswith('audio/') or mime_type.startswith('image/')):
                     client = get_gemini_client()
                     if client:
                         try:
-                            prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
+                            if mime_type.startswith('audio/'):
+                                prompt = "Transcribe the audio accurately. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
+                            else:
+                                prompt = "Analyze and extract all relevant text and key information from this image accurately for a personal note. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
                             model_name = get_gemini_model()
                             response = await generate_content_with_retry(
                                 client,
@@ -68,9 +81,9 @@ class Notes(commands.Cog):
                                 
                         except Exception as e:
                             sentry_sdk.capture_exception(e)
-                            return "Failed to transcribe audio. An internal error occurred."
+                            return "Failed to process attachment with AI. An internal error occurred."
                     else:
-                        return "Gemini API key not configured for transcription."
+                        return "Gemini API key not configured for AI processing."
 
             def _add_to_pb():
                 pb = get_pb_client()

@@ -46,11 +46,11 @@ I can control Shisho remotely by sending commands via email or SMS (using email-
 - `/addbook [status] [title] [author] [publish_date] [isbn] [start_date] [end_date] [cover_image]`: Adds a book to the PocketBase reading list.
 - `/deletebook <book>`: Removes a book from your reading list (supports title, ISBN, or interactive autocomplete).
 
-### Suggested Books (Public)
+### Book Recommendations & Suggestions (Public)
 
-- `/suggest [title] [author] [isbn]`: Anyone can suggest books! You can suggest using an ISBN, or title/author. Suggestions are synced with PocketBase.
-- `/suggestions`: Lists the latest suggested books.
-- `/deletesuggestion <suggestion>`: Removes a book from the suggested books list (supports title, ISBN, or interactive autocomplete for your suggestions).
+- `/suggest [title] [author] [isbn] [recipient] [message] [is_public]`: Anyone can suggest or recommend books! You can recommend a book directly to a friend with an optional note, or make a public recommendation. Automatically fetches covers and synopsis details via Google Books, and includes an interactive button for recipients to add the book to their reading list.
+- `/suggestions [filter]`: Lists recommended books. Filter by `All`, `For Me` (received recommendations), `From Me` (sent recommendations), or `Public`.
+- `/deletesuggestion <suggestion>`: Removes a book from the recommendations list (supports title, ISBN, or interactive autocomplete for recommendations you created or received).
 
 ### Book Information Lookup (Public)
 

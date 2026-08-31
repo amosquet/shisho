@@ -198,7 +198,7 @@ class TestDeletion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pb_mock.collection("reminders").delete.call_count, 2)
 
     # -------------------------------------------------------------
-    # 4. Suggestions Deletion Tests
+    # 4. Suggestions / Recommendations Deletion Tests
     # -------------------------------------------------------------
     @patch("cogs.suggested_books.get_pb_client")
     async def test_delete_suggestion_owner_or_author(self, mock_get_pb):
@@ -207,23 +207,123 @@ class TestDeletion(unittest.IsolatedAsyncioTestCase):
         pb_mock = MagicMock()
         mock_get_pb.return_value = pb_mock
 
-        sug_record = MockRecord(id="sug_1", title="Neuromancer", suggestedBy="alice#1234")
+        sug_record = MockRecord(
+            id="sug_1",
+            title="Neuromancer",
+            sender_discord_id="111",
+            recipient_discord_id="222",
+            suggestedBy="alice#1234",
+        )
         pb_mock.collection.return_value.get_one.return_value = sug_record
 
         bot_mock = MagicMock()
         cog = SuggestedBooks(bot_mock)
 
-        # Creator can delete
-        res1 = await cog.delete_suggestion("sug_1", user_name="alice#1234", is_owner=False)
+        # Sender (by discord id) can delete
+        res1 = await cog.delete_suggestion("sug_1", user_discord_id="111", is_owner=False)
         self.assertIn("Successfully removed **Neuromancer**", res1)
 
-        # Non-creator non-owner cannot delete
-        res2 = await cog.delete_suggestion("sug_1", user_name="bob#5678", is_owner=False)
-        self.assertIn("You can only delete suggestions that you created.", res2)
+        # Recipient (by discord id) can delete/dismiss
+        res2 = await cog.delete_suggestion("sug_1", user_discord_id="222", is_owner=False)
+        self.assertIn("Successfully removed **Neuromancer**", res2)
+
+        # Unrelated user cannot delete
+        res3 = await cog.delete_suggestion("sug_1", user_discord_id="333", is_owner=False)
+        self.assertIn("You can only delete recommendations that you created or received.", res3)
 
         # Owner can delete anything
-        res3 = await cog.delete_suggestion("sug_1", user_name="bob#5678", is_owner=True)
-        self.assertIn("Successfully removed **Neuromancer**", res3)
+        res4 = await cog.delete_suggestion("sug_1", user_discord_id="333", is_owner=True)
+        self.assertIn("Successfully removed **Neuromancer**", res4)
+
+    @patch("cogs.suggested_books.get_discord_user_id")
+    @patch("cogs.suggested_books.get_pb_client")
+    async def test_add_suggestion_peer_to_peer(self, mock_get_pb, mock_get_user_id):
+        from cogs.suggested_books import SuggestedBooks
+
+        mock_get_user_id.side_effect = lambda pb, did: f"pb_{did}" if did else None
+        pb_mock = MagicMock()
+        mock_get_pb.return_value = pb_mock
+
+        bot_mock = MagicMock()
+        cog = SuggestedBooks(bot_mock)
+
+        res = await cog.add_suggestion(
+            title="Klara and the Sun",
+            author="Kazuo Ishiguro",
+            sender_discord_id="111",
+            recipient_discord_id="222",
+            message="You will love this!",
+            is_public=False,
+        )
+
+        self.assertEqual(res["title"], "Klara and the Sun")
+        self.assertEqual(res["author"], "Kazuo Ishiguro")
+        self.assertIn("**Klara and the Sun** by Kazuo Ishiguro", res["display_name"])
+
+        pb_mock.collection.assert_called_with("shisho_books_recommendations")
+        create_args = pb_mock.collection("shisho_books_recommendations").create.call_args[0][0]
+        self.assertEqual(create_args["title"], "Klara and the Sun")
+        self.assertEqual(create_args["author"], "Kazuo Ishiguro")
+        self.assertEqual(create_args["sender"], "pb_111")
+        self.assertEqual(create_args["sender_discord_id"], "111")
+        self.assertEqual(create_args["recipient"], "pb_222")
+        self.assertEqual(create_args["recipient_discord_id"], "222")
+        self.assertEqual(create_args["message"], "You will love this!")
+        self.assertFalse(create_args["is_public"])
+
+    @patch("cogs.suggested_books.get_pb_client")
+    async def test_get_suggestions_text_filtering(self, mock_get_pb):
+        from cogs.suggested_books import SuggestedBooks
+
+        pb_mock = MagicMock()
+        mock_get_pb.return_value = pb_mock
+
+        rec1 = MockRecord(
+            title="Book One",
+            author="Author One",
+            sender_discord_id="111",
+            recipient_discord_id="222",
+            is_public=False,
+            message="Read this!",
+            date_suggested="2026-08-30",
+        )
+        pb_mock.collection.return_value.get_list.return_value = MockRecord(items=[rec1])
+
+        bot_mock = MagicMock()
+        cog = SuggestedBooks(bot_mock)
+
+        text = await cog.get_suggestions_text(user_discord_id="222", filter_type="for_me")
+        self.assertIn("Books Recommended to You", text)
+        self.assertIn("**Book One** by Author One", text)
+        self.assertIn("From: <@111>", text)
+        self.assertIn("To: <@222>", text)
+        self.assertIn("Read this!", text)
+
+    @patch("cogs.suggested_books.get_pb_client")
+    async def test_delete_suggestion_by_search(self, mock_get_pb):
+        from cogs.suggested_books import SuggestedBooks
+
+        pb_mock = MagicMock()
+        mock_get_pb.return_value = pb_mock
+        # get_one fails
+        pb_mock.collection.return_value.get_one.side_effect = Exception("Not an ID")
+
+        rec1 = MockRecord(
+            id="sug_search_1",
+            title="Hyperion",
+            author="Dan Simmons",
+            sender_discord_id="111",
+            recipient_discord_id="222",
+            isbn="9780553283686",
+        )
+        pb_mock.collection.return_value.get_full_list.return_value = [rec1]
+
+        bot_mock = MagicMock()
+        cog = SuggestedBooks(bot_mock)
+
+        res = await cog.delete_suggestion("Hyperion", user_discord_id="111", is_owner=False)
+        self.assertIn("Successfully removed **Hyperion** from recommendations.", res)
+        pb_mock.collection("shisho_books_recommendations").delete.assert_called_with("sug_search_1")
 
     # -------------------------------------------------------------
     # 5. Email Gateway Command Routing Tests

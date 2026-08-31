@@ -21,6 +21,7 @@ data/notified_books.json
 data/permissions.json
 book_cache.json
 notified_books.json
+tests/
 
 # Agent artifacts
 .agents/

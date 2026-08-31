@@ -200,7 +200,14 @@ class EmailGateway(commands.Cog):
         elif " by " in args:
             title, author = args.split(" by ", 1)
 
-        await suggested_cog.add_suggestion(title.strip(), author.strip(), isbn, sender, "Email")
+        await suggested_cog.add_suggestion(
+            title=title.strip(),
+            author=author.strip(),
+            isbn=isbn,
+            sender_name=sender,
+            is_public=True,
+            suggested_from="Email",
+        )
         response = f"Added suggestion: {title} by {author}" if not isbn else f"Added suggestion with ISBN: {isbn}"
         return response, []
 

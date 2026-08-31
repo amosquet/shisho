@@ -197,7 +197,7 @@ AI_CHAT_TOOLS = [
 
 
 class AIChat(commands.Cog):
-    """General AI Chat command with threaded conversations and multimodal audio support."""
+    """General AI Chat command with threaded conversations and multimodal image/audio support."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -228,8 +228,10 @@ class AIChat(commands.Cog):
         else:
             base_prompt = self._cached_prompt
 
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         behavior_instruction = (
             "You are Shisho (ししょ) responding inside Discord.\n"
+            f"Current date and time: {now_str}\n\n"
             "You have direct access to database tools and Google Search:\n"
             "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `delete_book` to remove books.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders. Call `delete_reminder` to cancel/delete reminders.\n"
@@ -245,7 +247,8 @@ class AIChat(commands.Cog):
             "3. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
             "4. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
             "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
-            "6. When a user replies to a message (such as a previous book recommendation, note, reminder, or chat message) with follow-up instructions like 'add it to my reading list', 'remind me about this', or 'explain more', use the conversation context and referenced message to fulfill their request directly without asking for information already provided in the context."
+            "6. When a user replies to a message (such as a previous book recommendation, note, reminder, or chat message) with follow-up instructions like 'add it to my reading list', 'remind me about this', or 'explain more', use the conversation context and referenced message to fulfill their request directly without asking for information already provided in the context.\n"
+            "7. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly."
         )
 
         if base_prompt:
@@ -285,6 +288,28 @@ class AIChat(commands.Cog):
             return mime
         return None
 
+    def _get_image_mime(self, filename: str, content_type: str | None = None) -> str | None:
+        if content_type and content_type.startswith("image/"):
+            return content_type
+
+        ext = os.path.splitext(filename.lower())[1]
+        ext_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".heic": "image/heic",
+            ".heif": "image/heif",
+            ".gif": "image/gif",
+        }
+        if ext in ext_map:
+            return ext_map[ext]
+
+        mime, _ = mimetypes.guess_type(filename)
+        if mime and mime.startswith("image/"):
+            return mime
+        return None
+
     async def _extract_message_parts(self, message: discord.Message, is_prefix: bool = False) -> list[types.Part]:
         parts: list[types.Part] = []
 
@@ -306,17 +331,31 @@ class AIChat(commands.Cog):
             if bot_id:
                 content = re.sub(rf"<@!?{bot_id}>", "", content).strip()
 
-        # Check for audio attachments
+        # Check for audio and image attachments
         for att in message.attachments:
-            mime_type = self._get_audio_mime(att.filename, att.content_type)
-            if mime_type:
+            # Check audio
+            audio_mime = self._get_audio_mime(att.filename, att.content_type)
+            if audio_mime:
                 try:
                     audio_bytes = await att.read()
                     if audio_bytes:
-                        parts.append(types.Part.from_bytes(data=audio_bytes, mime_type=mime_type))
+                        parts.append(types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime))
                 except Exception as e:
                     print(f"Failed to read audio attachment {att.filename}: {e}")
                     sentry_sdk.capture_exception(e)
+                continue
+
+            # Check image
+            image_mime = self._get_image_mime(att.filename, att.content_type)
+            if image_mime:
+                try:
+                    image_bytes = await att.read()
+                    if image_bytes:
+                        parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime))
+                except Exception as e:
+                    print(f"Failed to read image attachment {att.filename}: {e}")
+                    sentry_sdk.capture_exception(e)
+                continue
 
         if content:
             parts.append(types.Part.from_text(text=content))
@@ -825,7 +864,7 @@ class AIChat(commands.Cog):
 
         return response.text or ""
 
-    @commands.command(name="ask", help="Ask Gemini a question or send a voice memo.")
+    @commands.command(name="ask", help="Ask Gemini a question or send an image or voice memo.")
     async def ask_prefix(self, ctx: commands.Context, *, prompt: str = ""):
         if not self.is_user_authorized(ctx.author.id):
             return
@@ -836,7 +875,7 @@ class AIChat(commands.Cog):
 
         parts = await self._extract_message_parts(ctx.message, is_prefix=True)
         if not parts:
-            await ctx.send("Please provide a question, prompt, or audio attachment.")
+            await ctx.send("Please provide a question, prompt, image, or audio attachment.")
             return
 
         user_id_str = str(ctx.author.id)
@@ -896,7 +935,8 @@ class AIChat(commands.Cog):
             thread = None
             if hasattr(ctx.message, "create_thread"):
                 try:
-                    thread_prompt = prompt.strip() or "Audio Memo"
+                    has_img = any(self._get_image_mime(a.filename, a.content_type) for a in ctx.message.attachments)
+                    thread_prompt = prompt.strip() or ("Image Memo" if has_img else "Audio Memo")
                     thread_name = self._generate_thread_name(thread_prompt)
                     thread = await ctx.message.create_thread(name=thread_name, auto_archive_duration=1440)
                     self.active_threads.add(thread.id)
@@ -911,15 +951,17 @@ class AIChat(commands.Cog):
                 for chunk in chunks:
                     await ctx.send(chunk)
 
-    @app_commands.command(name="ask", description="Send a prompt or audio file to the Gemini API")
+    @app_commands.command(name="ask", description="Send a prompt, image, or audio file to the Gemini API")
     @app_commands.describe(
         prompt="The prompt to send to Gemini",
+        image="Optional image attachment",
         audio="Optional audio or voice recording"
     )
     async def ask_slash(
         self,
         interaction: discord.Interaction,
         prompt: str = "",
+        image: discord.Attachment = None,
         audio: discord.Attachment = None,
     ):
         if not self.client:
@@ -927,6 +969,17 @@ class AIChat(commands.Cog):
             return
 
         parts: list[types.Part] = []
+        if image:
+            mime = self._get_image_mime(image.filename, image.content_type)
+            if mime:
+                try:
+                    img_bytes = await image.read()
+                    if img_bytes:
+                        parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime))
+                except Exception as e:
+                    print(f"Failed to read slash image attachment: {e}")
+                    sentry_sdk.capture_exception(e)
+
         if audio:
             mime = self._get_audio_mime(audio.filename, audio.content_type)
             if mime:
@@ -943,7 +996,7 @@ class AIChat(commands.Cog):
             parts.append(types.Part.from_text(text=clean_prompt))
 
         if not parts:
-            await interaction.response.send_message("Please provide a prompt or an audio file.", ephemeral=True)
+            await interaction.response.send_message("Please provide a prompt, image, or audio file.", ephemeral=True)
             return
 
         user_id_str = str(interaction.user.id)
@@ -1002,10 +1055,10 @@ class AIChat(commands.Cog):
         chunks = split_message(text)
         thread = None
         try:
-            starter_label = f"💬 **Question:** {clean_prompt}" if clean_prompt else "🎙️ **Audio Prompt**"
+            starter_label = f"💬 **Question:** {clean_prompt}" if clean_prompt else ("🖼️ **Image Prompt**" if image else "🎙️ **Audio Prompt**")
             msg = await interaction.followup.send(starter_label, wait=True)
             if msg and hasattr(msg, "create_thread"):
-                thread_title = clean_prompt or "Audio Memo"
+                thread_title = clean_prompt or ("Image Memo" if image else "Audio Memo")
                 thread_name = self._generate_thread_name(thread_title)
                 thread = await msg.create_thread(name=thread_name, auto_archive_duration=1440)
                 self.active_threads.add(thread.id)
@@ -1090,9 +1143,13 @@ class AIChat(commands.Cog):
         if not self.client:
             return
 
-        # Check if there is text or audio attachments
+        # Check if there is text, audio attachments, or image attachments
         has_audio = any(
             self._get_audio_mime(att.filename, att.content_type)
+            for att in message.attachments
+        )
+        has_image = any(
+            self._get_image_mime(att.filename, att.content_type)
             for att in message.attachments
         )
         clean_text = message.clean_content
@@ -1109,7 +1166,7 @@ class AIChat(commands.Cog):
             if bot_id:
                 clean_text = re.sub(rf"<@!?{bot_id}>", "", clean_text).strip()
 
-        if not clean_text and not has_audio:
+        if not clean_text and not has_audio and not has_image:
             return
 
         user_id_str = str(message.author.id)
@@ -1184,7 +1241,7 @@ class AIChat(commands.Cog):
             thread = None
             if should_create_thread and hasattr(message, "create_thread"):
                 try:
-                    thread_title = clean_text or "AI Chat"
+                    thread_title = clean_text or ("Image Chat" if has_image else "AI Chat")
                     thread_name = self._generate_thread_name(thread_title)
                     thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                     self.active_threads.add(thread.id)
