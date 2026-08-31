@@ -196,7 +196,8 @@ class AIChat(commands.Cog):
             "2. When the user asks for book recommendations, provide creative, engaging book recommendations directly (you may call `get_reading_list` to check their reading history first).\n"
             "3. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
             "4. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
-            "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`."
+            "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
+            "6. When a user replies to a message (such as a previous book recommendation, note, reminder, or chat message) with follow-up instructions like 'add it to my reading list', 'remind me about this', or 'explain more', use the conversation context and referenced message to fulfill their request directly without asking for information already provided in the context."
         )
 
         if base_prompt:
@@ -240,19 +241,19 @@ class AIChat(commands.Cog):
         parts: list[types.Part] = []
 
         content = message.clean_content.strip()
-        if is_prefix:
+        if is_prefix or re.match(r"^!ask\b", content, re.IGNORECASE):
             content = re.sub(r"^!ask\s*", "", content, flags=re.IGNORECASE).strip()
 
         # Remove bot mention from content if present
         if self.bot.user:
             bot_name = getattr(self.bot.user, "name", "")
             if isinstance(bot_name, str) and bot_name:
-                content = re.sub(rf"@{re.escape(bot_name)}\b", "", content, flags=re.IGNORECASE).strip()
+                content = re.sub(rf"@{re.escape(bot_name)}(?:\b|\s+|$)", "", content, flags=re.IGNORECASE).strip()
             guild = getattr(message, "guild", None)
             me = getattr(guild, "me", None) if guild else None
             nick = getattr(me, "nick", None) if me else None
             if isinstance(nick, str) and nick:
-                content = re.sub(rf"@{re.escape(nick)}\b", "", content, flags=re.IGNORECASE).strip()
+                content = re.sub(rf"@{re.escape(nick)}(?:\b|\s+|$)", "", content, flags=re.IGNORECASE).strip()
             bot_id = getattr(self.bot.user, "id", None)
             if bot_id:
                 content = re.sub(rf"<@!?{bot_id}>", "", content).strip()
@@ -303,7 +304,13 @@ class AIChat(commands.Cog):
             else:
                 merged.append({"role": turn["role"], "parts": list(turn["parts"])})
 
-        # Ensure conversation starts with a user turn
+        # Ensure conversation starts with a user turn without discarding model context
+        if merged and merged[0]["role"] == "model":
+            merged.insert(0, {
+                "role": "user",
+                "parts": [types.Part.from_text(text="[Continuing previous conversation]")]
+            })
+
         while merged and merged[0]["role"] != "user":
             merged.pop(0)
 
@@ -319,6 +326,93 @@ class AIChat(commands.Cog):
             for t in merged
         ]
         return contents
+
+    async def _build_reply_chain_contents(
+        self, message: discord.Message
+    ) -> list[types.Content]:
+        """Builds multi-turn Content list by traversing the Discord message reply chain backwards."""
+        chain: list[discord.Message] = [message]
+        visited_ids: set[int] = {message.id}
+        curr_msg = message
+
+        max_depth = 15
+        while curr_msg.reference and curr_msg.reference.message_id and len(chain) <= max_depth:
+            ref_id = curr_msg.reference.message_id
+            if ref_id in visited_ids:
+                break
+            visited_ids.add(ref_id)
+
+            ref_msg = None
+            if isinstance(curr_msg.reference.resolved, discord.Message) or (
+                hasattr(curr_msg.reference.resolved, "clean_content")
+                and not isinstance(curr_msg.reference.resolved, discord.DeletedReferencedMessage)
+            ):
+                ref_msg = curr_msg.reference.resolved
+            else:
+                try:
+                    ref_channel = curr_msg.channel
+                    if (
+                        curr_msg.reference.channel_id
+                        and curr_msg.reference.channel_id != curr_msg.channel.id
+                    ):
+                        ref_channel = self.bot.get_channel(
+                            curr_msg.reference.channel_id
+                        ) or await self.bot.fetch_channel(curr_msg.reference.channel_id)
+                    if ref_channel and hasattr(ref_channel, "fetch_message"):
+                        ref_msg = await ref_channel.fetch_message(ref_id)
+                except Exception as e:
+                    print(f"Could not fetch referenced message {ref_id}: {e}")
+                    break
+
+            if not ref_msg or isinstance(ref_msg, discord.DeletedReferencedMessage) or not hasattr(ref_msg, "clean_content"):
+                break
+
+            chain.append(ref_msg)
+            curr_msg = ref_msg
+
+        # Reverse so oldest message is first
+        chain.reverse()
+
+        raw_turns: list[dict] = []
+        for msg in chain:
+            if msg.author.bot:
+                if self.bot.user and msg.author.id == self.bot.user.id:
+                    content = msg.clean_content.strip()
+                    # Filter out system error messages
+                    if (
+                        content.startswith("Gemini API key is not configured")
+                        or content.startswith("API Error:")
+                        or content.startswith("An unexpected error occurred")
+                        or content.startswith("Gemini is currently experiencing high demand")
+                        or content.startswith("What would you like to update")
+                        or content.startswith("What would you like an update on")
+                        or content.startswith("Here is your status update")
+                        or content.startswith("Here is your quick status update")
+                        or content.startswith("Update on what, exactly")
+                    ):
+                        continue
+                    if content:
+                        raw_turns.append({
+                            "role": "model",
+                            "parts": [types.Part.from_text(text=content)]
+                        })
+                else:
+                    # Message is from another bot - include as user context
+                    content = msg.clean_content.strip()
+                    if content:
+                        raw_turns.append({
+                            "role": "user",
+                            "parts": [types.Part.from_text(text=f"[{msg.author.display_name} (Bot)]: {content}")]
+                        })
+            else:
+                parts = await self._extract_message_parts(msg, is_prefix=False)
+                if parts:
+                    raw_turns.append({
+                        "role": "user",
+                        "parts": parts
+                    })
+
+        return self._consolidate_turns(raw_turns)
 
     async def _build_channel_contents(
         self, channel: discord.Thread | discord.DMChannel | discord.abc.Messageable, additional_parts: list[types.Part] | str | None = None
@@ -686,7 +780,11 @@ class AIChat(commands.Cog):
         # Case 3: Guild Text Channel (Create a thread)
         async with ctx.typing():
             try:
-                contents = [types.Content(role="user", parts=parts)]
+                contents = None
+                if ctx.message.reference and ctx.message.reference.message_id:
+                    contents = await self._build_reply_chain_contents(ctx.message)
+                if not contents:
+                    contents = [types.Content(role="user", parts=parts)]
                 text = await self._generate_ai_response(contents, user_id=user_id_str)
                 if not text:
                     await ctx.send("Received empty response from Gemini.")
@@ -832,21 +930,54 @@ class AIChat(commands.Cog):
         if message.content.startswith("!"):
             return
 
-        is_bot_mentioned = self.bot.user and any(m.id == self.bot.user.id for m in message.mentions)
+        is_bot_mentioned = bool(self.bot.user and any(m.id == self.bot.user.id for m in message.mentions))
         is_in_thread = isinstance(message.channel, discord.Thread)
         is_dm = isinstance(message.channel, discord.DMChannel)
+
+        is_reply = message.reference is not None and message.reference.message_id is not None
+        is_reply_to_bot = False
+        referenced_msg = None
+        if is_reply:
+            if isinstance(message.reference.resolved, discord.Message) or (
+                hasattr(message.reference.resolved, "clean_content")
+                and not isinstance(message.reference.resolved, discord.DeletedReferencedMessage)
+            ):
+                referenced_msg = message.reference.resolved
+            elif message.reference.message_id:
+                try:
+                    ref_channel = message.channel
+                    if (
+                        message.reference.channel_id
+                        and message.reference.channel_id != message.channel.id
+                    ):
+                        ref_channel = self.bot.get_channel(
+                            message.reference.channel_id
+                        ) or await self.bot.fetch_channel(message.reference.channel_id)
+                    if ref_channel and hasattr(ref_channel, "fetch_message"):
+                        referenced_msg = await ref_channel.fetch_message(message.reference.message_id)
+                except Exception:
+                    referenced_msg = None
+            if (
+                referenced_msg
+                and not isinstance(referenced_msg, discord.DeletedReferencedMessage)
+                and hasattr(referenced_msg, "author")
+                and self.bot.user
+                and referenced_msg.author.id == self.bot.user.id
+            ):
+                is_reply_to_bot = True
 
         # We respond if:
         # 1. The message is in DMs (talking directly to the bot), OR
         # 2. The bot was @mentioned anywhere, OR
-        # 3. The message is inside an active AI chat thread
-        if not is_dm and not is_bot_mentioned:
+        # 3. The message is a direct reply to one of the bot's messages, OR
+        # 4. The message is inside an active AI chat thread
+        if not is_dm and not is_bot_mentioned and not is_reply_to_bot:
             if not is_in_thread:
                 return
             if not await self._is_ai_chat_thread(message.channel):
                 return
         else:
-            # If in thread and bot was mentioned, check it's not a concierge thread
+            # If in thread and bot was mentioned/replied to, check it's not a concierge thread
             if is_in_thread and (
                 message.channel.name.startswith("Recommend: ")
                 or message.channel.name.startswith("Recommendations: ")
@@ -869,12 +1000,12 @@ class AIChat(commands.Cog):
         if self.bot.user:
             bot_name = getattr(self.bot.user, "name", "")
             if isinstance(bot_name, str) and bot_name:
-                clean_text = re.sub(rf"@{re.escape(bot_name)}\b", "", clean_text, flags=re.IGNORECASE).strip()
+                clean_text = re.sub(rf"@{re.escape(bot_name)}(?:\b|\s+|$)", "", clean_text, flags=re.IGNORECASE).strip()
             guild = getattr(message, "guild", None)
             me = getattr(guild, "me", None) if guild else None
             nick = getattr(me, "nick", None) if me else None
             if isinstance(nick, str) and nick:
-                clean_text = re.sub(rf"@{re.escape(nick)}\b", "", clean_text, flags=re.IGNORECASE).strip()
+                clean_text = re.sub(rf"@{re.escape(nick)}(?:\b|\s+|$)", "", clean_text, flags=re.IGNORECASE).strip()
             bot_id = getattr(self.bot.user, "id", None)
             if bot_id:
                 clean_text = re.sub(rf"<@!?{bot_id}>", "", clean_text).strip()
@@ -932,10 +1063,15 @@ class AIChat(commands.Cog):
         # Case 3: Message is in a Guild Text Channel
         async with message.channel.typing():
             try:
-                parts = await self._extract_message_parts(message, is_prefix=False)
-                if not parts:
-                    return
-                contents = [types.Content(role="user", parts=parts)]
+                contents = None
+                if is_reply:
+                    contents = await self._build_reply_chain_contents(message)
+                if not contents:
+                    parts = await self._extract_message_parts(message, is_prefix=False)
+                    if not parts:
+                        return
+                    contents = [types.Content(role="user", parts=parts)]
+
                 text = await self._generate_ai_response(contents, user_id=user_id_str)
                 if not text or text.strip() == "[NO_ACTION]":
                     return
