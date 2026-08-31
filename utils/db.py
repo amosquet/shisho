@@ -100,11 +100,15 @@ def get_discord_user_id(
     if not discord_id:
         return None
 
+    clean_did = "".join(c for c in str(discord_id) if c.isdigit())
+    if not clean_did:
+        return None
+
     try:
         if client is None:
             client = get_pb_client()
         records = client.collection("shisho_users").get_full_list(
-            query_params={"filter": f"discord_id='{str(discord_id)}'"}
+            query_params={"filter": f"discord_id='{clean_did}'"}
         )
         if records:
             return records[0].id

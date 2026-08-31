@@ -257,19 +257,20 @@ class SuggestedBooks(commands.Cog):
         def add_to_pocketbase():
             pb = get_pb_client()
 
+            clean_sender_did = "".join(c for c in str(sender_discord_id) if c.isdigit())
+            clean_recipient_did = "".join(c for c in str(recipient_discord_id) if c.isdigit())
+
             sender_pb_id = None
-            if sender_discord_id:
-                sender_pb_id = get_discord_user_id(pb, sender_discord_id)
+            if clean_sender_did:
+                sender_pb_id = get_discord_user_id(pb, clean_sender_did)
 
             recipient_pb_id = None
-            if recipient_discord_id:
-                recipient_pb_id = get_discord_user_id(pb, recipient_discord_id)
+            if clean_recipient_did:
+                recipient_pb_id = get_discord_user_id(pb, clean_recipient_did)
 
             entry = {
-                "sender": sender_pb_id or "",
-                "sender_discord_id": sender_discord_id,
-                "recipient": recipient_pb_id or "",
-                "recipient_discord_id": recipient_discord_id,
+                "sender_discord_id": clean_sender_did,
+                "recipient_discord_id": clean_recipient_did,
                 "is_public": is_public,
                 "message": message,
                 "date_suggested": datetime.now().strftime("%Y-%m-%d"),
@@ -279,6 +280,11 @@ class SuggestedBooks(commands.Cog):
                 "publish_date": publish_date,
                 "description": description,
             }
+
+            if sender_pb_id:
+                entry["sender"] = sender_pb_id
+            if recipient_pb_id:
+                entry["recipient"] = recipient_pb_id
 
             files = (
                 {"cover": (cover_filename, cover_data)}
