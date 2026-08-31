@@ -384,12 +384,17 @@ class TestDeletion(unittest.IsolatedAsyncioTestCase):
         reminders_cog.delete_reminder = AsyncMock(return_value="Deleted reminder.")
         notes_cog = MagicMock()
         notes_cog.delete_note = AsyncMock(return_value="Deleted note.")
+        suggested_cog = MagicMock()
+        suggested_cog.get_suggestions_text = AsyncMock(return_value="**Books Recommended to You:**\n1. Dune")
+        suggested_cog.add_suggestion = AsyncMock(return_value={"display_name": "**Dune** by Frank Herbert"})
+        suggested_cog.delete_suggestion = AsyncMock(return_value="Removed Dune from recommendations.")
 
         def get_cog_side_effect(name):
             return {
                 "ReadingList": reading_cog,
                 "Reminders": reminders_cog,
                 "Notes": notes_cog,
+                "SuggestedBooks": suggested_cog,
             }.get(name)
 
         bot_mock.get_cog.side_effect = get_cog_side_effect
@@ -406,6 +411,16 @@ class TestDeletion(unittest.IsolatedAsyncioTestCase):
         res3 = await chat_cog._execute_tool("delete_note", {"query": "Grocery"}, "discord_123")
         self.assertEqual(res3, "Deleted note.")
         notes_cog.delete_note.assert_called_with("discord_123", "Grocery")
+
+        res4 = await chat_cog._execute_tool("get_recommendations", {"filter": "for_me"}, "discord_123")
+        self.assertIn("Books Recommended to You", res4)
+        suggested_cog.get_suggestions_text.assert_called_with(user_discord_id="discord_123", filter_type="for_me")
+
+        res5 = await chat_cog._execute_tool("add_recommendation", {"title": "Dune", "recipient_discord_id": "456"}, "discord_123")
+        self.assertIn("Successfully added recommendation", res5)
+
+        res6 = await chat_cog._execute_tool("delete_recommendation", {"query": "Dune"}, "discord_123")
+        self.assertEqual(res6, "Removed Dune from recommendations.")
 
 
 if __name__ == "__main__":
