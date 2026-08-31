@@ -260,6 +260,17 @@ class SuggestedBooks(commands.Cog):
             clean_sender_did = "".join(c for c in str(sender_discord_id) if c.isdigit())
             clean_recipient_did = "".join(c for c in str(recipient_discord_id) if c.isdigit())
 
+            # If recipient_discord_id wasn't a valid snowflake ID (e.g. username was passed)
+            if len(clean_recipient_did) < 15 and (recipient_discord_id or recipient_name):
+                target_str = str(recipient_discord_id or recipient_name).lstrip("@").lower().strip()
+                if hasattr(self.bot, "users"):
+                    for u in self.bot.users:
+                        u_name = getattr(u, "name", "").lower()
+                        u_disp = getattr(u, "display_name", "").lower()
+                        if u_name == target_str or u_disp == target_str or target_str in u_name:
+                            clean_recipient_did = str(u.id)
+                            break
+
             sender_pb_id = None
             if clean_sender_did:
                 sender_pb_id = get_discord_user_id(pb, clean_sender_did)

@@ -74,6 +74,12 @@ Set custom reminders using natural language times. The bot will send you a Direc
 - `/notes [name]`: Lists your recent notes or views a specific note in detail.
 - `/deletenote <note>`: Deletes a personal note (supports title, keyword, ID, or interactive autocomplete).
 
+### AI Assistant & Smart Reply (Gemini)
+
+- `/ask [prompt] [image] [audio]`: Ask Shisho questions, upload images (book covers, assignments, schedules), or share audio memos.
+- **Smart Reply & Mention Action**: Reply to any message in a channel or thread and tag `@Shisho` (e.g. `@Shisho add this book`, `@Shisho remind me tomorrow at 5pm`, `@Shisho save this note`, or simply `@Shisho`). Shisho will inspect the referenced message and conversation history, determine the best course of action, and execute the corresponding database tools automatically.
+- `/recommend [query]`: Access the AI Book Concierge for tailored book recommendations.
+
 ### Notifications (Public)
 
 Whenever someone mentions me in a server Shisho is in, the bot will send me a DM with the message content and a link to jump to that message.

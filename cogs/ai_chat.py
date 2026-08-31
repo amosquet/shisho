@@ -214,7 +214,7 @@ ADD_RECOMMENDATION_TOOL = types.FunctionDeclaration(
             ),
             "recipient_discord_id": types.Schema(
                 type=types.Type.STRING,
-                description="Discord User ID of the recipient if recommending to a specific friend (optional)",
+                description="Discord User ID (numeric ID snowflake like '634903926495510569') or username/mention of the recipient",
             ),
             "message": types.Schema(
                 type=types.Type.STRING,
@@ -317,7 +317,15 @@ class AIChat(commands.Cog):
             "3. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
             "4. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
             "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
-            "6. When a user replies to a message (such as a previous book recommendation, note, reminder, or chat message) with follow-up instructions like 'add it to my reading list', 'remind me about this', or 'explain more', use the conversation context and referenced message to fulfill their request directly without asking for information already provided in the context.\n"
+            "6. When a user replies to someone's message (or references a previous message) and tags/pings you, or asks for follow-up actions like 'add this to my reading list', 'remind me about this', 'save this note', or simply tags you:\n"
+            "   - Carefully inspect the referenced message, any attachments/images/audio, and the surrounding conversation history to determine the intent and correct course of action:\n"
+            "     * Book Mentions & Suggestions: If the referenced message or conversation mentions a book title/author, book recommendation, or book cover image: if the user says 'add this' or tags you in response, call `add_book` to add it to their reading list. If recommending to a friend, call `add_recommendation`.\n"
+            "     * Reminders & Deadlines: If the referenced message discusses a due date, assignment, quiz, meeting, event, or schedule, extract the date/time and description and call `set_reminder` for the user.\n"
+            "     * Notes & Information: If the referenced message contains important information (e.g. door codes, passwords, notes, study material), save it with `add_note` if requested or appropriate.\n"
+            "     * Questions & Discussions: If the referenced message or conversation poses a question or topic, answer directly and concisely utilizing the conversation context.\n"
+            "     * Summarization: If asked to summarize or explain the conversation/referenced message, provide a clear, concise summary.\n"
+            "     * Tagged without specific prompt: Intelligently determine the most helpful action based on the message content and conversation history (e.g., set a reminder for a deadline, add a book mentioned, answer an unanswered question, or respond with witty banter in character).\n"
+            "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, etc.) directly for the user invoking you without asking for details already in context.\n"
             "7. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly."
         )
 
@@ -402,7 +410,7 @@ class AIChat(commands.Cog):
                 content = re.sub(rf"<@!?{bot_id}>", "", content).strip()
 
         # Check for audio and image attachments
-        for att in message.attachments:
+        for att in getattr(message, "attachments", []):
             # Check audio
             audio_mime = self._get_audio_mime(att.filename, att.content_type)
             if audio_mime:
@@ -427,8 +435,43 @@ class AIChat(commands.Cog):
                     sentry_sdk.capture_exception(e)
                 continue
 
-        if content:
-            parts.append(types.Part.from_text(text=content))
+        # Extract text from embeds if present (e.g. link previews or bot embeds)
+        embed_texts = []
+        for embed in getattr(message, "embeds", []):
+            if not embed:
+                continue
+            e_parts = []
+            if getattr(embed, "title", None):
+                e_parts.append(f"Title: {embed.title}")
+            if getattr(embed, "description", None):
+                e_parts.append(f"Description: {embed.description}")
+            for field in getattr(embed, "fields", []):
+                e_parts.append(f"{field.name}: {field.value}")
+            if e_parts:
+                embed_texts.append("\n".join(e_parts))
+
+        combined_text = content
+        if embed_texts:
+            embeds_block = "[Embed Content:\n" + "\n---\n".join(embed_texts) + "]"
+            if combined_text:
+                combined_text = f"{combined_text}\n{embeds_block}"
+            else:
+                combined_text = embeds_block
+
+        # Append mentioned users info if any other users were tagged
+        if hasattr(message, "mentions") and message.mentions:
+            bot_id = getattr(self.bot.user, "id", None) if self.bot.user else None
+            other_mentions = [m for m in message.mentions if bot_id is None or m.id != bot_id]
+            if other_mentions:
+                mention_info = ", ".join(f"@{getattr(m, 'name', 'User')} (ID: {getattr(m, 'id', 'unknown')})" for m in other_mentions)
+                mention_block = f"[Context - Mentioned Discord Users: {mention_info}]"
+                if combined_text:
+                    combined_text = f"{combined_text}\n{mention_block}"
+                else:
+                    combined_text = mention_block
+
+        if combined_text:
+            parts.append(types.Part.from_text(text=combined_text))
 
         return parts
 
@@ -487,7 +530,7 @@ class AIChat(commands.Cog):
     async def _build_reply_chain_contents(
         self, message: discord.Message
     ) -> list[types.Content]:
-        """Builds multi-turn Content list by traversing the Discord message reply chain backwards."""
+        """Builds multi-turn Content list by gathering the reply chain and recent channel conversation history."""
         chain: list[discord.Message] = [message]
         visited_ids: set[int] = {message.id}
         curr_msg = message
@@ -527,12 +570,49 @@ class AIChat(commands.Cog):
             chain.append(ref_msg)
             curr_msg = ref_msg
 
-        # Reverse so oldest message is first
-        chain.reverse()
+        # Determine the primary referenced message (the one directly replied to)
+        primary_ref_msg = None
+        if len(chain) > 1:
+            primary_ref_msg = chain[1]
+
+        # Fetch recent channel/thread conversation history for broader context
+        recent_history: list[discord.Message] = []
+        if hasattr(message.channel, "history"):
+            try:
+                history_msgs = [m async for m in message.channel.history(limit=15, before=message)]
+                recent_history = history_msgs
+            except Exception as e:
+                print(f"Could not fetch channel history for reply: {e}")
+
+        # Combine all messages into a unified list, deduplicating by ID
+        all_msgs_dict: dict[int, discord.Message] = {}
+        for m in recent_history:
+            if hasattr(m, "id"):
+                all_msgs_dict[m.id] = m
+        for m in chain:
+            if hasattr(m, "id"):
+                all_msgs_dict[m.id] = m
+
+        def get_msg_sort_key(m: discord.Message):
+            created = getattr(m, "created_at", None)
+            if isinstance(created, datetime):
+                return (1, created.timestamp())
+            elif isinstance(created, (int, float)):
+                return (1, float(created))
+            elif isinstance(created, str):
+                return (1, created)
+            msg_id = getattr(m, "id", None)
+            if isinstance(msg_id, int):
+                return (2, float(msg_id))
+            elif isinstance(msg_id, str) and msg_id.isdigit():
+                return (2, float(msg_id))
+            return (3, 0.0)
+
+        sorted_msgs = sorted(all_msgs_dict.values(), key=get_msg_sort_key)
 
         raw_turns: list[dict] = []
-        for msg in chain:
-            if msg.author.bot:
+        for msg in sorted_msgs:
+            if getattr(msg.author, "bot", False):
                 if self.bot.user and msg.author.id == self.bot.user.id:
                     content = msg.clean_content.strip()
                     # Filter out system error messages
@@ -559,10 +639,53 @@ class AIChat(commands.Cog):
                     if content:
                         raw_turns.append({
                             "role": "user",
-                            "parts": [types.Part.from_text(text=f"[{msg.author.display_name} (Bot)]: {content}")]
+                            "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
                         })
             else:
                 parts = await self._extract_message_parts(msg, is_prefix=False)
+                author_name = getattr(msg.author, "display_name", "User")
+                author_handle = getattr(msg.author, "name", "")
+                author_id = getattr(msg.author, "id", "")
+
+                if msg.id == message.id:
+                    ref_author_name = getattr(primary_ref_msg.author, "display_name", "the user") if primary_ref_msg and hasattr(primary_ref_msg, "author") else "the user"
+                    has_text = any(hasattr(p, "text") and p.text is not None for p in parts)
+                    if not has_text:
+                        # User replied with only a ping or attachments
+                        text_label = f"[{author_name} (replying to {ref_author_name})]: [Tagged @Shisho in reply to the referenced message to determine correct course of action]"
+                        parts.insert(0, types.Part.from_text(text=text_label))
+                    else:
+                        new_parts = []
+                        for p in parts:
+                            if hasattr(p, "text") and p.text is not None:
+                                new_parts.append(types.Part.from_text(text=f"[{author_name} (replying to {ref_author_name})]: {p.text}"))
+                            else:
+                                new_parts.append(p)
+                        parts = new_parts
+                elif primary_ref_msg and msg.id == primary_ref_msg.id:
+                    id_info = f", ID: {author_id}" if author_id else ""
+                    handle_info = f" (@{author_handle}{id_info})" if author_handle else ""
+                    new_parts = []
+                    has_text = False
+                    for p in parts:
+                        if hasattr(p, "text") and p.text is not None:
+                            has_text = True
+                            new_parts.append(types.Part.from_text(text=f"[Referenced Message from {author_name}{handle_info}]: {p.text}"))
+                        else:
+                            new_parts.append(p)
+                    if not has_text and parts:
+                        new_parts.insert(0, types.Part.from_text(text=f"[Referenced Message from {author_name}{handle_info}]"))
+                    parts = new_parts
+                else:
+                    handle_info = f" (@{author_handle})" if author_handle else ""
+                    new_parts = []
+                    for p in parts:
+                        if hasattr(p, "text") and p.text is not None:
+                            new_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                        else:
+                            new_parts.append(p)
+                    parts = new_parts
+
                 if parts:
                     raw_turns.append({
                         "role": "user",
@@ -605,14 +728,23 @@ class AIChat(commands.Cog):
                 else:
                     user_parts = await self._extract_message_parts(starter_msg, is_prefix=True)
                     if user_parts:
-                        raw_turns.append({"role": "user", "parts": user_parts})
+                        author_name = getattr(starter_msg.author, "display_name", "User")
+                        author_handle = getattr(starter_msg.author, "name", "")
+                        handle_info = f" (@{author_handle})" if author_handle else ""
+                        formatted_parts = []
+                        for p in user_parts:
+                            if hasattr(p, "text") and p.text is not None:
+                                formatted_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                            else:
+                                formatted_parts.append(p)
+                        raw_turns.append({"role": "user", "parts": formatted_parts})
 
         try:
             recent_msgs = [m async for m in channel.history(limit=15)]
             recent_msgs.reverse()
             for msg in recent_msgs:
-                if msg.author.bot:
-                    if msg.author.id == self.bot.user.id:
+                if getattr(msg.author, "bot", False):
+                    if self.bot.user and msg.author.id == self.bot.user.id:
                         content = msg.clean_content.strip()
                         if (
                             content.startswith("Gemini API key is not configured")
@@ -632,11 +764,25 @@ class AIChat(commands.Cog):
                                 "parts": [types.Part.from_text(text=content)]
                             })
                     else:
-                        continue
+                        content = msg.clean_content.strip()
+                        if content:
+                            raw_turns.append({
+                                "role": "user",
+                                "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
+                            })
                 else:
                     user_parts = await self._extract_message_parts(msg, is_prefix=True)
                     if user_parts:
-                        raw_turns.append({"role": "user", "parts": user_parts})
+                        author_name = getattr(msg.author, "display_name", "User")
+                        author_handle = getattr(msg.author, "name", "")
+                        handle_info = f" (@{author_handle})" if author_handle else ""
+                        formatted_parts = []
+                        for p in user_parts:
+                            if hasattr(p, "text") and p.text is not None:
+                                formatted_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                            else:
+                                formatted_parts.append(p)
+                        raw_turns.append({"role": "user", "parts": formatted_parts})
         except Exception as e:
             print(f"Error reading channel history: {e}")
 
@@ -882,9 +1028,32 @@ class AIChat(commands.Cog):
                 title = str(args.get("title", "")).strip()
                 author = str(args.get("author", "")).strip()
                 isbn = str(args.get("isbn", "")).strip()
-                rec_did = str(args.get("recipient_discord_id", "")).strip()
+                rec_raw = str(args.get("recipient_discord_id", args.get("recipient", ""))).strip()
                 msg = str(args.get("message", "")).strip()
                 is_pub = args.get("is_public")
+
+                rec_did = ""
+                rec_digits = "".join(c for c in rec_raw if c.isdigit())
+                if len(rec_digits) >= 15:
+                    rec_did = rec_digits
+                elif rec_raw:
+                    # Look up user by name or username in bot cache
+                    clean_name = rec_raw.lstrip("@").lower().strip()
+                    if hasattr(self.bot, "users"):
+                        for u in self.bot.users:
+                            u_name = getattr(u, "name", "").lower()
+                            u_display = getattr(u, "display_name", "").lower()
+                            if (
+                                u_name == clean_name
+                                or u_display == clean_name
+                                or clean_name in u_name
+                                or str(u.id) == clean_name
+                            ):
+                                rec_did = str(u.id)
+                                break
+                    if not rec_did and rec_digits:
+                        rec_did = rec_digits
+
                 if is_pub is None:
                     is_pub = not bool(rec_did)
                 res = await suggested_cog.add_suggestion(
@@ -1281,7 +1450,7 @@ class AIChat(commands.Cog):
             if bot_id:
                 clean_text = re.sub(rf"<@!?{bot_id}>", "", clean_text).strip()
 
-        if not clean_text and not has_audio and not has_image:
+        if not clean_text and not has_audio and not has_image and not is_reply:
             return
 
         user_id_str = str(message.author.id)
@@ -1293,7 +1462,10 @@ class AIChat(commands.Cog):
                 self.active_threads.add(message.channel.id)
                 async with message.channel.typing():
                     try:
-                        contents = await self._build_channel_contents(message.channel)
+                        if is_reply:
+                            contents = await self._build_reply_chain_contents(message)
+                        else:
+                            contents = await self._build_channel_contents(message.channel)
                         if not contents:
                             parts = await self._extract_message_parts(message, is_prefix=False)
                             if parts:
@@ -1314,7 +1486,10 @@ class AIChat(commands.Cog):
         if is_dm:
             async with message.channel.typing():
                 try:
-                    contents = await self._build_channel_contents(message.channel)
+                    if is_reply:
+                        contents = await self._build_reply_chain_contents(message)
+                    else:
+                        contents = await self._build_channel_contents(message.channel)
                     if not contents:
                         parts = await self._extract_message_parts(message, is_prefix=False)
                         if parts:
@@ -1337,6 +1512,8 @@ class AIChat(commands.Cog):
                 contents = None
                 if is_reply:
                     contents = await self._build_reply_chain_contents(message)
+                else:
+                    contents = await self._build_channel_contents(message.channel)
                 if not contents:
                     parts = await self._extract_message_parts(message, is_prefix=False)
                     if not parts:
