@@ -80,6 +80,14 @@ Set custom reminders using natural language times. The bot will send you a Direc
 - **Smart Reply & Mention Action**: Reply to any message in a channel or thread and tag `@Shisho` (e.g. `@Shisho add this book`, `@Shisho remind me tomorrow at 5pm`, `@Shisho save this note`, or simply `@Shisho`). Shisho will inspect the referenced message and conversation history, determine the best course of action, and execute the corresponding database tools automatically.
 - `/recommend [query]`: Access the AI Book Concierge for tailored book recommendations.
 
+### Printing (PocketBase Realtime + Email Fallback)
+
+Send documents, notes, or snippets to your physical printer across separate networks:
+
+- `/print [file] [note_id] [text]`: Queues a print job in PocketBase Realtime. If PocketBase is unavailable, Shisho automatically offers an interactive `[✉️ Retry via Email]` button.
+- **Message Context Menu**: Right-click any message with an attachment $\rightarrow$ **Apps** $\rightarrow$ **Print Attachment**.
+- **AI Smart Reply**: Tag `@Shisho print this` or `@Shisho print note [name]` to print attachments or text summaries automatically.
+
 ### Notifications (Public)
 
 Whenever someone mentions me in a server Shisho is in, the bot will send me a DM with the message content and a link to jump to that message.
@@ -101,9 +109,11 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 - `!whitelist remove <plugin> <user_id>`: Removes a user from a plugin's whitelist.
 - `!showwhitelist <plugin>`: Shows the current whitelist for a plugin.
 
-### Bot Updates (Owner Only)
+### Bot Updates & Admin (Owner Only)
 
 - `!update`: Pulls the latest code from GitHub and restarts the bot service.
+- `!announce <message>`: Creates a new announcement broadcast.
+- `!sync [spec]`: Syncs slash commands globally or to current guild (`!sync`, `!sync ~`, `!sync *`, `!sync ^`).
 
 ### Remote Email/SMS Commands (Owner Only)
 

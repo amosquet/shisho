@@ -102,11 +102,29 @@ class ShishoBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True  # Required for message parsing in listeners like notifications
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            owner_id=OWNER_ID if OWNER_ID else None,
+        )
         self.tree.interaction_check = is_authorised_interaction_check
         self.tree.on_error = on_app_command_error
         self.disconnect_time = None
         self.is_first_ready = True
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, (commands.NotOwner, commands.CheckFailure)):
+            print(
+                f"Prefix permission denied for user {ctx.author} (ID: {ctx.author.id}) "
+                f"on command: {ctx.command.name if ctx.command else 'Unknown'}"
+            )
+            return
+        if isinstance(error, commands.CommandNotFound):
+            return
+        import traceback
+        traceback.print_exception(type(error), error, error.__traceback__)
+        sentry_sdk.capture_exception(error)
 
     def _format_duration(self, duration_seconds: int) -> str:
         hours, remainder = divmod(duration_seconds, 3600)
