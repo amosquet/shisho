@@ -23,8 +23,9 @@ You can answer questions about books, summarize plots, and suggest reading order
 
 Keep your responses extremely concise. Do not use conversational filler, pleasantries, or introductory/concluding remarks. Get straight to the point and only provide the requested information or recommendations.
 
-CRITICAL INSTRUCTION:
-If your response includes book recommendations or mentions specific books that the user might want to read, you MUST append a JSON block at the very end of your response containing a list of those book titles.
+CRITICAL RULES:
+1. EXCLUSION RULE: You MUST NEVER recommend any book that is already on the user's reading list, regardless of status (read, reading, planned, dropped). Every recommended book MUST be a new title not found on the reading list.
+2. If your response includes book recommendations or mentions specific books that the user might want to read, you MUST append a JSON block at the very end of your response containing a list of those book titles.
 
 The JSON block must be formatted EXACTLY like this:
 ```json
@@ -303,11 +304,96 @@ class BookConcierge(commands.Cog):
 
         return False
 
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        t = title.lower().strip()
+        t = re.sub(r"^(the|a|an)\s+", "", t)
+        t = re.sub(r"[^\w\s]", "", t)
+        return " ".join(t.split())
+
+    def _is_book_on_list(self, candidate_title: str, user_books: list[dict]) -> bool:
+        norm_candidate = self._normalize_title(candidate_title)
+        if not norm_candidate:
+            return False
+
+        # If candidate title has subtitle separated by colon or dash
+        candidate_main = re.split(r"[:\-–—]", candidate_title)[0]
+        norm_candidate_main = self._normalize_title(candidate_main)
+
+        for b in user_books:
+            existing_title = b.get("title", "")
+            norm_existing = self._normalize_title(existing_title)
+            if not norm_existing:
+                continue
+
+            if norm_candidate == norm_existing:
+                return True
+
+            existing_main = re.split(r"[:\-–—]", existing_title)[0]
+            norm_existing_main = self._normalize_title(existing_main)
+
+            if (
+                norm_candidate_main
+                and norm_existing_main
+                and norm_candidate_main == norm_existing_main
+            ):
+                return True
+
+            if norm_candidate_main and norm_candidate_main == norm_existing:
+                return True
+
+            if norm_existing_main and norm_existing_main == norm_candidate:
+                return True
+
+        return False
+
+    def _filter_out_existing_books(
+        self, titles: list[str], user_books: list[dict]
+    ) -> list[str]:
+        return [t for t in titles if not self._is_book_on_list(t, user_books)]
+
+    def _format_reading_list_context(self, books: list[dict]) -> str:
+        if not books:
+            return ""
+        lines = []
+        for b in books:
+            title = b.get("title", "Unknown Title")
+            author = b.get("author", "Unknown Author")
+            status = b.get("status", "unknown")
+            lines.append(f"- {title} by {author} (Status: {status})")
+        return "\n".join(lines)
+
+    def _get_system_instruction(self, user_books: list[dict] | None = None) -> str:
+        prompt = CONCIERGE_PROMPT
+        if user_books:
+            formatted_list = self._format_reading_list_context(user_books)
+            if formatted_list:
+                prompt += (
+                    f"\nUSER'S CURRENT READING LIST (DO NOT RECOMMEND ANY OF THESE TITLES):\n"
+                    f"{formatted_list}\n"
+                )
+        return prompt
+
     async def _generate_ai_response(
-        self, contents: list[types.Content] | str
+        self,
+        contents: list[types.Content] | str,
+        user_id: str = "",
+        user_books: list[dict] | None = None,
     ) -> tuple[str, list[str]]:
+        if user_books is None and user_id:
+            reading_list_cog = self.bot.get_cog("ReadingList")
+            if reading_list_cog:
+                try:
+                    user_books = await reading_list_cog.fetch_reading_list(user_id)
+                except Exception as e:
+                    print(f"Failed to fetch reading list for user {user_id}: {e}")
+                    user_books = []
+            else:
+                user_books = []
+
+        sys_prompt = self._get_system_instruction(user_books)
         config = types.GenerateContentConfig(
-            system_instruction=CONCIERGE_PROMPT, tools=[{"google_search": {}}]
+            system_instruction=sys_prompt, tools=[{"google_search": {}}]
         )
 
         model_name = get_gemini_model()
@@ -322,25 +408,39 @@ class BookConcierge(commands.Cog):
         if not text:
             return "", []
 
-        return self.extract_book_titles(text)
+        clean_text, titles = self.extract_book_titles(text)
+        if user_books and titles:
+            titles = self._filter_out_existing_books(titles, user_books)
+        return clean_text, titles
 
-    async def build_personalized_query(self, user_id: str) -> str:
-        reading_list_cog = self.bot.get_cog("ReadingList")
-        if reading_list_cog:
-            books = await reading_list_cog.fetch_reading_list(user_id)
+    async def build_personalized_query(
+        self, user_id: str, user_books: list[dict] | None = None
+    ) -> str:
+        if user_books is None:
+            reading_list_cog = self.bot.get_cog("ReadingList")
+            if reading_list_cog:
+                try:
+                    user_books = await reading_list_cog.fetch_reading_list(user_id)
+                except Exception as e:
+                    print(f"Failed to fetch reading list for user {user_id}: {e}")
+                    user_books = []
+            else:
+                user_books = []
+
+        if user_books:
             past_books = [
                 f"- {b['title']} by {b['author']} (Status: {b['status']})"
-                for b in books
-                if b.get("status") in ["read", "reading"]
+                for b in user_books
+                if b.get("status") in ["read", "reading", "planned"]
             ]
             if past_books:
                 books_str = "\n".join(past_books[::-1][:30])  # limit to 30 most recent books
                 return (
-                    f"I am looking for book recommendations tailored to my tastes. Here are some books I have read or am currently reading:\n"
+                    f"I am looking for book recommendations tailored to my tastes. Here are some books from my reading list for reference:\n"
                     f"{books_str}\n\n"
-                    f"Please recommend some new books for me that I might like based on this list!"
+                    f"Please recommend some new books for me that I might like based on this list, but do NOT recommend any book that is already on my reading list!"
                 )
-        return "Please recommend some good books for me!"
+        return "Please recommend some good books for me! (Do not recommend any books that are already on my reading list.)"
 
     async def process_query(self, query: str, user_id: str) -> tuple[str, list[str]]:
         if not self.client:
@@ -349,12 +449,17 @@ class BookConcierge(commands.Cog):
                 [],
             )
 
+        reading_list_cog = self.bot.get_cog("ReadingList")
+        user_books = await reading_list_cog.fetch_reading_list(user_id) if reading_list_cog else []
+
         actual_query = query.strip() if query else ""
         if not actual_query:
-            actual_query = await self.build_personalized_query(user_id)
+            actual_query = await self.build_personalized_query(user_id, user_books=user_books)
 
         try:
-            return await self._generate_ai_response(actual_query)
+            return await self._generate_ai_response(
+                actual_query, user_id=user_id, user_books=user_books
+            )
         except Exception as e:
             return format_gemini_error(e, include_details=True), []
 
@@ -370,6 +475,10 @@ class BookConcierge(commands.Cog):
             await ctx.send("Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
             return
 
+        user_id_str = str(ctx.author.id)
+        reading_list_cog = self.bot.get_cog("ReadingList")
+        user_books = await reading_list_cog.fetch_reading_list(user_id_str) if reading_list_cog else []
+
         query_str = query.strip() if query else ""
 
         # Case 1: Inside an existing thread
@@ -381,8 +490,10 @@ class BookConcierge(commands.Cog):
                     try:
                         contents = await self._build_thread_contents(ctx.channel, additional_prompt=query_str or None)
                         if not contents:
-                            contents = query_str or await self.build_personalized_query(str(ctx.author.id))
-                        clean_text, titles = await self._generate_ai_response(contents)
+                            contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+                        clean_text, titles = await self._generate_ai_response(
+                            contents, user_id=user_id_str, user_books=user_books
+                        )
                         if not clean_text:
                             await ctx.send("Received empty response from the Concierge.")
                             return
@@ -401,8 +512,10 @@ class BookConcierge(commands.Cog):
         if isinstance(ctx.channel, discord.DMChannel):
             async with ctx.typing():
                 try:
-                    contents = query_str or await self.build_personalized_query(str(ctx.author.id))
-                    clean_text, titles = await self._generate_ai_response(contents)
+                    contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+                    clean_text, titles = await self._generate_ai_response(
+                        contents, user_id=user_id_str, user_books=user_books
+                    )
                     if not clean_text:
                         await ctx.send("Received empty response from the Concierge.")
                         return
@@ -420,8 +533,10 @@ class BookConcierge(commands.Cog):
         # Case 3: Guild Text Channel (Create a thread)
         async with ctx.typing():
             try:
-                contents = query_str or await self.build_personalized_query(str(ctx.author.id))
-                clean_text, titles = await self._generate_ai_response(contents)
+                contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+                clean_text, titles = await self._generate_ai_response(
+                    contents, user_id=user_id_str, user_books=user_books
+                )
                 if not clean_text:
                     await ctx.send("Received empty response from the Concierge.")
                     return
@@ -466,6 +581,10 @@ class BookConcierge(commands.Cog):
             await interaction.response.send_message("Gemini API key is not configured.", ephemeral=True)
             return
 
+        user_id_str = str(interaction.user.id)
+        reading_list_cog = self.bot.get_cog("ReadingList")
+        user_books = await reading_list_cog.fetch_reading_list(user_id_str) if reading_list_cog else []
+
         query_str = query.strip() if query else ""
 
         await interaction.response.defer()
@@ -480,8 +599,10 @@ class BookConcierge(commands.Cog):
                         interaction.channel, additional_prompt=query_str or None
                     )
                     if not contents:
-                        contents = query_str or await self.build_personalized_query(str(interaction.user.id))
-                    clean_text, titles = await self._generate_ai_response(contents)
+                        contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+                    clean_text, titles = await self._generate_ai_response(
+                        contents, user_id=user_id_str, user_books=user_books
+                    )
                     if not clean_text:
                         await interaction.followup.send("Received empty response from the Concierge.")
                         return
@@ -499,8 +620,10 @@ class BookConcierge(commands.Cog):
         # Case 2: DM Channel (no threads)
         if isinstance(interaction.channel, discord.DMChannel):
             try:
-                contents = query_str or await self.build_personalized_query(str(interaction.user.id))
-                clean_text, titles = await self._generate_ai_response(contents)
+                contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+                clean_text, titles = await self._generate_ai_response(
+                    contents, user_id=user_id_str, user_books=user_books
+                )
                 if not clean_text:
                     await interaction.followup.send("Received empty response from the Concierge.")
                     return
@@ -517,8 +640,10 @@ class BookConcierge(commands.Cog):
 
         # Case 3: Guild Text Channel (Create a thread)
         try:
-            contents = query_str or await self.build_personalized_query(str(interaction.user.id))
-            clean_text, titles = await self._generate_ai_response(contents)
+            contents = query_str or await self.build_personalized_query(user_id_str, user_books=user_books)
+            clean_text, titles = await self._generate_ai_response(
+                contents, user_id=user_id_str, user_books=user_books
+            )
             if not clean_text:
                 await interaction.followup.send("Received empty response from the Concierge.")
                 return
@@ -581,6 +706,10 @@ class BookConcierge(commands.Cog):
         if not content:
             return
 
+        user_id_str = str(message.author.id)
+        reading_list_cog = self.bot.get_cog("ReadingList")
+        user_books = await reading_list_cog.fetch_reading_list(user_id_str) if reading_list_cog else []
+
         lock = self._get_thread_lock(message.channel.id)
         async with lock:
             async with message.channel.typing():
@@ -588,7 +717,9 @@ class BookConcierge(commands.Cog):
                     contents = await self._build_thread_contents(message.channel)
                     if not contents:
                         return
-                    clean_text, titles = await self._generate_ai_response(contents)
+                    clean_text, titles = await self._generate_ai_response(
+                        contents, user_id=user_id_str, user_books=user_books
+                    )
                     if not clean_text:
                         await message.channel.send("Received empty response from the Concierge.")
                         return

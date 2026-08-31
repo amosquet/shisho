@@ -108,7 +108,7 @@ GET_NOTES_TOOL = types.FunctionDeclaration(
 
 GET_READING_LIST_TOOL = types.FunctionDeclaration(
     name="get_reading_list",
-    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped). Use this whenever the user asks about their reading list or books they have saved/read.",
+    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped). Use this whenever the user asks about their reading list or asks for book recommendations, to avoid recommending books already on their list.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -193,7 +193,7 @@ class AIChat(commands.Cog):
             "   - When asked about notes (e.g. 'search my notes'), call ONLY `get_notes` and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. DO NOT mention reading list or notes.\n"
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
-            "2. When the user asks for book recommendations, provide creative, engaging book recommendations directly (you may call `get_reading_list` to check their reading history first).\n"
+            "2. When the user asks for book recommendations, first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
             "3. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
             "4. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
             "5. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
