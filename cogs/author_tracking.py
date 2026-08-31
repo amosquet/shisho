@@ -135,7 +135,7 @@ class AuthorTracking(commands.Cog):
                         "title": title,
                         "authors": book_authors,
                         "publishedDate": pub_date,
-                        "thumbnail": thumbnail.replace("http://", "https://")
+                        "thumbnail": google_books.clean_thumbnail_url(thumbnail)
                     })
                     notified_books.add(book_id)
             except Exception as e:

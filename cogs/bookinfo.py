@@ -61,9 +61,8 @@ class BookInfo(commands.Cog):
         embed.add_field(name="Pages", value=str(book_data.get("pageCount")), inline=True)
         embed.add_field(name="Rating", value=str(book_data.get("averageRating")), inline=True)
 
-        thumbnail = book_data.get("thumbnail")
+        thumbnail = google_books.clean_thumbnail_url(book_data.get("thumbnail", ""))
         if thumbnail:
-            thumbnail = thumbnail.replace("http://", "https://")
             embed.set_thumbnail(url=thumbnail)
 
         await interaction.followup.send(embed=embed)

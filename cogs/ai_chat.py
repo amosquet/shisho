@@ -565,17 +565,34 @@ class AIChat(commands.Cog):
                 if not title and not isbn:
                     return "Error: Title or ISBN is required."
 
-                # Enrich via Google Books if needed
-                if isbn and (not title or not author):
-                    api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
-                    if api_key:
-                        from utils import google_books
-                        book_data = await google_books.fetch_book_data(isbn, api_key)
+                api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+                image_url = ""
+                description = ""
+                cover_filename = None
+                cover_data = None
+
+                # Automatically fetch book data from Google Books API to populate missing details and cover
+                if api_key:
+                    from utils import google_books
+                    search_query = isbn if isbn else (f"{title} {author}".strip() if (title and author) else (title or ""))
+                    if search_query:
+                        book_data = await google_books.fetch_book_data(search_query, api_key)
                         if isinstance(book_data, dict):
                             title = title or book_data.get("title", "")
                             authors = book_data.get("authors", [])
-                            author = author or ", ".join(authors)
-                            publish_date = publish_date or book_data.get("publishedDate", "")
+                            if not author and authors and authors != ["Unknown Author"]:
+                                author = ", ".join(authors)
+                            if not publish_date and book_data.get("publishedDate") and book_data.get("publishedDate") != "Unknown":
+                                publish_date = book_data.get("publishedDate")
+                            if not isbn and book_data.get("isbn"):
+                                isbn = book_data.get("isbn")
+                            image_url = book_data.get("thumbnail", "")
+                            desc = book_data.get("description", "")
+                            if desc and desc != "No description available.":
+                                description = desc
+
+                            if image_url:
+                                cover_filename, cover_data = await google_books.download_image(image_url)
 
                 today = datetime.now().strftime("%Y-%m-%d")
                 final_start = today if status in ["read", "reading"] else ""
@@ -586,12 +603,16 @@ class AIChat(commands.Cog):
                     title=title or "Unknown Title",
                     author=author or "Unknown Author",
                     status_val=status if status in ["planned", "reading", "read", "dropped"] else "planned",
-                    publish_date=publish_date,
+                    publish_date=publish_date if publish_date != "Unknown" else "",
                     isbn=isbn,
                     final_start_date=final_start,
                     final_end_date=final_end,
+                    image_url=image_url,
+                    description=description,
+                    cover_filename=cover_filename,
+                    cover_data=cover_data,
                 )
-                return f"Successfully added '{title}' by {author or 'Unknown Author'} (status: {status}) to the reading list."
+                return f"Successfully added '{title or 'Unknown Title'}' by {author or 'Unknown Author'} (status: {status}) to the reading list."
 
             elif name == "set_reminder":
                 reminders_cog = self.bot.get_cog("Reminders")

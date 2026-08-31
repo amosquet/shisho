@@ -60,14 +60,12 @@ class BookSelect(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
         selected_title = self.values[0]
 
-        # Get necessary cogs
-        bot = interaction.client
-        bookinfo_cog = bot.get_cog("BookInfo")
-        readinglist_cog = bot.get_cog("ReadingList")
+        # Get necessary cog
+        readinglist_cog = interaction.client.get_cog("ReadingList")
 
-        if not bookinfo_cog or not readinglist_cog:
+        if not readinglist_cog:
             await interaction.followup.send(
-                "Required systems (BookInfo or ReadingList) are currently offline.",
+                "Required system (ReadingList) is currently offline.",
                 ephemeral=True,
             )
             return
@@ -77,34 +75,51 @@ class BookSelect(discord.ui.Select):
         )
 
         try:
-            # Fetch book details
-            book_data = await bookinfo_cog.fetch_book_data(selected_title)
+            from utils import google_books
 
-            if isinstance(book_data, str):
-                await interaction.followup.send(
-                    f"Could not find details for **{selected_title}**: {book_data}",
-                    ephemeral=True,
-                )
-                return
+            api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+            book_data = None
+            if api_key:
+                book_data = await google_books.fetch_book_data(selected_title, api_key)
 
-            # Prepare data for reading list
-            title = book_data.get("title", selected_title)
-            author = ", ".join(book_data.get("authors", ["Unknown Author"]))
-            publish_date = book_data.get("publishedDate", "Unknown")
-            isbn = "0000000000"  # Placeholder if not found
+            if isinstance(book_data, dict):
+                title = book_data.get("title", selected_title)
+                authors = book_data.get("authors", ["Unknown Author"])
+                author = ", ".join(authors) if isinstance(authors, list) else str(authors)
+                publish_date = book_data.get("publishedDate", "")
+                isbn = book_data.get("isbn", "")
+                image_url = book_data.get("thumbnail", "")
+                desc = book_data.get("description", "")
+                description = desc if desc != "No description available." else ""
+            else:
+                title = selected_title
+                author = "Unknown Author"
+                publish_date = ""
+                isbn = ""
+                image_url = ""
+                description = ""
+
+            cover_filename = None
+            cover_data = None
+            if image_url:
+                cover_filename, cover_data = await google_books.download_image(image_url)
 
             status_val = "planned"
 
             # Add to reading list
             await readinglist_cog.add_book_to_pocketbase(
-                str(interaction.user.id),
+                discord_id=str(interaction.user.id),
                 title=title,
                 author=author,
                 status_val=status_val,
-                publish_date=publish_date,
+                publish_date=publish_date if publish_date != "Unknown" else "",
                 isbn=isbn,
                 final_start_date="",
                 final_end_date="",
+                image_url=image_url,
+                description=description,
+                cover_filename=cover_filename,
+                cover_data=cover_data,
             )
 
             await interaction.followup.send(

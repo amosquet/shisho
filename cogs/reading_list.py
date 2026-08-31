@@ -75,18 +75,27 @@ class ReadingList(commands.Cog):
 
         fetched_image_url = ""
         fetched_desc = ""
-        if isbn and (not title or not author):
-            api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
-            if api_key:
-                from utils import google_books
-                book_data = await google_books.fetch_book_data(isbn, api_key)
+        api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+        if api_key and (not publish_date or not isbn or not cover_data or not (title and author)):
+            from utils import google_books
+            search_query = isbn if isbn else (f"{title} {author}".strip() if (title and author) else (title or ""))
+            if search_query:
+                book_data = await google_books.fetch_book_data(search_query, api_key)
                 if isinstance(book_data, dict):
                     title = title or book_data.get("title", "Unknown Title")
-                    author = author or ", ".join(book_data.get("authors", ["Unknown Author"]))
+                    authors = book_data.get("authors", [])
+                    if not author and authors and authors != ["Unknown Author"]:
+                        author = ", ".join(authors)
                     publish_date = publish_date or book_data.get("publishedDate", "")
+                    isbn = isbn or book_data.get("isbn", "")
                     fetched_image_url = book_data.get("thumbnail", "")
-                    fetched_desc = book_data.get("description", "")
-        
+                    desc = book_data.get("description", "")
+                    if desc and desc != "No description available.":
+                        fetched_desc = desc
+
+                    if not cover_data and fetched_image_url:
+                        cover_filename, cover_data = await google_books.download_image(fetched_image_url)
+
         title = title or "Unknown Title"
         author = author or "Unknown Author"
         publish_date = publish_date or ""

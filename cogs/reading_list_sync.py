@@ -102,12 +102,7 @@ class ReadingListSync(commands.Cog):
                         thumbnail_url = book_data.get("thumbnail")
                         
                         if not cover and thumbnail_url:
-                            thumbnail_url = thumbnail_url.replace("http://", "https://")
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(thumbnail_url) as resp:
-                                    if resp.status == 200:
-                                        cover_data = await resp.read()
-                                        cover_filename = "cover.jpg"
+                            cover_filename, cover_data = await google_books.download_image(thumbnail_url)
                         
                         if update_data or (cover_data and cover_filename):
                             def _update():
