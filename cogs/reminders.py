@@ -343,7 +343,13 @@ class Reminders(commands.Cog):
 
             except asyncio.CancelledError:
                 break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                ConnectionResetError,
+                BrokenPipeError,
+                OSError,
+            ) as e:
                 print(
                     f"PocketBase reminders SSE stream disconnected ({type(e).__name__}: {e}). Reconnecting in {backoff}s..."
                 )
