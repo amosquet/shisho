@@ -41,7 +41,7 @@ ADD_BOOK_TOOL = types.FunctionDeclaration(
 
 GET_READING_LIST_TOOL = types.FunctionDeclaration(
     name="get_reading_list",
-    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped). Use this whenever the user asks about their reading list or asks for book recommendations, to avoid recommending books already on their list.",
+    description="Retrieves the user's reading list from PocketBase, including book titles, authors, and statuses (planned, reading, read, dropped). Call this ONLY when the user explicitly asks about their reading list or asks for book recommendations.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
