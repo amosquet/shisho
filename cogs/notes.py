@@ -22,6 +22,129 @@ from utils.db import (
 )
 from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
+STOP_WORDS = {
+    "the", "a", "an", "my", "our", "your", "note", "notes", "memo", "memos",
+    "in", "on", "at", "for", "with", "of", "about", "to", "and", "is", "doc", "document"
+}
+
+
+def clean_note_query(query: str) -> str:
+    """Strips conversational fluff (e.g., 'my purdue hackers finance note' -> 'purdue hackers finance')."""
+    if not query:
+        return ""
+    q = query.strip()
+    cleaned = re.sub(r"^(?:my|the|a|an|our|your)\s+", "", q, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+(?:note|notes|memo|memos|doc|document)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = cleaned.strip("\"' ")
+    return cleaned if cleaned else q
+
+
+def score_note_match(query: str, title: str, text: str, editor: str) -> float:
+    """Scores how well a note matches a search query using substring and token overlap."""
+    if not query:
+        return 1.0
+    q_raw = query.strip().lower()
+    t = (title or "").strip().lower()
+    b = f"{text or ''} {editor or ''}".strip().lower()
+
+    if not t and not b:
+        return 0.0
+
+    if q_raw == t:
+        return 100.0
+    if q_raw in t:
+        return 60.0
+    if q_raw in b:
+        return 40.0
+
+    q_clean = clean_note_query(query).strip().lower()
+    if q_clean and q_clean != q_raw:
+        if q_clean == t:
+            return 90.0
+        if q_clean in t:
+            return 55.0
+        if q_clean in b:
+            return 35.0
+
+    # Token-based match
+    tokens = [w for w in re.findall(r"\w+", q_raw) if len(w) > 1 and w not in STOP_WORDS]
+    if not tokens:
+        tokens = [w for w in re.findall(r"\w+", q_raw) if len(w) > 0]
+    if not tokens:
+        return 0.0
+
+    matched_title = sum(1 for tok in tokens if tok in t)
+    matched_body = sum(1 for tok in tokens if tok in b)
+    matched_any = sum(1 for tok in tokens if tok in t or tok in b)
+
+    if matched_any == len(tokens):
+        # All search tokens matched somewhere
+        return 20.0 + (matched_title * 6.0) + (matched_body * 2.0)
+    elif matched_any >= max(1, len(tokens) * 0.6):
+        # Majority of search tokens matched
+        return 10.0 + (matched_title * 4.0) + (matched_body * 1.5)
+
+    return 0.0
+
+
+def find_single_note_record(pb, pb_user_id: str, target: str, archived_filter: bool | None = None):
+    """Finds a single note record by exact ID, exact substring, cleaned query, or token scoring."""
+    clean_target = (target or "").strip()
+    if not clean_target:
+        return None
+
+    # Try finding by exact ID first
+    try:
+        record = pb.collection("notes").get_one(clean_target)
+        record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
+        if record_owner == pb_user_id:
+            if archived_filter is None:
+                return record
+            is_arch = bool(getattr(record, "archived", False) or (record.get("archived", False) if hasattr(record, "get") else False))
+            if is_arch == archived_filter:
+                return record
+    except Exception:
+        pass
+
+    base_filter_parts = [f"owner = '{pb_user_id}'"]
+    if archived_filter is True:
+        base_filter_parts.append("archived = true")
+    elif archived_filter is False:
+        base_filter_parts.append("(archived = false || archived = null)")
+
+    safe_query = clean_target.replace("'", "\\'")
+    filter_str = " && ".join(base_filter_parts + [f"(title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"])
+    records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
+
+    if not records:
+        cleaned = clean_note_query(clean_target)
+        if cleaned and cleaned.lower() != clean_target.lower():
+            safe_cleaned = cleaned.replace("'", "\\'")
+            filter_str = " && ".join(base_filter_parts + [f"(title ~ '{safe_cleaned}' || text ~ '{safe_cleaned}' || editor ~ '{safe_cleaned}')"])
+            records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
+
+    if not records:
+        filter_str = " && ".join(base_filter_parts)
+        records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
+        if not records:
+            return None
+
+    scored_records = []
+    for r in records:
+        r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
+        r_text = getattr(r, "text", "") or (r.get("text", "") if hasattr(r, "get") else "")
+        r_editor = getattr(r, "editor", "") or (r.get("editor", "") if hasattr(r, "get") else "")
+        score = score_note_match(clean_target, r_title, r_text, r_editor)
+        if score > 0.0:
+            scored_records.append((score, r))
+
+    if not scored_records:
+        return None
+
+    scored_records.sort(key=lambda x: x[0], reverse=True)
+    return scored_records[0][1]
+
+
 class Notes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -119,20 +242,37 @@ class Notes(commands.Cog):
                 if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
                 
-                filter_parts = [f"owner = '{pb_user_id}'"]
+                base_filter_parts = [f"owner = '{pb_user_id}'"]
                 if archived is True:
-                    filter_parts.append("archived = true")
+                    base_filter_parts.append("archived = true")
                 elif archived is False:
-                    filter_parts.append("(archived = false || archived = null)")
+                    base_filter_parts.append("(archived = false || archived = null)")
+
+                records = []
+                # 1. Try exact query filter in PocketBase if query is provided
                 if query:
                     safe_query = query.replace("'", "\\'")
-                    filter_parts.append(f"(title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')")
-                
-                query_params = {"sort": "-id", "filter": " && ".join(filter_parts)}
-                records = pb.collection("notes").get_full_list(query_params=query_params)
+                    pb_filter = " && ".join(base_filter_parts + [f"(title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"])
+                    records = pb.collection("notes").get_full_list(query_params={"sort": "-id", "filter": pb_filter})
+
+                    # 2. If no records, try cleaned query in PocketBase
+                    if not records:
+                        cleaned = clean_note_query(query)
+                        if cleaned and cleaned.lower() != query.lower():
+                            safe_cleaned = cleaned.replace("'", "\\'")
+                            pb_filter = " && ".join(base_filter_parts + [f"(title ~ '{safe_cleaned}' || text ~ '{safe_cleaned}' || editor ~ '{safe_cleaned}')"])
+                            records = pb.collection("notes").get_full_list(query_params={"sort": "-id", "filter": pb_filter})
+
+                    # 3. If still no records, fetch all matching user notes and score in-memory
+                    if not records:
+                        pb_filter = " && ".join(base_filter_parts)
+                        records = pb.collection("notes").get_full_list(query_params={"sort": "-id", "filter": pb_filter})
+                else:
+                    pb_filter = " && ".join(base_filter_parts)
+                    records = pb.collection("notes").get_full_list(query_params={"sort": "-id", "filter": pb_filter})
                 
                 base_url = get_pb_url(self.pb_url)
-                results = []
+                scored_results = []
                 for record in records:
                     record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
                     if record_owner == pb_user_id:
@@ -141,13 +281,14 @@ class Notes(commands.Cog):
                         editor = getattr(record, "editor", "") or (record.get("editor", "") if hasattr(record, "get") else "")
                         is_archived = bool(getattr(record, "archived", False) or (record.get("archived", False) if hasattr(record, "get") else False))
 
-                        if query:
-                            q_lower = query.lower()
-                            if q_lower not in title.lower() and q_lower not in text.lower() and q_lower not in editor.lower():
-                                continue
-
                         if archived is not None and is_archived != archived:
                             continue
+
+                        score = 1.0
+                        if query:
+                            score = score_note_match(query, title, text, editor)
+                            if score <= 0.0:
+                                continue
 
                         created_val = getattr(record, "created", "")
                         if not created_val and hasattr(record, "get"):
@@ -167,7 +308,8 @@ class Notes(commands.Cog):
                             "updated": updated_val,
                             "attachment_filenames": [],
                             "attachment_urls": [],
-                            "file_token": ""
+                            "file_token": "",
+                            "_score": score,
                         }
                         
                         attachment = getattr(record, "attachment", "") or (record.get("attachment", "") if hasattr(record, "get") else "")
@@ -180,16 +322,19 @@ class Notes(commands.Cog):
                                 note["attachment_filenames"] = [attachment]
                             note["file_token"] = pb.auth_store.token
                             
-                        results.append(note)
+                        scored_results.append(note)
                 
                 def sort_key(n):
+                    score = n.get("_score", 1.0)
                     updated = n.get("updated", "")
                     created = n.get("created", "")
                     has_updates = 1 if updated and updated != created else 0
-                    return (has_updates, updated)
+                    return (score, has_updates, updated)
                 
-                results.sort(key=sort_key, reverse=True)
-                return results[:limit]
+                scored_results.sort(key=sort_key, reverse=True)
+                for n in scored_results:
+                    n.pop("_score", None)
+                return scored_results[:limit]
 
             notes = await run_in_executor(_get_from_pb)
             return notes
@@ -205,37 +350,16 @@ class Notes(commands.Cog):
                 if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
-                clean_target = note_id_or_query.strip()
+                clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
                     return "Error: Please specify a note title, ID, or keyword to archive."
 
-                # Try finding by exact ID first
-                try:
-                    record = pb.collection("notes").get_one(clean_target)
-                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
-                    if record_owner == pb_user_id:
-                        title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "") or "Untitled Note"
-                        pb.collection("notes").update(record.id, {"archived": True})
-                        return f"Successfully archived note: **{title}**"
-                except Exception:
-                    pass
-
-                # Search unarchived notes owned by user
-                safe_query = clean_target.replace("'", "\\'")
-                filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"
-                records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
-                if not records:
-                    return f"No notes found matching '{clean_target}'."
-
-                # Prefer exact title match if multiple
-                matched_record = None
-                for r in records:
-                    r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
-                    if r_title.lower() == clean_target.lower():
-                        matched_record = r
-                        break
+                matched_record = find_single_note_record(pb, pb_user_id, clean_target, archived_filter=False)
                 if not matched_record:
-                    matched_record = records[0]
+                    # Fallback to any note owned by user
+                    matched_record = find_single_note_record(pb, pb_user_id, clean_target)
+                if not matched_record:
+                    return f"No notes found matching '{clean_target}'."
 
                 title = getattr(matched_record, "title", "") or (matched_record.get("title", "") if hasattr(matched_record, "get") else "") or "Untitled Note"
                 pb.collection("notes").update(matched_record.id, {"archived": True})
@@ -254,35 +378,15 @@ class Notes(commands.Cog):
                 if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
-                clean_target = note_id_or_query.strip()
+                clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
                     return "Error: Please specify a note title, ID, or keyword to unarchive."
 
-                # Try finding by exact ID first
-                try:
-                    record = pb.collection("notes").get_one(clean_target)
-                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
-                    if record_owner == pb_user_id:
-                        title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "") or "Untitled Note"
-                        pb.collection("notes").update(record.id, {"archived": False})
-                        return f"Successfully unarchived note: **{title}**"
-                except Exception:
-                    pass
-
-                safe_query = clean_target.replace("'", "\\'")
-                filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"
-                records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
-                if not records:
-                    return f"No notes found matching '{clean_target}'."
-
-                matched_record = None
-                for r in records:
-                    r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
-                    if r_title.lower() == clean_target.lower():
-                        matched_record = r
-                        break
+                matched_record = find_single_note_record(pb, pb_user_id, clean_target, archived_filter=True)
                 if not matched_record:
-                    matched_record = records[0]
+                    matched_record = find_single_note_record(pb, pb_user_id, clean_target)
+                if not matched_record:
+                    return f"No notes found matching '{clean_target}'."
 
                 title = getattr(matched_record, "title", "") or (matched_record.get("title", "") if hasattr(matched_record, "get") else "") or "Untitled Note"
                 pb.collection("notes").update(matched_record.id, {"archived": False})
@@ -309,32 +413,13 @@ class Notes(commands.Cog):
                 if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
-                clean_target = note_id_or_query.strip()
+                clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
                     return "Error: Please specify a note title, ID, or keyword to update."
 
-                matched_record = None
-                try:
-                    record = pb.collection("notes").get_one(clean_target)
-                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
-                    if record_owner == pb_user_id:
-                        matched_record = record
-                except Exception:
-                    pass
-
+                matched_record = find_single_note_record(pb, pb_user_id, clean_target)
                 if not matched_record:
-                    safe_query = clean_target.replace("'", "\\'")
-                    filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"
-                    records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
-                    if not records:
-                        return f"No notes found matching '{clean_target}'."
-                    for r in records:
-                        r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
-                        if r_title.lower() == clean_target.lower():
-                            matched_record = r
-                            break
-                    if not matched_record:
-                        matched_record = records[0]
+                    return f"No notes found matching '{clean_target}'."
 
                 update_data = {}
                 if title is not None:
@@ -374,7 +459,7 @@ class Notes(commands.Cog):
 
                 deleted_count = 0
                 for r in records:
-                    record_owner = getattr(r, "owner", "") or (r.get("owner", "") if hasattr(r, "get") else "")
+                    record_owner = getattr(r, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
                     if record_owner == pb_user_id:
                         pb.collection("notes").delete(r.id)
                         deleted_count += 1
@@ -383,7 +468,7 @@ class Notes(commands.Cog):
                     return "No archived notes found to delete."
                 return f"Successfully deleted {deleted_count} archived note{'s' if deleted_count != 1 else ''}."
 
-            return await run_in_executor(_delete_from_pb if False else _delete_archived_from_pb)
+            return await run_in_executor(_delete_archived_from_pb)
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return f"Failed to delete archived notes: {e}"
@@ -400,37 +485,13 @@ class Notes(commands.Cog):
                 if not pb_user_id:
                     return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
-                target = note_id_or_query.strip()
+                target = (note_id_or_query or "").strip()
                 if not target:
                     return "Error: Please specify a note title, ID, or keyword to delete."
 
-                # Try finding by exact ID first
-                try:
-                    record = pb.collection("notes").get_one(target)
-                    record_owner = getattr(record, "owner", "") or (record.get("owner", "") if hasattr(record, "get") else "")
-                    if record_owner == pb_user_id:
-                        title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "") or "Untitled Note"
-                        pb.collection("notes").delete(record.id)
-                        return f"Successfully deleted note: **{title}**"
-                except Exception:
-                    pass
-
-                # Search notes owned by user
-                safe_query = target.replace("'", "\\'")
-                filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || text ~ '{safe_query}' || editor ~ '{safe_query}')"
-                records = pb.collection("notes").get_full_list(query_params={"filter": filter_str})
-                if not records:
-                    return f"No notes found matching '{target}'."
-
-                # Prefer exact title match if multiple
-                matched_record = None
-                for r in records:
-                    r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
-                    if r_title.lower() == target.lower():
-                        matched_record = r
-                        break
+                matched_record = find_single_note_record(pb, pb_user_id, target)
                 if not matched_record:
-                    matched_record = records[0]
+                    return f"No notes found matching '{target}'."
 
                 title = getattr(matched_record, "title", "") or (matched_record.get("title", "") if hasattr(matched_record, "get") else "") or "Untitled Note"
                 pb.collection("notes").delete(matched_record.id)

@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from utils.db import run_in_executor
+from utils.llm import get_gemini_model, set_gemini_model, validate_gemini_model
 
 
 class Admin(commands.Cog):
@@ -171,6 +172,45 @@ class Admin(commands.Cog):
                 ret += 1
 
         await ctx.send(f"Synced the tree to {ret}/{len(guilds)} guilds.")
+
+    @commands.group(name="model", invoke_without_command=True)
+    @commands.is_owner()
+    async def model_cmd(self, ctx: commands.Context, *, model_name: Optional[str] = None):
+        """Shows or changes the active Gemini AI model. (Owner only)
+
+        Usage:
+          !model -> shows current active model
+          !model <model_name> -> changes model to <model_name>
+          !model set <model_name> -> changes model to <model_name>
+        """
+        if model_name is None:
+            current = get_gemini_model()
+            await ctx.send(f"🤖 **Current AI Model:** `{current}`")
+            return
+
+        ai_cog = self.bot.get_cog("AIChat")
+        client = getattr(ai_cog, "client", None)
+        is_valid, canonical, msg = await validate_gemini_model(model_name, client=client)
+        if not is_valid:
+            await ctx.send(f"❌ {msg}")
+            return
+
+        set_gemini_model(canonical)
+        await ctx.send(f"✅ **Active AI Model changed to:** `{canonical}` (persisted globally)")
+
+    @model_cmd.command(name="set")
+    @commands.is_owner()
+    async def model_set(self, ctx: commands.Context, *, model_name: str):
+        """Sets the active Gemini AI model. (Owner only)"""
+        ai_cog = self.bot.get_cog("AIChat")
+        client = getattr(ai_cog, "client", None)
+        is_valid, canonical, msg = await validate_gemini_model(model_name, client=client)
+        if not is_valid:
+            await ctx.send(f"❌ {msg}")
+            return
+
+        set_gemini_model(canonical)
+        await ctx.send(f"✅ **Active AI Model changed to:** `{canonical}` (persisted globally)")
 
 
 async def setup(bot):

@@ -36,7 +36,7 @@ GET_NOTES_TOOL = types.FunctionDeclaration(
         properties={
             "query": types.Schema(
                 type=types.Type.STRING,
-                description="Optional keyword to filter or search notes by title, text, or editor content",
+                description="Optional search keywords to filter or search notes by title, text, or editor content (e.g. 'purdue hackers finance'). Pass search keywords only without conversational filler like 'my' or 'note'.",
             ),
             "archived": types.Schema(
                 type=types.Type.BOOLEAN,

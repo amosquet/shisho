@@ -19,6 +19,7 @@ gemini_prompt.txt
 data/book_cache.json
 data/notified_books.json
 data/permissions.json
+data/config.json
 book_cache.json
 notified_books.json
 tests/

@@ -61,8 +61,9 @@ class AIChat(commands.Cog):
             "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `delete_book` to remove books.\n"
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders. Call `delete_reminder` to cancel/delete reminders.\n"
-            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, or archived status.\n"
-            "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n\n"
+            "- Notes: Call `add_note` to save notes. Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, or archived status.\n"
+            "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n"
+            "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
@@ -72,6 +73,8 @@ class AIChat(commands.Cog):
             "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. DO NOT mention reading list or notes.\n"
             "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF'), call `print_document` with the appropriate filename, note_id, or content and respond ONLY about the print job. DO NOT ask what 'this' refers to when a document or file is attached to the message or referenced in the conversation.\n"
+            "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
+            "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
             "5. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
@@ -88,7 +91,8 @@ class AIChat(commands.Cog):
             "     * Tagged without specific prompt: Intelligently determine the most helpful action based on the message content and conversation history (e.g., set a reminder for a deadline, add a book mentioned, answer an unanswered question, or respond with witty banter in character).\n"
             "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, `print_document`, etc.) directly for the user invoking you without asking for details already in context.\n"
             "9. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly.\n"
-            "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification."
+            "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification.\n"
+            "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly."
         )
 
         if base_prompt:
@@ -98,7 +102,7 @@ class AIChat(commands.Cog):
     def _should_create_thread(self, prompt: str, text: str, chunks: list[str]) -> bool:
         prompt_lower = (prompt or "").lower()
         # If user explicitly requested a thread in their prompt
-        if re.search(r"\b(make|create|start|open|in)\s+(?:a\s+)?thread\b", prompt_lower) or "thread" in prompt_lower:
+        if re.search(r"\b(make|create|start|open|put|post|in)\s+(?:a\s+)?thread\b|\b(new\s+thread|to\s+a\s+thread)\b", prompt_lower) or "thread" in prompt_lower:
             return True
         # If response is long and split across multiple Discord chunks, create a thread
         if len(chunks) > 1 or len(text) > 400:
@@ -344,7 +348,7 @@ class AIChat(commands.Cog):
     def _generate_thread_name(self, prompt: str) -> str:
         clean = " ".join(prompt.split())
         clean = re.sub(
-            r"^(?:please\s+)?(?:make|create|start|open)\s+(?:a\s+)?thread\s+(?:with|about|for|on)?\s*",
+            r"^(?:please\s+)?(?:make|create|start|open|put|post)\s+(?:a\s+)?thread\s+(?:with|about|for|on|using)?\s*",
             "",
             clean,
             flags=re.IGNORECASE,

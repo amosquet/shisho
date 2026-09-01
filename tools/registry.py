@@ -50,6 +50,12 @@ from tools.printing import (
     PRINT_DOCUMENT_TOOL,
     handle_print_document,
 )
+from tools.models import (
+    SET_AI_MODEL_TOOL,
+    GET_AI_MODEL_TOOL,
+    handle_set_ai_model,
+    handle_get_ai_model,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -70,6 +76,8 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     ADD_RECOMMENDATION_TOOL,
     DELETE_RECOMMENDATION_TOOL,
     PRINT_DOCUMENT_TOOL,
+    SET_AI_MODEL_TOOL,
+    GET_AI_MODEL_TOOL,
 ]
 
 AI_CHAT_TOOLS: list[types.Tool] = [
@@ -95,6 +103,8 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "unarchive_note": handle_unarchive_note,
     "update_note": handle_update_note,
     "print_document": handle_print_document,
+    "set_ai_model": handle_set_ai_model,
+    "get_ai_model": handle_get_ai_model,
 }
 
 
