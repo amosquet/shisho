@@ -96,6 +96,10 @@ class AIChat(commands.Cog):
         return behavior_instruction
 
     def _should_create_thread(self, prompt: str, text: str, chunks: list[str]) -> bool:
+        prompt_lower = (prompt or "").lower()
+        # If user explicitly requested a thread in their prompt
+        if re.search(r"\b(make|create|start|open|in)\s+(?:a\s+)?thread\b", prompt_lower) or "thread" in prompt_lower:
+            return True
         # If response is long and split across multiple Discord chunks, create a thread
         if len(chunks) > 1 or len(text) > 400:
             return True
@@ -339,13 +343,21 @@ class AIChat(commands.Cog):
 
     def _generate_thread_name(self, prompt: str) -> str:
         clean = " ".join(prompt.split())
+        clean = re.sub(
+            r"^(?:please\s+)?(?:make|create|start|open)\s+(?:a\s+)?thread\s+(?:with|about|for|on)?\s*",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip()
         prefix = "Ask: "
         max_len = 100 - len(prefix)
         if len(clean) > max_len:
             title = prefix + clean[: max_len - 3] + "..."
-        else:
+        elif clean:
             title = prefix + clean
-        return title or "Ask: Gemini Chat"
+        else:
+            title = "Ask: Gemini Chat"
+        return title
 
     def _consolidate_turns(
         self, raw_turns: list[dict]
