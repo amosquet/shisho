@@ -59,6 +59,9 @@ class Reminders(commands.Cog):
         self.owner_email = allowed.split(",")[0].strip() if allowed else ""
 
         self._scheduled_tasks: dict[str, asyncio.Task] = {}
+        self._dispatched_ids: set[str] = set()
+        self._in_flight_ids: set[str] = set()
+        self._dispatch_lock = asyncio.Lock()
         self._sse_task: asyncio.Task | None = None
         self._user_cache: dict[str, tuple[str | None, bool]] = {}
 
@@ -75,6 +78,7 @@ class Reminders(commands.Cog):
             if not task.done():
                 task.cancel()
         self._scheduled_tasks.clear()
+        self._in_flight_ids.clear()
 
     # -------------------------------------------------------------
     # In-Memory Scheduler & Event Handling
@@ -91,8 +95,14 @@ class Reminders(commands.Cog):
         if not record_id:
             return
 
+        # If already dispatched or currently in-flight, do not reschedule
+        if record_id in self._dispatched_ids or record_id in self._in_flight_ids:
+            self._cancel_scheduled(record_id)
+            return
+
         is_sent = _get_field(record_data, "is_sent", False)
         if is_sent:
+            self._dispatched_ids.add(record_id)
             self._cancel_scheduled(record_id)
             return
 
@@ -126,22 +136,56 @@ class Reminders(commands.Cog):
             self._scheduled_tasks.pop(record_id, None)
 
     async def _dispatch_reminder(self, record_data: dict | Any) -> None:
-        """Verify reminder status, send DM / email, and mark is_sent = True."""
+        """Verify reminder status, mark is_sent = True, and deliver DM / email."""
         record_id = _get_field(record_data, "id")
         if not record_id:
             return
 
-        def _fetch_user_and_check():
+        # Atomically check and claim dispatching
+        async with self._dispatch_lock:
+            if record_id in self._dispatched_ids or record_id in self._in_flight_ids:
+                return
+            self._in_flight_ids.add(record_id)
+
+        # Cancel any scheduled timer task for this record
+        self._cancel_scheduled(record_id)
+
+        def _fetch_user_and_claim():
             pb = get_pb_client()
             try:
                 current_rec = pb.collection("reminders").get_one(record_id)
                 if getattr(current_rec, "is_sent", False):
                     return None, None, False, False
-            except Exception:
-                return None, None, False, False
+            except Exception as e:
+                try:
+                    pb = get_pb_client(refresh=True)
+                    current_rec = pb.collection("reminders").get_one(record_id)
+                    if getattr(current_rec, "is_sent", False):
+                        return None, None, False, False
+                except Exception:
+                    # If record check completely fails and is_sent is unknown, do not duplicate
+                    return None, None, False, False
 
             pb_user_id = getattr(current_rec, "owner", "")
             text = getattr(current_rec, "reminder_text", "")
+            if not text:
+                text = _get_field(record_data, "reminder_text", "")
+
+            # Attempt to mark is_sent = True in PocketBase immediately to claim it
+            try:
+                pb.collection("reminders").update(record_id, {"is_sent": True})
+            except Exception as e:
+                print(f"Failed to pre-mark reminder {record_id} as sent in PB: {e}")
+                try:
+                    pb = get_pb_client(refresh=True)
+                    pb.collection("reminders").update(record_id, {"is_sent": True})
+                except Exception as e2:
+                    print(f"Retry marking reminder {record_id} as sent also failed: {e2}")
+                    sentry_sdk.capture_exception(e2)
+
+            if not pb_user_id:
+                pb_user_id = _get_field(record_data, "owner", "")
+
             if not pb_user_id:
                 return None, text, False, True
 
@@ -177,31 +221,26 @@ class Reminders(commands.Cog):
                 discord_id_str,
                 text,
                 send_reminders_to_discord,
-                should_mark_sent,
-            ) = await run_in_executor(_fetch_user_and_check)
+                should_deliver,
+            ) = await run_in_executor(_fetch_user_and_claim)
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            return
+            should_deliver = False
+            discord_id_str = None
+            text = None
+            send_reminders_to_discord = False
 
-        if not should_mark_sent:
-            return
-
-        if send_reminders_to_discord and discord_id_str:
-            try:
-                user_id = int(discord_id_str)
-                await self.send_reminder_dm(user_id, text, record_id)
-            except Exception as e:
-                sentry_sdk.capture_exception(e)
-
-        # Mark as sent in PocketBase
-        def _mark_as_sent():
-            pb = get_pb_client()
-            try:
-                pb.collection("reminders").update(record_id, {"is_sent": True})
-            except Exception as e:
-                sentry_sdk.capture_exception(e)
-
-        await run_in_executor(_mark_as_sent)
+        try:
+            if should_deliver and text:
+                if send_reminders_to_discord and discord_id_str:
+                    try:
+                        user_id = int(discord_id_str)
+                        await self.send_reminder_dm(user_id, text, record_id)
+                    except Exception as e:
+                        sentry_sdk.capture_exception(e)
+        finally:
+            self._dispatched_ids.add(record_id)
+            self._in_flight_ids.discard(record_id)
 
     async def _handle_realtime_event(self, action: str, record: dict):
         """Process incoming PocketBase realtime CRUD events for reminders."""
@@ -210,10 +249,22 @@ class Reminders(commands.Cog):
             return
 
         if action == "delete":
+            self._dispatched_ids.discard(record_id)
+            self._in_flight_ids.discard(record_id)
             self._cancel_scheduled(record_id)
-        elif action in ("create", "update"):
+        elif action == "create":
+            self._dispatched_ids.discard(record_id)
+            self._in_flight_ids.discard(record_id)
             is_sent = record.get("is_sent", False)
             if is_sent:
+                self._dispatched_ids.add(record_id)
+                self._cancel_scheduled(record_id)
+            else:
+                self._schedule_from_record(record)
+        elif action == "update":
+            is_sent = record.get("is_sent", False)
+            if is_sent:
+                self._dispatched_ids.add(record_id)
                 self._cancel_scheduled(record_id)
             else:
                 self._schedule_from_record(record)
@@ -285,6 +336,11 @@ class Reminders(commands.Cog):
                                 current_data.append(value)
                             elif field == "id":
                                 current_id = value
+
+                # If the stream exited cleanly (e.g. server closed connection / EOF),
+                # sleep before reconnecting so we never tight-loop reconnects
+                await asyncio.sleep(2)
+
             except asyncio.CancelledError:
                 break
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -363,9 +419,19 @@ class Reminders(commands.Cog):
         """Fetch all unsent reminders from PocketBase and synchronize in-memory timers."""
         def _fetch_unsent():
             pb = get_pb_client()
-            return pb.collection("reminders").get_full_list(
-                query_params={"filter": "is_sent = False"}
-            )
+            try:
+                return pb.collection("reminders").get_full_list(
+                    query_params={"filter": "is_sent = False"}
+                )
+            except Exception:
+                try:
+                    pb = get_pb_client(refresh=True)
+                    return pb.collection("reminders").get_full_list(
+                        query_params={"filter": "is_sent = False"}
+                    )
+                except Exception as e:
+                    sentry_sdk.capture_exception(e)
+                    return []
 
         try:
             records = await run_in_executor(_fetch_unsent)
@@ -376,9 +442,22 @@ class Reminders(commands.Cog):
         active_ids = set()
         for rec in records:
             rec_id = getattr(rec, "id", None)
-            if rec_id:
-                active_ids.add(rec_id)
-                self._schedule_from_record(rec)
+            if not rec_id:
+                continue
+
+            # If already dispatched in memory, do not schedule or fire again!
+            if rec_id in self._dispatched_ids or rec_id in self._in_flight_ids:
+                def _bg_mark(rid=rec_id):
+                    try:
+                        pb = get_pb_client()
+                        pb.collection("reminders").update(rid, {"is_sent": True})
+                    except Exception:
+                        pass
+                asyncio.create_task(run_in_executor(_bg_mark))
+                continue
+
+            active_ids.add(rec_id)
+            self._schedule_from_record(rec)
 
         # Cancel any scheduled task that is no longer in unsent records
         for task_id in list(self._scheduled_tasks.keys()):
