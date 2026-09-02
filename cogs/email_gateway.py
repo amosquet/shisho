@@ -10,9 +10,13 @@ import ssl
 from typing import Callable, Coroutine
 
 from discord.ext import commands
+from google.genai import types
 from imapclient import IMAPClient
 from imapclient.exceptions import IMAPClientAbortError, IMAPClientError
 import sentry_sdk
+
+from tools.registry import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
 
 def is_isbn(s: str) -> bool:
@@ -57,6 +61,9 @@ class EmailGateway(commands.Cog):
             "!note": self._handle_note,
             "!deletenote": self._handle_deletenote,
             "!delnote": self._handle_deletenote,
+            "!flashcards": self._handle_flashcards,
+            "!anki": self._handle_flashcards,
+            "!deck": self._handle_flashcards,
         }
 
         if self.email_host and self.email_user and self.email_pass:
@@ -189,7 +196,8 @@ class EmailGateway(commands.Cog):
             "!bookinfo [Title or ISBN] - Look up book details\n"
             "!notes - List your recent notes\n"
             "!note [Text] - Save a note (Subject becomes Title. Email attachments are supported.)\n"
-            "!deletenote [Title or ID] - Delete a note"
+            "!deletenote [Title or ID] - Delete a note\n"
+            "!flashcards [Topic or Prompt] - Generate Anki flashcards (.apkg) from email text or attached documents/PDFs"
         )
         return response, []
 
@@ -409,6 +417,61 @@ class EmailGateway(commands.Cog):
         owner_id = self._get_owner_id()
         response = await notes_cog.delete_note(owner_id, args.strip())
         return response, []
+
+    async def _handle_flashcards(self, args: str, subject: str, sender: str, attachments: list) -> tuple[str, list]:
+        api_key = os.getenv("GEMINI_API_KEY")
+        client = get_gemini_client(api_key)
+        if not client:
+            return "Gemini API key is not configured.", []
+
+        parts: list[types.Part] = []
+        deck_name = subject.strip() if subject.strip() and not subject.lower().startswith("re:") else "Anki Flashcards"
+
+        for filename, att_bytes in (attachments or []):
+            mime = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
+            parts.append(types.Part.from_bytes(data=att_bytes, mime_type=mime))
+            if not subject or subject.lower().startswith("re:"):
+                deck_name = os.path.splitext(filename)[0].replace("_", " ").title()
+
+        clean_args = args.strip() or subject or "Generate 10 high-yield Anki flashcards."
+        parts.append(
+            types.Part.from_text(
+                text=f"Generate 10 high-quality Anki flashcards for: {clean_args}. Call `create_anki_deck` with `deck_name='{deck_name[:30]}'` and the card list."
+            )
+        )
+
+        owner_id = self._get_owner_id()
+        exec_context = {"out_files": []}
+
+        try:
+            model_name = get_gemini_model()
+            config = types.GenerateContentConfig(tools=AI_CHAT_TOOLS)
+            contents_list = [types.Content(role="user", parts=parts)]
+
+            response = await generate_content_with_retry(
+                client,
+                model=model_name,
+                contents=contents_list,
+                config=config,
+            )
+
+            tool_output_msg = ""
+            for fc in (response.function_calls or []):
+                if fc.name in TOOL_HANDLERS:
+                    tool_res = await execute_tool(
+                        self.bot, fc.name, fc.args or {}, owner_id, context=exec_context
+                    )
+                    tool_output_msg += f"\n{tool_res}"
+
+            out_attachments = []
+            for f in exec_context.get("out_files", []):
+                out_attachments.append((f["filename"], f["bytes"]))
+
+            reply_text = tool_output_msg.strip() or (response.text or "Flashcards generated!")
+            return reply_text, out_attachments
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"Error generating flashcards: {str(e)}", []
 
     async def process_command(self, sender: str, subject: str, body: str, attachments: list = None):
         full_text = f"{subject}\n{body}"

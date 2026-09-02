@@ -90,6 +90,12 @@ from tools.obsidian import (
     handle_vault_move_note,
     handle_vault_get_backlinks,
 )
+from tools.anki import (
+    CREATE_ANKI_DECK_TOOL,
+    VAULT_EXPORT_ANKI_DECK_TOOL,
+    handle_create_anki_deck,
+    handle_vault_export_anki_deck,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -127,6 +133,8 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     VAULT_DELETE_NOTE_TOOL,
     VAULT_MOVE_NOTE_TOOL,
     VAULT_GET_BACKLINKS_TOOL,
+    CREATE_ANKI_DECK_TOOL,
+    VAULT_EXPORT_ANKI_DECK_TOOL,
 ]
 
 AI_CHAT_TOOLS: list[types.Tool] = [
@@ -169,6 +177,8 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "vault_delete_note": handle_vault_delete_note,
     "vault_move_note": handle_vault_move_note,
     "vault_get_backlinks": handle_vault_get_backlinks,
+    "create_anki_deck": handle_create_anki_deck,
+    "vault_export_anki_deck": handle_vault_export_anki_deck,
 }
 
 

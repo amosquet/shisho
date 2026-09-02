@@ -39,3 +39,9 @@
 - **Command:** `!gemini <prompt>` or `/gemini`
 - **Description:** A simple passthrough command to send general prompts and questions to the Gemini API right from within Discord. 
 - **Workflow:** Useful as a quick assistant without having to open the browser, easily accessible by you and any friends you whitelist.
+
+## Anki Flashcards & Spaced Repetition (.apkg)
+- **Commands:** `/flashcards create`, `/flashcards from_note`, `!flashcards <prompt>`
+- **Description:** Generate structured Anki flashcards (`.apkg` format) and Obsidian Spaced Repetition markdown notes from uploaded PDFs, documents, Obsidian vault notes, or prompts.
+- **Workflow:** Gemini extracts key facts and definitions into atomic flashcards, builds a custom-styled `.apkg` package using `genanki`, attaches it to Discord for instant download/import into Anki, and optionally writes a spaced repetition markdown note to your Obsidian vault.
+

@@ -86,6 +86,14 @@ Set custom reminders using natural language times. The bot will send you a Direc
 - **Smart Reply & Mention Action**: Reply to any message in a channel or thread and tag `@Shisho` (e.g. `@Shisho add this book`, `@Shisho remind me tomorrow at 5pm`, `@Shisho save this note`, or simply `@Shisho`). Shisho will inspect the referenced message and conversation history, determine the best course of action, and execute the corresponding database tools automatically.
 - `/recommend [query]`: Access the AI Book Concierge for tailored book recommendations.
 
+### Anki Flashcards & Study Decks (.apkg)
+
+Generate high-yield Anki flashcards (`.apkg` packages) and Obsidian Spaced Repetition markdown notes directly from uploaded PDFs, documents, Obsidian vault notes, or prompts:
+
+- `/flashcards create [prompt] [file] [vault_note] [deck_name] [card_count] [card_type] [save_to_vault]`: Generates an Anki deck from an uploaded PDF, document, Obsidian vault note, or topic. Supports Basic (Front/Back), Reversed, and Cloze deletion formats. Delivers a downloadable `.apkg` file directly to Discord and optionally saves a markdown note to your Obsidian vault.
+- `/flashcards from_note <vault_note> [deck_name]`: Converts an existing Obsidian vault note into an Anki `.apkg` deck.
+- **AI Smart Reply**: Upload a PDF or mention `@Shisho create flashcards for this PDF` or `@Shisho make an Anki deck on my biology notes in the vault`. Shisho compiles the deck and attaches the `.apkg` file for 1-click import into Anki Desktop, AnkiMobile, or AnkiDroid.
+
 ### Printing (PocketBase Realtime + Email Fallback)
 
 Send documents, notes, or snippets to your physical printer across separate networks:
@@ -124,7 +132,7 @@ Shisho supports hot-reloading, which means I can update its code and apply chang
 ### Remote Email/SMS Commands (Owner Only)
 
 - I can send an email (or SMS via carrier gateway) to the bot's configured address to run commands remotely.
-- Supported commands: `!addbook`, `!deletebook` / `!removebook`, `!suggest`, `!suggestions`, `!deletesuggestion`, `!reminders`, `!remind`, `!deletereminder` / `!cancelreminder`, `!notes`, `!note`, `!deletenote`, `!bookinfo`, and `!ping`.
+- Supported commands: `!addbook`, `!deletebook` / `!removebook`, `!suggest`, `!suggestions`, `!deletesuggestion`, `!reminders`, `!remind`, `!deletereminder` / `!cancelreminder`, `!notes`, `!note`, `!deletenote`, `!flashcards` / `!anki` (with attached PDFs/docs), `!bookinfo`, and `!ping`.
 
 ---
 

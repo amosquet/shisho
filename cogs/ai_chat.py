@@ -1,4 +1,5 @@
 import asyncio
+import io
 import mimetypes
 import os
 import re
@@ -68,7 +69,8 @@ class AIChat(commands.Cog):
             "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n"
             "- Obsidian / Markdown Vault: Call `vault_read_note` to read a markdown note (including parsed YAML frontmatter and body). Call `vault_write_note` to create or overwrite a note with markdown formatting, YAML frontmatter, and wikilinks. Call `vault_patch_note` to surgically replace a specific text snippet or block within an existing note. Call `vault_append_note` to append text, logs, or quotes to a note (optionally under a markdown heading). Call `vault_search` to search across the vault by note body, filenames, tags (`#tag`), or frontmatter. Call `vault_list_files` to explore the vault directory structure and notes. Call `vault_delete_note` to delete or safely move notes to the vault trash (`.trash/`). Call `vault_move_note` to rename or relocate notes. Call `vault_get_backlinks` to find notes linking to a target note via `[[wikilinks]]`.\n"
             "  * Note: Vault operations are strictly restricted to the bot owner.\n"
-            "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n\n"
+            "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
+            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
@@ -82,6 +84,7 @@ class AIChat(commands.Cog):
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - When asked about Obsidian vault, markdown files, or local vault notes (e.g. 'search my vault', 'format note in vault', 'create a note in Projects/Y', 'summarize my vault notes on Z', 'show backlinks to A', 'fix frontmatter'): call the appropriate vault tool (`vault_read_note`, `vault_write_note`, `vault_patch_note`, `vault_search`, `vault_list_files`, `vault_append_note`, `vault_get_backlinks`, etc.) and respond concisely with the outcome or requested content.\n"
+            "   - When asked to create or export Anki flashcards (e.g. 'create flashcards for this PDF', 'generate an anki deck', 'turn my note into flashcards', 'make flashcards on X'): call `create_anki_deck` or `vault_export_anki_deck` and respond with the deck summary and preview.\n"
             "   - When asked if pictures/images/files are uploaded or saved to the database: confirm that image and file attachments are indeed uploaded and attached directly to the note record in PocketBase.\n"
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
@@ -839,7 +842,13 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(ctx.author.id)
-        exec_context = {"attachments": attachments_out, "message": ctx.message, "guild": ctx.guild, "channel": ctx.channel}
+        exec_context = {
+            "attachments": attachments_out,
+            "message": ctx.message,
+            "guild": ctx.guild,
+            "channel": ctx.channel,
+            "out_files": [],
+        }
 
         # Case 1: Inside an existing thread
         if isinstance(ctx.channel, discord.Thread):
@@ -857,8 +866,16 @@ class AIChat(commands.Cog):
                         if not text:
                             await ctx.send("Received empty response from Gemini.")
                             return
-                        for chunk in split_message(text):
-                            await ctx.send(chunk)
+                        discord_files = [
+                            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                            for f in exec_context.get("out_files", [])
+                        ]
+                        chunks = split_message(text)
+                        for i, chunk in enumerate(chunks):
+                            if i == 0 and discord_files:
+                                await ctx.send(chunk, files=discord_files)
+                            else:
+                                await ctx.send(chunk)
                     except Exception as e:
                         await ctx.send(format_gemini_error(e, include_details=False))
             return
@@ -874,8 +891,16 @@ class AIChat(commands.Cog):
                     if not text:
                         await ctx.send("Received empty response from Gemini.")
                         return
-                    for chunk in split_message(text):
-                        await ctx.send(chunk)
+                    discord_files = [
+                        discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                        for f in exec_context.get("out_files", [])
+                    ]
+                    chunks = split_message(text)
+                    for i, chunk in enumerate(chunks):
+                        if i == 0 and discord_files:
+                            await ctx.send(chunk, files=discord_files)
+                        else:
+                            await ctx.send(chunk)
                 except Exception as e:
                     await ctx.send(format_gemini_error(e, include_details=False))
             return
@@ -901,6 +926,10 @@ class AIChat(commands.Cog):
                 return
 
             chunks = split_message(text)
+            discord_files = [
+                discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                for f in exec_context.get("out_files", [])
+            ]
             thread = None
             if hasattr(ctx.message, "create_thread"):
                 try:
@@ -915,11 +944,17 @@ class AIChat(commands.Cog):
                     thread = None
 
             if thread:
-                for chunk in chunks:
-                    await thread.send(chunk)
+                for i, chunk in enumerate(chunks):
+                    if i == 0 and discord_files:
+                        await thread.send(chunk, files=discord_files)
+                    else:
+                        await thread.send(chunk)
             else:
-                for chunk in chunks:
-                    await ctx.send(chunk)
+                for i, chunk in enumerate(chunks):
+                    if i == 0 and discord_files:
+                        await ctx.send(chunk, files=discord_files)
+                    else:
+                        await ctx.send(chunk)
 
     @app_commands.command(name="ask", description="Send a prompt, image, audio, or document to the Gemini API")
     @app_commands.describe(
@@ -1005,6 +1040,7 @@ class AIChat(commands.Cog):
             "interaction": interaction,
             "guild": interaction.guild,
             "channel": interaction.channel,
+            "out_files": [],
         }
 
         # Defer response since Gemini generation takes time
@@ -1027,9 +1063,16 @@ class AIChat(commands.Cog):
                     if not text:
                         await interaction.followup.send("Received empty response from Gemini.")
                         return
+                    discord_files = [
+                        discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                        for f in exec_context.get("out_files", [])
+                    ]
                     chunks = split_message(text)
-                    for chunk in chunks:
-                        await interaction.followup.send(chunk)
+                    for i, chunk in enumerate(chunks):
+                        if i == 0 and discord_files:
+                            await interaction.followup.send(chunk, files=discord_files)
+                        else:
+                            await interaction.followup.send(chunk)
                 except Exception as e:
                     await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
@@ -1044,9 +1087,16 @@ class AIChat(commands.Cog):
                 if not text:
                     await interaction.followup.send("Received empty response from Gemini.")
                     return
+                discord_files = [
+                    discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                    for f in exec_context.get("out_files", [])
+                ]
                 chunks = split_message(text)
-                for chunk in chunks:
-                    await interaction.followup.send(chunk)
+                for i, chunk in enumerate(chunks):
+                    if i == 0 and discord_files:
+                        await interaction.followup.send(chunk, files=discord_files)
+                    else:
+                        await interaction.followup.send(chunk)
             except Exception as e:
                 await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
@@ -1065,6 +1115,10 @@ class AIChat(commands.Cog):
             return
 
         chunks = split_message(text)
+        discord_files = [
+            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+            for f in exec_context.get("out_files", [])
+        ]
         thread = None
         try:
             starter_label = f"💬 **Question:** {clean_prompt}" if clean_prompt else ("🖼️ **Image Prompt**" if image else ("📄 **Document Prompt**" if file else "🎙️ **Audio Prompt**"))
@@ -1079,11 +1133,17 @@ class AIChat(commands.Cog):
             thread = None
 
         if thread:
-            for chunk in chunks:
-                await thread.send(chunk)
+            for i, chunk in enumerate(chunks):
+                if i == 0 and discord_files:
+                    await thread.send(chunk, files=discord_files)
+                else:
+                    await thread.send(chunk)
         else:
-            for chunk in chunks:
-                await interaction.followup.send(chunk)
+            for i, chunk in enumerate(chunks):
+                if i == 0 and discord_files:
+                    await interaction.followup.send(chunk, files=discord_files)
+                else:
+                    await interaction.followup.send(chunk)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -1218,15 +1278,23 @@ class AIChat(commands.Cog):
                             "message": message,
                             "guild": message.guild,
                             "channel": message.channel,
+                            "out_files": [],
                         }
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
                         if not text or text.strip() == "[NO_ACTION]":
                             return
+                        discord_files = [
+                            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                            for f in exec_context.get("out_files", [])
+                        ]
                         chunks = split_message(text)
-                        for chunk in chunks:
-                            await message.channel.send(chunk)
+                        for i, chunk in enumerate(chunks):
+                            if i == 0 and discord_files:
+                                await message.channel.send(chunk, files=discord_files)
+                            else:
+                                await message.channel.send(chunk)
                     except Exception as e:
                         await message.channel.send(format_gemini_error(e, include_details=False))
             return
@@ -1256,15 +1324,23 @@ class AIChat(commands.Cog):
                         "message": message,
                         "guild": getattr(message, "guild", None),
                         "channel": message.channel,
+                        "out_files": [],
                     }
                     text = await self._generate_ai_response(
                         contents, user_id=user_id_str, context=exec_context
                     )
                     if not text or text.strip() == "[NO_ACTION]":
                         return
+                    discord_files = [
+                        discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                        for f in exec_context.get("out_files", [])
+                    ]
                     chunks = split_message(text)
-                    for chunk in chunks:
-                        await message.channel.send(chunk)
+                    for i, chunk in enumerate(chunks):
+                        if i == 0 and discord_files:
+                            await message.channel.send(chunk, files=discord_files)
+                        else:
+                            await message.channel.send(chunk)
                 except Exception as e:
                     await message.channel.send(format_gemini_error(e, include_details=False))
             return
@@ -1296,6 +1372,7 @@ class AIChat(commands.Cog):
                     "message": message,
                     "guild": message.guild,
                     "channel": message.channel,
+                    "out_files": [],
                 }
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
@@ -1307,6 +1384,10 @@ class AIChat(commands.Cog):
                 return
 
             chunks = split_message(text)
+            discord_files = [
+                discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                for f in exec_context.get("out_files", [])
+            ]
             should_create_thread = self._should_create_thread(clean_text, text, chunks)
 
             thread = None
@@ -1321,15 +1402,24 @@ class AIChat(commands.Cog):
                     thread = None
 
             if thread:
-                for chunk in chunks:
-                    await thread.send(chunk)
+                for i, chunk in enumerate(chunks):
+                    if i == 0 and discord_files:
+                        await thread.send(chunk, files=discord_files)
+                    else:
+                        await thread.send(chunk)
             else:
                 for i, chunk in enumerate(chunks):
                     if i == 0:
                         try:
-                            await message.reply(chunk)
+                            if discord_files:
+                                await message.reply(chunk, files=discord_files)
+                            else:
+                                await message.reply(chunk)
                         except Exception:
-                            await message.channel.send(chunk)
+                            if discord_files:
+                                await message.channel.send(chunk, files=discord_files)
+                            else:
+                                await message.channel.send(chunk)
                     else:
                         await message.channel.send(chunk)
 
