@@ -14,6 +14,10 @@ from utils.db import run_in_executor
 PERMISSIONS_FILE = os.path.join("data", "permissions.json")
 _permissions_cache: dict[str, list[int]] | None = None
 
+UNLINKED_ACCOUNT_MESSAGE = (
+    "You don't have a linked Shisho account yet. Run `/register` to create one in seconds!"
+)
+
 
 def format_for_discord(text: str) -> str:
     """
@@ -326,6 +330,10 @@ def is_user_authorized(user_id: Union[int, str], cog_name: str) -> bool:
     if enable_val is None:
         enable_val = os.getenv(f"WHITELIST_ENABLE_{cog_exact}")
     if enable_val is not None and enable_val.strip().lower() == "false":
+        return True
+
+    # Public-by-default cogs (unless explicitly configured)
+    if enable_val is None and cog_clean in ("AUTH",):
         return True
 
     # Check whitelist IDs from persistent storage or environment

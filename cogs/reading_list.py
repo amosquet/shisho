@@ -12,6 +12,7 @@ from utils.db import (
     prepare_file_upload_payload,
     run_in_executor,
 )
+from utils.discord_helpers import UNLINKED_ACCOUNT_MESSAGE
 
 class ReadingList(commands.Cog):
     def __init__(self, bot):
@@ -159,7 +160,7 @@ class ReadingList(commands.Cog):
             pb = self.get_pb_client()
             pb_user_id = get_discord_user_id(pb, discord_id)
             if not pb_user_id:
-                raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
+                raise Exception(UNLINKED_ACCOUNT_MESSAGE)
 
             new_book = {
                 "owner": str(pb_user_id),
@@ -231,7 +232,7 @@ class ReadingList(commands.Cog):
             pb = self.get_pb_client()
             pb_user_id = get_discord_user_id(pb, str(user_id))
             if not pb_user_id:
-                raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
+                raise Exception(UNLINKED_ACCOUNT_MESSAGE)
 
             clean_target = str(book_query).strip()
             if not clean_target:
@@ -355,7 +356,7 @@ class ReadingList(commands.Cog):
             pb = self.get_pb_client()
             pb_user_id = get_discord_user_id(pb, discord_id)
             if not pb_user_id:
-                return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
             clean_target = query_or_id.strip()
             if not clean_target:

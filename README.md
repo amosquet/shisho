@@ -41,6 +41,12 @@ I can control Shisho remotely by sending commands via email or SMS (using email-
 
 ## Commands
 
+### Account & Registration (Public)
+
+- `/register [email]`: Create and link a Shisho account directly from Discord without needing the mobile app! Generates an 8-digit secure PIN, provisions your PocketBase account, and links your Discord ID instantly. Email is optional (defaults to `<discord_id>@discord.shisho.local`).
+- `/account`: View your linked Shisho account profile and registration details.
+- `/resetpin`: Regenerate a new secure PIN for your Shisho account.
+
 ### Managing Books
 
 - `/addbook [status] [title] [author] [publish_date] [isbn] [start_date] [end_date] [cover_image]`: Adds a book to the PocketBase reading list.

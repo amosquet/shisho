@@ -20,6 +20,7 @@ from utils.db import (
     prepare_file_upload_payload,
     run_in_executor,
 )
+from utils.discord_helpers import UNLINKED_ACCOUNT_MESSAGE
 from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
 STOP_WORDS = {
@@ -212,7 +213,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 entry = {
                     "owner": str(pb_user_id),
@@ -240,7 +241,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
                 
                 base_filter_parts = [f"owner = '{pb_user_id}'"]
                 if archived is True:
@@ -348,7 +349,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
@@ -376,7 +377,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
@@ -412,7 +413,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 clean_target = (note_id_or_query or "").strip()
                 if not clean_target:
@@ -453,7 +454,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 records = pb.collection("notes").get_full_list(
                     query_params={"filter": f"owner = '{pb_user_id}' && archived = true"}
@@ -487,7 +488,7 @@ class Notes(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 target = (note_id_or_query or "").strip()
                 if not target:

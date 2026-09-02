@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 import sentry_sdk
 
 from utils.db import get_pb_client, get_pb_url, get_discord_user_id, run_in_executor
+from utils.discord_helpers import UNLINKED_ACCOUNT_MESSAGE
 
 
 def _get_field(record: Any, field_name: str, default: Any = None) -> Any:
@@ -538,7 +539,7 @@ class Reminders(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
 
@@ -596,7 +597,7 @@ class Reminders(commands.Cog):
             records = await run_in_executor(get_from_pocketbase)
 
             if records is None:
-                return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
             status_norm = (status or "active").strip().lower()
             if not records:
@@ -694,7 +695,7 @@ class Reminders(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app.", None
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}", None
 
                 matched_record = None
                 # 1. Exact ID
@@ -869,7 +870,7 @@ class Reminders(commands.Cog):
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
 
                 clean_target = reminder_id_or_query.strip()
                 if not clean_target:
