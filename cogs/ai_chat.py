@@ -738,11 +738,10 @@ class AIChat(commands.Cog):
                 return True
 
         try:
-            async for msg in thread.history(limit=5, oldest_first=True):
-                if msg.author.id == self.bot.user.id:
+            async for msg in thread.history(limit=20):
+                if self.bot.user and msg.author.id == self.bot.user.id:
                     self.active_threads.add(thread.id)
                     return True
-                break
         except Exception:
             pass
 
@@ -1156,7 +1155,7 @@ class AIChat(commands.Cog):
 
         is_bot_mentioned = bool(self.bot.user and any(m.id == self.bot.user.id for m in message.mentions))
         is_in_thread = isinstance(message.channel, discord.Thread)
-        is_dm = isinstance(message.channel, discord.DMChannel)
+        is_dm = getattr(message, "guild", None) is None or isinstance(message.channel, (discord.DMChannel, discord.abc.PrivateChannel))
 
         is_reply = message.reference is not None and message.reference.message_id is not None
         is_reply_to_bot = False
@@ -1210,9 +1209,21 @@ class AIChat(commands.Cog):
 
         # Verify user authorization
         if not self.is_user_authorized(message.author.id):
+            if is_dm:
+                print(f"[AIChat] Unauthorized DM from user {message.author} (ID: {message.author.id})")
+                try:
+                    await message.channel.send("❌ You are not authorized to use Shisho AI chat.")
+                except Exception:
+                    pass
             return
 
         if not self.client:
+            if is_dm or is_bot_mentioned or is_reply_to_bot:
+                print("[AIChat] GEMINI_API_KEY is not configured.")
+                try:
+                    await message.channel.send("❌ Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
+                except Exception:
+                    pass
             return
 
         # Check if there is text, audio attachments, image attachments, or document attachments
@@ -1245,6 +1256,8 @@ class AIChat(commands.Cog):
                 clean_text = re.sub(rf"<@!?{bot_id}>", "", clean_text).strip()
 
         if not clean_text and not has_audio and not has_image and not has_document and not has_any_att and not is_reply:
+            if is_dm:
+                print(f"[AIChat] Received DM with empty text from {message.author} (ID: {message.author.id}). Ensure 'Message Content Intent' is enabled in the Discord Developer Portal.")
             return
 
         user_id_str = str(message.author.id)
