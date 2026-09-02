@@ -2,12 +2,16 @@ import asyncio
 from datetime import datetime
 import email
 from email.message import EmailMessage
+import imaplib
 import os
 import smtplib
+import socket
+import ssl
 from typing import Callable, Coroutine
 
 from discord.ext import commands
 from imapclient import IMAPClient
+from imapclient.exceptions import IMAPClientAbortError, IMAPClientError
 import sentry_sdk
 
 
@@ -71,15 +75,38 @@ class EmailGateway(commands.Cog):
 
     async def start_idle(self):
         await self.bot.wait_until_ready()
+        backoff = 5
         while not self._is_unloaded:
             try:
                 await asyncio.to_thread(self._idle_loop)
+                backoff = 5
             except asyncio.CancelledError:
                 break
+            except (
+                imaplib.IMAP4.abort,
+                imaplib.IMAP4.error,
+                IMAPClientAbortError,
+                IMAPClientError,
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.error,
+                ssl.SSLError,
+                OSError,
+            ) as e:
+                print(f"IMAP IDLE connection reset ({type(e).__name__}: {e}). Reconnecting in {backoff}s...")
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    break
+                backoff = min(backoff * 2, 60)
             except Exception as e:
-                print(f"Error in IMAP IDLE loop: {e}")
+                print(f"Unexpected error in IMAP IDLE loop: {e}")
                 sentry_sdk.capture_exception(e)
-                await asyncio.sleep(10)
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    break
 
     def _idle_loop(self):
         with IMAPClient(self.email_host, port=self.email_port, ssl=True) as server:
@@ -92,8 +119,8 @@ class EmailGateway(commands.Cog):
             while not self._is_unloaded:
                 try:
                     server.idle()
-                    # Block and wait for up to 5 minutes
-                    responses = server.idle_check(timeout=300)
+                    # Block and wait for up to 3 minutes (180s) to avoid NAT/server timeout drops
+                    responses = server.idle_check(timeout=180)
                     server.idle_done()
 
                     if responses:
