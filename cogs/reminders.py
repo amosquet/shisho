@@ -195,25 +195,43 @@ class Reminders(commands.Cog):
                 discord_id_str, send_reminders_to_discord = cached
             else:
                 discord_id_str = None
-                send_reminders_to_discord = False
+                send_reminders_to_discord = True
                 try:
                     user_record = pb.collection("shisho_users").get_one(pb_user_id)
                     discord_id_str = getattr(user_record, "discord_id", None)
-                    preferences = getattr(user_record, "preferences", {})
+                    if not discord_id_str and str(pb_user_id).isdigit() and len(str(pb_user_id)) >= 17:
+                        discord_id_str = str(pb_user_id)
+
+                    preferences = getattr(user_record, "preferences", {}) or {}
+                    if isinstance(preferences, str):
+                        try:
+                            preferences = json.loads(preferences)
+                        except Exception:
+                            preferences = {}
                     general_prefs = (
                         preferences.get("general", {})
                         if isinstance(preferences, dict)
                         else {}
                     )
-                    send_reminders_to_discord = general_prefs.get(
-                        "send_reminders_to_discord", False
-                    )
-                    self._user_cache[pb_user_id] = (
-                        discord_id_str,
-                        send_reminders_to_discord,
-                    )
-                except Exception:
-                    self._user_cache[pb_user_id] = (None, False)
+                    if not isinstance(general_prefs, dict):
+                        general_prefs = {}
+
+                    send_to_discord = general_prefs.get("send_reminders_to_discord")
+                    if send_to_discord is None:
+                        send_reminders_to_discord = True
+                    else:
+                        send_reminders_to_discord = bool(send_to_discord)
+
+                    if discord_id_str:
+                        self._user_cache[pb_user_id] = (
+                            discord_id_str,
+                            send_reminders_to_discord,
+                        )
+                except Exception as e:
+                    print(f"Error fetching user {pb_user_id} for reminder dispatch: {e}")
+                    if str(pb_user_id).isdigit() and len(str(pb_user_id)) >= 17:
+                        discord_id_str = str(pb_user_id)
+                        send_reminders_to_discord = True
 
             return discord_id_str, text, send_reminders_to_discord, True
 
@@ -1018,16 +1036,24 @@ class Reminders(commands.Cog):
         if not user:
             try:
                 user = await self.bot.fetch_user(user_id)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to fetch user {user_id} for reminder DM: {e}")
+                sentry_sdk.capture_exception(e)
+                user = None
 
         if user:
             try:
                 await user.send(f"⏰ **Reminder:** {text}")
             except discord.Forbidden:
-                print(f"Cannot send DM to user {user_id}")
-            except Exception as e:
+                print(f"Cannot send DM to user {user_id}: Discord Forbidden (User may have DMs closed or blocked bot)")
+            except discord.HTTPException as e:
+                print(f"Discord HTTP exception sending DM to user {user_id}: {e}")
                 sentry_sdk.capture_exception(e)
+            except Exception as e:
+                print(f"Unexpected error sending DM to user {user_id}: {e}")
+                sentry_sdk.capture_exception(e)
+        else:
+            print(f"Could not find or fetch Discord user {user_id} to deliver reminder DM.")
 
         # If it's the owner, also send an email
         if user_id == self.owner_id and self.owner_email:
