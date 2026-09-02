@@ -6,12 +6,101 @@ Includes message splitting and dynamic persistent whitelist authorization checks
 import asyncio
 import json
 import os
+import re
 from typing import Union
 
 from utils.db import run_in_executor
 
 PERMISSIONS_FILE = os.path.join("data", "permissions.json")
 _permissions_cache: dict[str, list[int]] | None = None
+
+
+def format_for_discord(text: str) -> str:
+    """
+    Sanitize and format text for Discord, converting LaTeX math markup
+    and equations into clean Discord markdown and Unicode symbols.
+    Preserves code blocks and inline code untouched.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    # 1. Protect code blocks and inline code from modification
+    placeholders: list[str] = []
+
+    def save_placeholder(match: re.Match) -> str:
+        idx = len(placeholders)
+        placeholders.append(match.group(0))
+        return f"\x00PLACEHOLDER_{idx}\x00"
+
+    # Save multi-line code blocks
+    text = re.sub(r"```[\s\S]*?```", save_placeholder, text)
+    # Save inline code blocks
+    text = re.sub(r"`[^`\n]+`", save_placeholder, text)
+
+    # 2. Convert common LaTeX font and styling commands FIRST
+    text = re.sub(r"\\(?:mathbf|textbf|boldsymbol)\{([^}]*)\}", lambda m: f"**{m.group(1)}**", text)
+    text = re.sub(r"\\(?:mathit|textit)\{([^}]*)\}", lambda m: f"*{m.group(1)}*", text)
+    text = re.sub(r"\\underline\{([^}]*)\}", lambda m: f"__{m.group(1)}__", text)
+    text = re.sub(r"\\(?:text|mathrm|operatorname)\{([^}]*)\}", lambda m: m.group(1), text)
+
+    # 3. Convert fractions and roots
+    text = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", lambda m: f"({m.group(1)} / {m.group(2)})", text)
+    text = re.sub(r"\\sqrt\{([^}]*)\}", lambda m: f"√({m.group(1)})", text)
+
+    # 4. Convert LaTeX symbols and Greek letters to Unicode
+    symbols = {
+        r"\times": "×",
+        r"\approx": "≈",
+        r"\cdot": "·",
+        r"\pm": "±",
+        r"\mp": "∓",
+        r"\leq": "≤",
+        r"\le": "≤",
+        r"\geq": "≥",
+        r"\ge": "≥",
+        r"\neq": "≠",
+        r"\ne": "≠",
+        r"\div": "÷",
+        r"\degree": "°",
+        r"^\circ": "°",
+        r"\circ": "°",
+        r"\infty": "∞",
+        r"\rightarrow": "→",
+        r"\leftarrow": "←",
+        r"\Rightarrow": "⇒",
+        r"\Leftarrow": "⇐",
+        r"\pi": "π",
+        r"\alpha": "α",
+        r"\beta": "β",
+        r"\gamma": "γ",
+        r"\delta": "δ",
+        r"\theta": "θ",
+        r"\sigma": "σ",
+        r"\mu": "μ",
+    }
+    for sym, repl in symbols.items():
+        text = re.sub(re.escape(sym) + r"(?![a-zA-Z])", repl, text)
+
+    # 5. Clean up display math $$ ... $$ and double $$ before numbers
+    text = re.sub(r"\$\$([0-9])", r"$\1", text)
+    text = re.sub(r"\$\$", "", text)
+
+    # 6. Clean trailing equation closing $ attached to math expressions
+    text = re.sub(r"(\*\*[^*\n]+?\*\*)\$(?=\s|[,\.!?\)]|$)", lambda m: m.group(1), text)
+    text = re.sub(r"(\$[0-9,.]+)\$(?=\s|[,\.!?\)]|$)", lambda m: m.group(1), text)
+    text = re.sub(r"(?<=[0-9a-zA-Z\)])\$(?=\s|\)|$|[,\.!?])", "", text)
+
+    # 7. Normalize horizontal spaces while preserving newlines
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" ([,\.\)\!])", r"\1", text)
+    text = re.sub(r"(\() ", r"\1", text)
+
+    # 8. Restore code blocks and inline code
+    for idx, block in enumerate(placeholders):
+        text = text.replace(f"\x00PLACEHOLDER_{idx}\x00", block)
+
+    return text.strip()
+
 
 
 def normalize_cog_name(cog_name: str) -> str:

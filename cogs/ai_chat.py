@@ -11,7 +11,7 @@ from discord.ext import commands
 from google.genai import errors, types
 
 from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
-from utils.discord_helpers import split_message, is_user_authorized
+from utils.discord_helpers import split_message, is_user_authorized, format_for_discord
 from utils.llm import (
     get_gemini_client,
     get_gemini_model,
@@ -58,21 +58,21 @@ class AIChat(commands.Cog):
             f"Current date and time: {now_str}\n\n"
             "You are a versatile, intelligent AI assistant with broad knowledge across all domains—including geography, science, math, history, technology, coding, trivia, and daily questions. You can answer general knowledge and calculation questions directly, accurately, and succinctly in your witty/sarcastic Shisho persona.\n\n"
             "You ALSO have direct access to database tools for personal management:\n"
-            "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `delete_book` to remove books.\n"
+            "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `update_book` to update existing books (status, start/end dates, completed, rating, description, etc.). Call `delete_book` to remove books.\n"
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
-            "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see upcoming reminders. Call `delete_reminder` to cancel/delete reminders.\n"
-            "- Notes: Call `add_note` to save notes (any image, audio, or document attachments shared with the message are automatically uploaded and attached to the note in PocketBase alongside your extracted text). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, or archived status.\n"
-            "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n"
+            "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see reminders (can filter by status='active', 'sent', or 'all'). Call `update_reminder` to edit or reschedule existing reminders. Call `delete_reminder` to cancel/delete reminders.\n"
+            "- Notes: Call `add_note` to save notes (supporting plain text, rich text editor content, and file attachments). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, rich text editor content, or archived status.\n"
+            "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n"
             "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
             "3. ONLY call database tools when the user explicitly or clearly asks to interact with their personal records:\n"
-            "   - When asked about the reading list (e.g. 'what\\'s on my reading list'), call ONLY `get_reading_list` and respond ONLY about the user\\'s books. DO NOT mention reminders, notes, or unrelated features.\n"
+            "   - When asked about the reading list (e.g. 'what\\'s on my reading list'), call ONLY `get_reading_list` and respond ONLY about the user\\'s books. When asked to update a book (e.g. 'mark as read', 'update reading status'), call `update_book`.\n"
             "   - When asked about recommendations / recommended list / suggestions (e.g. 'what books are on my recommended list', 'show my recommendations', 'what did friends suggest'), call ONLY `get_recommendations` (filter='for_me' or 'all') and respond with the books from the recommendations list. DO NOT say you don't have a recommended list.\n"
-            "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
-            "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. DO NOT mention reading list or notes.\n"
-            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF'), call `print_document` with the appropriate filename, note_id, or content and respond ONLY about the print job. DO NOT ask what 'this' refers to when a document or file is attached to the message or referenced in the conversation.\n"
+            "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, `update_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
+            "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. When asked to reschedule or update a reminder, call `update_reminder`.\n"
+            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF'), call `print_document`. When asked to check print jobs or queue status, call `list_print_jobs`. When asked to cancel a print job, call `cancel_print_job`.\n"
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - When asked if pictures/images/files are uploaded or saved to the database: confirm that image and file attachments are indeed uploaded and attached directly to the note record in PocketBase.\n"
@@ -93,7 +93,8 @@ class AIChat(commands.Cog):
             "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, `print_document`, etc.) directly for the user invoking you without asking for details already in context.\n"
             "9. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly. Attached images/files will be automatically uploaded and saved to the PocketBase note record.\n"
             "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification.\n"
-            "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly."
+            "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly.\n"
+            "12. DISCORD MARKDOWN & NO LATEX: You are outputting directly into Discord chat. Discord does NOT support LaTeX or MathJax equations. NEVER use LaTeX tags or delimiters (do NOT use `$$...$$`, `$...$`, `\\text{}`, `\\mathbf{}`, `\\times`, `\\approx`, `\\frac{}{}`). Format all calculations, math, formulas, and balance breakdowns using standard plain text, clean Unicode (×, ÷, ≈, ±, ≤, ≥, °), and Discord markdown (**bold**, `inline code`, code blocks). Write currency amounts normally (e.g. $1,484.63) without LaTeX syntax."
         )
 
         if base_prompt:
@@ -774,13 +775,13 @@ class AIChat(commands.Cog):
             # Check if the model requested any tool calls
             function_calls = response.function_calls
             if not function_calls:
-                return response.text or ""
+                return format_for_discord(response.text or "")
 
             valid_function_calls = [
                 fc for fc in function_calls if fc.name in TOOL_HANDLERS
             ]
             if not valid_function_calls:
-                return response.text or ""
+                return format_for_discord(response.text or "")
 
             # Append the model turn that requested tool calls
             candidate_parts = []
@@ -811,7 +812,7 @@ class AIChat(commands.Cog):
                 types.Content(role="user", parts=tool_response_parts)
             )
 
-        return response.text or ""
+        return format_for_discord(response.text or "")
 
     @commands.command(name="ask", help="Ask Gemini a question or send an image, audio, or document.")
     async def ask_prefix(self, ctx: commands.Context, *, prompt: str = ""):

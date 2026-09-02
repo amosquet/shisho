@@ -104,6 +104,9 @@ class SuggestedBooks(commands.Cog):
         recipient="The user you want to recommend this book to (optional, defaults to public)",
         message="A personal note or reason for recommending this book",
         is_public="Whether this recommendation is public (defaults to False if recipient is set)",
+        publish_date="Publication date or year of the book (optional)",
+        description="Description, synopsis, or review of the book (optional)",
+        cover_image="Cover image file for the book (optional)",
     )
     @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
     async def suggest_book(
@@ -115,6 +118,9 @@ class SuggestedBooks(commands.Cog):
         recipient: discord.User | discord.Member | None = None,
         message: str | None = None,
         is_public: bool | None = None,
+        publish_date: str | None = None,
+        description: str | None = None,
+        cover_image: discord.Attachment | None = None,
     ):
         if not title and not isbn:
             await interaction.response.send_message(
@@ -128,6 +134,18 @@ class SuggestedBooks(commands.Cog):
         clean_author = (author or "").strip()
         clean_isbn = (isbn or "").strip()
         clean_message = (message or "").strip()
+        clean_publish_date = (publish_date or "").strip()
+        clean_description = (description or "").strip()
+
+        # Handle cover image attachment if provided
+        cover_filename = None
+        cover_data = None
+        if cover_image:
+            try:
+                cover_data = await cover_image.read()
+                cover_filename = cover_image.filename
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
 
         # Determine public flag
         if is_public is None:
@@ -151,6 +169,10 @@ class SuggestedBooks(commands.Cog):
                 recipient_name=recipient_name,
                 message=clean_message,
                 is_public=final_is_public,
+                publish_date=clean_publish_date,
+                description=clean_description,
+                cover_filename=cover_filename,
+                cover_data=cover_data,
                 suggested_from="Discord",
             )
 
@@ -159,11 +181,11 @@ class SuggestedBooks(commands.Cog):
                 title=res_data.get("title", clean_title),
                 author=res_data.get("author", clean_author),
                 isbn=res_data.get("isbn", clean_isbn),
-                publish_date=res_data.get("publish_date", ""),
-                description=res_data.get("description", ""),
+                publish_date=res_data.get("publish_date", clean_publish_date),
+                description=res_data.get("description", clean_description),
                 image_url=res_data.get("image_url", ""),
-                cover_filename=res_data.get("cover_filename"),
-                cover_data=res_data.get("cover_data"),
+                cover_filename=res_data.get("cover_filename", cover_filename),
+                cover_data=res_data.get("cover_data", cover_data),
                 target_discord_id=recipient_discord_id or None,
             )
 
@@ -196,14 +218,25 @@ class SuggestedBooks(commands.Cog):
         recipient_name: str = "",
         message: str = "",
         is_public: bool = True,
+        date_suggested: str = "",
+        publish_date: str = "",
+        description: str = "",
+        cover_filename: str | None = None,
+        cover_data: bytes | None = None,
         suggested_from: str = "Discord",
         # Legacy positional compatibility (suggested_by, suggested_from)
         suggested_by: str | None = None,
+        **kwargs,
     ) -> dict:
-        title = (title or "").strip()
-        author = (author or "").strip()
-        isbn = (isbn or "").replace("-", "").replace(" ", "").strip()
-        message = (message or "").strip()
+        title = (kwargs.get("title", title) or "").strip()
+        author = (kwargs.get("author", author) or "").strip()
+        isbn = (kwargs.get("isbn", isbn) or "").replace("-", "").replace(" ", "").strip()
+        message = (kwargs.get("message", message) or "").strip()
+        publish_date = (kwargs.get("publishDate", kwargs.get("publish_date", publish_date)) or "").strip()
+        description = (kwargs.get("description", description) or "").strip()
+        date_suggested = (kwargs.get("date_suggested", date_suggested) or "").strip()
+        if not date_suggested:
+            date_suggested = datetime.now().strftime("%Y-%m-%d")
 
         # Handle legacy positional calls if needed
         if suggested_by and not sender_name and not sender_discord_id:
@@ -211,14 +244,14 @@ class SuggestedBooks(commands.Cog):
             if suggested_by.isdigit():
                 sender_discord_id = suggested_by
 
-        publish_date = ""
-        description = ""
-        image_url = ""
-        cover_filename = None
-        cover_data = None
+        sender_discord_id = kwargs.get("sender_discord_id", sender_discord_id)
+        recipient_discord_id = kwargs.get("recipient_discord_id", recipient_discord_id)
+        image_url = kwargs.get("image_url", "")
+        cover_filename = kwargs.get("cover_filename", cover_filename)
+        cover_data = kwargs.get("cover_data", cover_data)
 
         # Fetch metadata from Google Books if needed
-        if self.google_books_api_key and (not (title and author) or not isbn):
+        if self.google_books_api_key and (not (title and author) or not isbn or not description or not publish_date or not (cover_filename and cover_data)):
             search_query = isbn if isbn else (f"{title} {author}".strip() if (title and author) else title)
             if search_query:
                 try:
@@ -228,19 +261,24 @@ class SuggestedBooks(commands.Cog):
                     if isinstance(book_data, dict):
                         fetched_title = book_data.get("title")
                         fetched_authors = book_data.get("authors")
-                        if fetched_title and fetched_title != "Unknown Title":
-                            title = title or fetched_title
-                        if fetched_authors and fetched_authors != ["Unknown Author"]:
-                            author = author or ", ".join(fetched_authors)
-                        isbn = isbn or book_data.get("isbn", "")
-                        publish_date = book_data.get("publishedDate", "")
-                        image_url = book_data.get("thumbnail", "")
+                        if fetched_title and fetched_title != "Unknown Title" and not title:
+                            title = fetched_title
+                        if fetched_authors and fetched_authors != ["Unknown Author"] and not author:
+                            author = ", ".join(fetched_authors)
+                        if not isbn:
+                            isbn = book_data.get("isbn", "")
+                        if not publish_date:
+                            publish_date = book_data.get("publishedDate", "")
+                        if not image_url:
+                            image_url = book_data.get("thumbnail", "")
                         desc = book_data.get("description", "")
-                        if desc and desc != "No description available.":
+                        if desc and desc != "No description available." and not description:
                             description = desc
 
-                        if image_url:
-                            cover_filename, cover_data = await google_books.download_image(image_url)
+                        if image_url and not (cover_filename and cover_data):
+                            cov_name, cov_bytes = await google_books.download_image(image_url)
+                            if cov_name and cov_bytes:
+                                cover_filename, cover_data = cov_name, cov_bytes
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
 
@@ -254,11 +292,19 @@ class SuggestedBooks(commands.Cog):
         else:
             display_name = "Unknown Book"
 
+        created_record_id = ""
+
         def add_to_pocketbase():
+            nonlocal created_record_id
             pb = get_pb_client()
 
             clean_sender_did = "".join(c for c in str(sender_discord_id) if c.isdigit())
+            if not clean_sender_did and sender_discord_id:
+                clean_sender_did = str(sender_discord_id).strip()
+
             clean_recipient_did = "".join(c for c in str(recipient_discord_id) if c.isdigit())
+            if not clean_recipient_did and recipient_discord_id:
+                clean_recipient_did = str(recipient_discord_id).strip()
 
             # If recipient_discord_id wasn't a valid snowflake ID (e.g. username was passed)
             if len(clean_recipient_did) < 15 and (recipient_discord_id or recipient_name):
@@ -271,12 +317,12 @@ class SuggestedBooks(commands.Cog):
                             clean_recipient_did = str(u.id)
                             break
 
-            sender_pb_id = None
-            if clean_sender_did:
+            sender_pb_id = kwargs.get("sender")
+            if not sender_pb_id and clean_sender_did:
                 sender_pb_id = get_discord_user_id(pb, clean_sender_did)
 
-            recipient_pb_id = None
-            if clean_recipient_did:
+            recipient_pb_id = kwargs.get("recipient")
+            if not recipient_pb_id and clean_recipient_did:
                 recipient_pb_id = get_discord_user_id(pb, clean_recipient_did)
 
             entry = {
@@ -284,7 +330,7 @@ class SuggestedBooks(commands.Cog):
                 "recipient_discord_id": clean_recipient_did,
                 "is_public": is_public,
                 "message": message,
-                "date_suggested": datetime.now().strftime("%Y-%m-%d"),
+                "date_suggested": date_suggested,
                 "title": title,
                 "author": author,
                 "isbn": isbn,
@@ -293,9 +339,9 @@ class SuggestedBooks(commands.Cog):
             }
 
             if sender_pb_id:
-                entry["sender"] = sender_pb_id
+                entry["sender"] = str(sender_pb_id)
             if recipient_pb_id:
-                entry["recipient"] = recipient_pb_id
+                entry["recipient"] = str(recipient_pb_id)
 
             files = (
                 {"cover": (cover_filename, cover_data)}
@@ -303,11 +349,22 @@ class SuggestedBooks(commands.Cog):
                 else None
             )
             final_entry = prepare_file_upload_payload(entry, files)
-            pb.collection("shisho_books_recommendations").create(final_entry)
+            rec = pb.collection("shisho_books_recommendations").create(final_entry)
+            if rec and hasattr(rec, "id"):
+                created_record_id = rec.id
 
         await run_in_executor(add_to_pocketbase)
 
+        clean_sender_did = "".join(c for c in str(sender_discord_id) if c.isdigit())
+        if not clean_sender_did and sender_discord_id:
+            clean_sender_did = str(sender_discord_id).strip()
+
+        clean_recipient_did = "".join(c for c in str(recipient_discord_id) if c.isdigit())
+        if not clean_recipient_did and recipient_discord_id:
+            clean_recipient_did = str(recipient_discord_id).strip()
+
         return {
+            "id": created_record_id,
             "display_name": display_name,
             "title": title,
             "author": author,
@@ -317,6 +374,11 @@ class SuggestedBooks(commands.Cog):
             "image_url": image_url,
             "cover_filename": cover_filename,
             "cover_data": cover_data,
+            "sender_discord_id": clean_sender_did,
+            "recipient_discord_id": clean_recipient_did,
+            "is_public": is_public,
+            "message": message,
+            "date_suggested": date_suggested,
         }
 
     @app_commands.command(
@@ -354,19 +416,27 @@ class SuggestedBooks(commands.Cog):
             await interaction.followup.send(f"An error occurred: {e}")
 
     async def get_suggestions_text(
-        self, user_discord_id: str | None = None, filter_type: str = "all"
+        self,
+        user_discord_id: str | None = None,
+        filter_type: str = "all",
+        user_id: str | None = None,
+        **kwargs,
     ) -> str:
+        uid = user_discord_id or user_id or kwargs.get("user_id") or kwargs.get("user_discord_id")
+
         def get_from_pocketbase():
             pb = get_pb_client()
-            filter_expr = ""
-            if filter_type == "for_me" and user_discord_id:
-                filter_expr = f"recipient_discord_id = '{user_discord_id}'"
-            elif filter_type == "from_me" and user_discord_id:
-                filter_expr = f"sender_discord_id = '{user_discord_id}'"
+            if filter_type == "for_me" and uid:
+                filter_expr = f"recipient_discord_id = '{uid}'"
+            elif filter_type == "from_me" and uid:
+                filter_expr = f"sender_discord_id = '{uid}'"
             elif filter_type == "public":
                 filter_expr = "is_public = true"
-            elif filter_type == "all" and user_discord_id:
-                filter_expr = f"is_public = true || recipient_discord_id = '{user_discord_id}' || sender_discord_id = '{user_discord_id}'"
+            else:
+                if uid:
+                    filter_expr = f"is_public = true || recipient_discord_id = '{uid}' || sender_discord_id = '{uid}'"
+                else:
+                    filter_expr = "is_public = true"
 
             query_params = {"sort": "-date_suggested,-created"}
             if filter_expr:
@@ -378,7 +448,7 @@ class SuggestedBooks(commands.Cog):
 
         result = await run_in_executor(get_from_pocketbase)
 
-        if not result.items:
+        if not result or not getattr(result, "items", None):
             filter_labels = {
                 "for_me": "recommended to you",
                 "from_me": "recommended by you",
@@ -399,30 +469,46 @@ class SuggestedBooks(commands.Cog):
             title = getattr(record, "title", "") or (record.get("title", "") if hasattr(record, "get") else "")
             isbn = getattr(record, "isbn", "") or (record.get("isbn", "") if hasattr(record, "get") else "")
             author = getattr(record, "author", "") or (record.get("author", "") if hasattr(record, "get") else "")
+            publish_date = getattr(record, "publish_date", "") or (record.get("publish_date", "") if hasattr(record, "get") else "") or getattr(record, "publishDate", "") or (record.get("publishDate", "") if hasattr(record, "get") else "")
+            description = getattr(record, "description", "") or (record.get("description", "") if hasattr(record, "get") else "")
+            cover = getattr(record, "cover", "") or (record.get("cover", "") if hasattr(record, "get") else "")
             sender_id = getattr(record, "sender_discord_id", "") or (record.get("sender_discord_id", "") if hasattr(record, "get") else "")
             recipient_id = getattr(record, "recipient_discord_id", "") or (record.get("recipient_discord_id", "") if hasattr(record, "get") else "")
             msg = getattr(record, "message", "") or (record.get("message", "") if hasattr(record, "get") else "")
             date_sug = getattr(record, "date_suggested", "") or (record.get("date_suggested", "") if hasattr(record, "get") else "")
+            is_public = getattr(record, "is_public", True) if hasattr(record, "is_public") else (record.get("is_public", True) if hasattr(record, "get") else True)
 
             display_title = title if title else (f"ISBN: {isbn}" if isbn else "Unknown Book")
             author_str = f" by {author}" if author else ""
             response += f"{idx}. **{display_title}**{author_str}\n"
 
             details = []
+            if isbn:
+                details.append(f"ISBN: {isbn}")
+            if publish_date:
+                details.append(f"Published: {publish_date}")
+            if date_sug:
+                details.append(f"Suggested: {date_sug}")
             if sender_id:
                 details.append(f"From: <@{sender_id}>")
             if recipient_id:
                 details.append(f"To: <@{recipient_id}>")
-            elif getattr(record, "is_public", True):
-                details.append("To: Everyone")
-            if date_sug:
-                details.append(f"Date: {date_sug}")
+            elif is_public:
+                details.append("To: Everyone (Public)")
+            if cover:
+                details.append("Cover: [Attached]")
 
             if details:
                 response += f"   • {' | '.join(details)}\n"
 
             if msg:
-                response += f"   • *\"{msg}\"*\n"
+                response += f"   • Note: *\"{msg}\"*\n"
+
+            if description:
+                clean_desc = str(description).strip()
+                if len(clean_desc) > 200:
+                    clean_desc = clean_desc[:197] + "..."
+                response += f"   • Description: {clean_desc}\n"
 
         return response
 
@@ -432,7 +518,23 @@ class SuggestedBooks(commands.Cog):
         user_discord_id: str | None = None,
         user_name: str | None = None,
         is_owner: bool = False,
+        user_id: str | None = None,
+        **kwargs,
     ) -> str:
+        uid = user_discord_id or user_id or kwargs.get("user_discord_id") or kwargs.get("user_id")
+
+        def can_delete_record(r):
+            if is_owner:
+                return True
+            s_did = getattr(r, "sender_discord_id", "") or (r.get("sender_discord_id", "") if hasattr(r, "get") else "")
+            r_did = getattr(r, "recipient_discord_id", "") or (r.get("recipient_discord_id", "") if hasattr(r, "get") else "")
+            s_by = getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")
+            if uid and (str(s_did) == str(uid) or str(r_did) == str(uid)):
+                return True
+            if user_name and str(s_by) == str(user_name):
+                return True
+            return False
+
         try:
             def _delete():
                 pb = get_pb_client()
@@ -443,20 +545,13 @@ class SuggestedBooks(commands.Cog):
                 # 1. Try finding by exact ID first
                 try:
                     record = pb.collection("shisho_books_recommendations").get_one(clean_target)
-                    s_did = getattr(record, "sender_discord_id", "") or (record.get("sender_discord_id", "") if hasattr(record, "get") else "")
-                    r_did = getattr(record, "recipient_discord_id", "") or (record.get("recipient_discord_id", "") if hasattr(record, "get") else "")
-                    s_by = getattr(record, "suggestedBy", "") or (record.get("suggestedBy", "") if hasattr(record, "get") else "")
-
-                    can_delete = is_owner or (
-                        user_discord_id and (s_did == user_discord_id or r_did == user_discord_id)
-                    ) or (user_name and s_by == user_name)
-
-                    if can_delete:
-                        title = getattr(record, "title", "") or getattr(record, "isbn", "") or "Unknown Book"
-                        pb.collection("shisho_books_recommendations").delete(record.id)
-                        return f"Successfully removed **{title}** from recommendations."
-                    else:
-                        return "You can only delete recommendations that you created or received."
+                    if record:
+                        if can_delete_record(record):
+                            title = getattr(record, "title", "") or getattr(record, "isbn", "") or "Unknown Book"
+                            pb.collection("shisho_books_recommendations").delete(record.id)
+                            return f"Successfully removed **{title}** from recommendations."
+                        else:
+                            return "You can only delete recommendations that you created or received."
                 except Exception:
                     pass
 
@@ -471,32 +566,20 @@ class SuggestedBooks(commands.Cog):
                     return f"No book recommendation found matching '{clean_target}'."
 
                 # Filter records to allowed user if not owner
-                if not is_owner:
-                    user_records = []
-                    for r in records:
-                        s_did = getattr(r, "sender_discord_id", "") or (r.get("sender_discord_id", "") if hasattr(r, "get") else "")
-                        r_did = getattr(r, "recipient_discord_id", "") or (r.get("recipient_discord_id", "") if hasattr(r, "get") else "")
-                        s_by = getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")
-                        if (
-                            (user_discord_id and (s_did == user_discord_id or r_did == user_discord_id))
-                            or (user_name and s_by == user_name)
-                        ):
-                            user_records.append(r)
-
-                    if not user_records:
-                        return "You can only delete recommendations that you created or received."
-                    records = user_records
+                permitted_records = [r for r in records if can_delete_record(r)]
+                if not permitted_records:
+                    return "You can only delete recommendations that you created or received."
 
                 # Prefer exact title or ISBN match
                 matched = None
-                for r in records:
+                for r in permitted_records:
                     r_title = getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else "")
                     r_isbn = getattr(r, "isbn", "") or (r.get("isbn", "") if hasattr(r, "get") else "")
                     if r_title.lower() == clean_target.lower() or (clean_isbn and r_isbn == clean_isbn):
                         matched = r
                         break
                 if not matched:
-                    matched = records[0]
+                    matched = permitted_records[0]
 
                 title = getattr(matched, "title", "") or getattr(matched, "isbn", "") or "Unknown Book"
                 pb.collection("shisho_books_recommendations").delete(matched.id)

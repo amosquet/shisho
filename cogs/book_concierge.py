@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 from google.genai import errors, types
 
-from utils.discord_helpers import split_message, is_user_authorized
+from utils.discord_helpers import split_message, is_user_authorized, format_for_discord
 from utils.llm import (
     get_gemini_client,
     get_gemini_model,
@@ -424,6 +424,7 @@ class BookConcierge(commands.Cog):
             return "", []
 
         clean_text, titles = self.extract_book_titles(text)
+        clean_text = format_for_discord(clean_text)
         if user_books and titles:
             titles = self._filter_out_existing_books(titles, user_books)
         return clean_text, titles

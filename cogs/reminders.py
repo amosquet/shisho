@@ -566,7 +566,7 @@ class Reminders(commands.Cog):
             return f"An error occurred while saving the reminder: {e}"
 
     async def get_reminders_text(
-        self, user_id: str, for_discord: bool = True
+        self, user_id: str, for_discord: bool = True, status: str = "active", limit: int | None = None
     ) -> str:
         try:
             def get_from_pocketbase():
@@ -575,47 +575,220 @@ class Reminders(commands.Cog):
                 if not pb_user_id:
                     return None
 
-                filter_str = f"owner = '{pb_user_id}' && is_sent = False"
-                return pb.collection("reminders").get_full_list(
-                    query_params={"filter": filter_str, "sort": "remind_at"}
+                status_norm = (status or "active").strip().lower()
+                if status_norm == "sent":
+                    filter_str = f"owner = '{pb_user_id}' && is_sent = true"
+                    sort_str = "-remind_at"
+                elif status_norm in ("all", "both", "any"):
+                    filter_str = f"owner = '{pb_user_id}'"
+                    sort_str = "-remind_at"
+                else:  # default active
+                    filter_str = f"owner = '{pb_user_id}' && (is_sent = false || is_sent = null)"
+                    sort_str = "remind_at"
+
+                records = pb.collection("reminders").get_full_list(
+                    query_params={"filter": filter_str, "sort": sort_str}
                 )
+                if limit and limit > 0:
+                    records = records[:limit]
+                return records
 
             records = await run_in_executor(get_from_pocketbase)
 
             if records is None:
                 return "Error: You have not linked your Discord account to Shisho. Please link it in the app."
 
+            status_norm = (status or "active").strip().lower()
             if not records:
+                if status_norm == "sent":
+                    return "You have no past/sent reminders."
+                elif status_norm in ("all", "both", "any"):
+                    return "You have no reminders."
                 return "You have no active reminders."
 
-            response = "**Your Active Reminders:**\n"
+            if status_norm == "sent":
+                title_label = "Your Past/Sent Reminders"
+            elif status_norm in ("all", "both", "any"):
+                title_label = "Your Reminders (All)"
+            else:
+                title_label = "Your Active Reminders"
+
+            response = f"**{title_label}:**\n"
             for idx, record in enumerate(records, 1):
                 r_text = getattr(record, "reminder_text", "Unknown")
                 r_time = getattr(record, "remind_at", "Unknown time")
+                r_sent = getattr(record, "is_sent", False)
+                sent_tag = " [Sent]" if r_sent else ""
 
                 try:
-                    parsed_dt = datetime.strptime(
-                        r_time, "%Y-%m-%d %H:%M:%S.%fZ"
-                    )
-                    if for_discord:
-                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-                        unix_timestamp = int(parsed_dt.timestamp())
-                        time_display = (
-                            f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
-                        )
+                    parsed_dt = _parse_remind_at(r_time)
+                    if parsed_dt:
+                        if for_discord:
+                            unix_timestamp = int(parsed_dt.timestamp())
+                            time_display = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)"
+                        else:
+                            time_display = f"`{parsed_dt.strftime('%Y-%m-%d %H:%M UTC')}`"
                     else:
-                        time_display = (
-                            f"`{parsed_dt.strftime('%Y-%m-%d %H:%M UTC')}`"
-                        )
-                except ValueError:
+                        time_display = f"`{r_time}`"
+                except Exception:
                     time_display = f"`{r_time}`"
 
-                response += f"{idx}. **{r_text}** (at {time_display})\n"
+                response += f"{idx}. **{r_text}**{sent_tag} (at {time_display})\n"
 
             return response
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return "An error occurred while fetching your reminders. Ensure the 'reminders' collection exists in PocketBase with 'owner', 'reminder_text', 'remind_at', and 'is_sent' fields."
+
+    async def update_reminder(
+        self,
+        user_id: str,
+        reminder_id_or_query: str,
+        when: str | None = None,
+        text: str | None = None,
+        user_tz: str | None = None,
+        is_sent: bool | None = None,
+    ) -> str:
+        try:
+            clean_target = (reminder_id_or_query or "").strip()
+            if not clean_target:
+                return "Error: Please specify a reminder ID, text keyword, or index number to update."
+
+            tz_map = {
+                "jp": "Asia/Tokyo",
+                "fr": "Europe/Paris",
+                "uk": "Europe/London",
+                "de": "Europe/Berlin",
+                "us": "US/Eastern",
+                "est": "US/Eastern",
+                "edt": "US/Eastern",
+                "california": "US/Pacific",
+                "ca": "US/Pacific",
+                "pt": "US/Pacific",
+                "pst": "US/Pacific",
+                "pdt": "US/Pacific",
+                "chicago": "US/Central",
+                "il": "US/Central",
+                "ct": "US/Central",
+                "cst": "US/Central",
+                "cdt": "US/Central",
+            }
+
+            tz = tz_map.get(user_tz.lower(), user_tz) if user_tz else "US/Eastern"
+
+            parsed_time = None
+            if when:
+                settings = {
+                    "PREFER_DATES_FROM": "future",
+                    "TO_TIMEZONE": "UTC",
+                    "RETURN_AS_TIMEZONE_AWARE": True,
+                    "TIMEZONE": tz,
+                }
+                parsed_time = dateparser.parse(when, settings=settings)
+                if not parsed_time:
+                    return f"Sorry, I couldn't understand the time '{when}'. Please try another format."
+                if parsed_time < datetime.now(timezone.utc) and (is_sent is None or not is_sent):
+                    return "That time is in the past! Please specify a future time."
+
+            def _update_in_pb():
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
+                    return "Error: You have not linked your Discord account to Shisho. Please link it in the app.", None
+
+                matched_record = None
+                # 1. Exact ID
+                try:
+                    record = pb.collection("reminders").get_one(clean_target)
+                    record_owner = getattr(record, "owner", "")
+                    if record_owner == pb_user_id:
+                        matched_record = record
+                except Exception:
+                    pass
+
+                # 2. Index number
+                if not matched_record and clean_target.isdigit():
+                    idx = int(clean_target)
+                    filter_active = f"owner = '{pb_user_id}' && (is_sent = false || is_sent = null)"
+                    active_records = pb.collection("reminders").get_full_list(
+                        query_params={"filter": filter_active, "sort": "remind_at"}
+                    )
+                    if 1 <= idx <= len(active_records):
+                        matched_record = active_records[idx - 1]
+
+                # 3. Text keyword match
+                if not matched_record:
+                    safe_query = clean_target.replace("'", "\\'")
+                    filter_str = f"owner = '{pb_user_id}' && reminder_text ~ '{safe_query}'"
+                    records = pb.collection("reminders").get_full_list(
+                        query_params={"filter": filter_str, "sort": "-remind_at"}
+                    )
+                    if records:
+                        for r in records:
+                            r_text = getattr(r, "reminder_text", "")
+                            if r_text.lower() == clean_target.lower():
+                                matched_record = r
+                                break
+                        if not matched_record:
+                            matched_record = records[0]
+
+                if not matched_record:
+                    return f"No reminder found matching '{clean_target}'.", None
+
+                update_data = {}
+                if text is not None and text.strip():
+                    update_data["reminder_text"] = text.strip()
+                if parsed_time is not None:
+                    update_data["remind_at"] = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
+                    if is_sent is None and parsed_time >= datetime.now(timezone.utc):
+                        update_data["is_sent"] = False
+                if is_sent is not None:
+                    update_data["is_sent"] = is_sent
+
+                if not update_data:
+                    return "Error: No update fields provided.", None
+
+                updated_rec = pb.collection("reminders").update(matched_record.id, update_data)
+                return "success", updated_rec
+
+            status, updated_record = await run_in_executor(_update_in_pb)
+            if status != "success":
+                return status
+
+            # Reschedule or update in-memory scheduler
+            rec_id = getattr(updated_record, "id", "") or clean_target
+            rec_owner = getattr(updated_record, "owner", "")
+            rec_text = text if (text is not None and text.strip()) else getattr(updated_record, "reminder_text", "")
+            rec_time = (parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ") if parsed_time is not None else None) or getattr(updated_record, "remind_at", "")
+            rec_sent = is_sent if is_sent is not None else getattr(updated_record, "is_sent", False)
+
+            rec_dict = {
+                "id": rec_id,
+                "owner": rec_owner,
+                "reminder_text": rec_text,
+                "remind_at": rec_time,
+                "is_sent": rec_sent,
+            }
+            if rec_dict["is_sent"]:
+                self._dispatched_ids.add(rec_dict["id"])
+                self._cancel_scheduled(rec_dict["id"])
+            else:
+                self._dispatched_ids.discard(rec_dict["id"])
+                self._schedule_from_record(rec_dict)
+
+            final_text = rec_dict["reminder_text"] or "Reminder"
+            final_time = rec_dict["remind_at"]
+            parsed_dt = _parse_remind_at(final_time)
+            if parsed_dt:
+                unix_ts = int(parsed_dt.timestamp())
+                time_display = f"<t:{unix_ts}:F> (<t:{unix_ts}:R>)"
+            else:
+                time_display = f"`{final_time}`"
+
+            return f"Successfully updated reminder: **{final_text}** (at {time_display})"
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"Failed to update reminder: {e}"
 
     @app_commands.command(name="remind", description="Set a reminder.")
     @app_commands.describe(
@@ -637,12 +810,56 @@ class Reminders(commands.Cog):
         await interaction.followup.send(response)
 
     @app_commands.command(
-        name="reminders", description="List your active reminders."
+        name="reminders", description="List your reminders (active, sent, or all)."
     )
-    async def list_reminders(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        filter="Filter reminders by status (active, sent, or all)"
+    )
+    @app_commands.choices(filter=[
+        app_commands.Choice(name="Active (Upcoming)", value="active"),
+        app_commands.Choice(name="Sent (Past)", value="sent"),
+        app_commands.Choice(name="All Reminders", value="all"),
+    ])
+    async def list_reminders(
+        self, interaction: discord.Interaction, filter: app_commands.Choice[str] = None
+    ):
         await interaction.response.defer(ephemeral=True)
-        response = await self.get_reminders_text(str(interaction.user.id))
+        status_val = filter.value if filter else "active"
+        response = await self.get_reminders_text(str(interaction.user.id), for_discord=True, status=status_val)
         await interaction.followup.send(response)
+
+    @app_commands.command(
+        name="editreminder", description="Edit or reschedule an existing reminder."
+    )
+    @app_commands.describe(
+        reminder="The reminder to edit (select from list, type #index, text keyword, or ID)",
+        when="New time to remind you (e.g. 'in 10 minutes', 'tomorrow at 4pm')",
+        text="New reminder message",
+        timezone="Optional timezone (defaults to Eastern Time. e.g. 'jp', 'fr', 'Asia/Tokyo')",
+    )
+    async def slash_edit_reminder(
+        self,
+        interaction: discord.Interaction,
+        reminder: str,
+        when: str = None,
+        text: str = None,
+        timezone: str = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        response = await self.update_reminder(
+            str(interaction.user.id),
+            reminder_id_or_query=reminder,
+            when=when,
+            text=text,
+            user_tz=timezone,
+        )
+        await interaction.followup.send(response)
+
+    @slash_edit_reminder.autocomplete("reminder")
+    async def slash_edit_reminder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.reminder_autocomplete(interaction, current)
 
     async def delete_reminder(
         self, user_id: str, reminder_id_or_query: str

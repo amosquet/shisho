@@ -32,6 +32,8 @@ class ReadingList(commands.Cog):
         status="Status of the book",
         start_date="Start reading date (YYYY-MM-DD)",
         end_date="Finished reading date (YYYY-MM-DD)",
+        completed="Completion details or notes",
+        description="Book synopsis or review",
         cover_image="Optional cover image for the book"
     )
     @app_commands.choices(status=[
@@ -50,6 +52,8 @@ class ReadingList(commands.Cog):
         publish_date: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        completed: str | None = None,
+        description: str | None = None,
         cover_image: discord.Attachment = None,
     ):
         if not title and not isbn:
@@ -100,6 +104,8 @@ class ReadingList(commands.Cog):
         author = author or "Unknown Author"
         publish_date = publish_date or ""
         isbn = isbn or ""
+        final_desc = description if description is not None else fetched_desc
+        final_completed = completed or ""
 
         try:
             await self.add_book_to_pocketbase(
@@ -112,9 +118,10 @@ class ReadingList(commands.Cog):
                 final_start_date, 
                 final_end_date, 
                 fetched_image_url,
-                fetched_desc,
+                final_desc,
                 cover_filename, 
-                cover_data
+                cover_data,
+                completed=final_completed,
             )
             await interaction.followup.send(
                 f"Successfully added **{title}** by {author} to the reading list!"
@@ -128,17 +135,25 @@ class ReadingList(commands.Cog):
         discord_id: str,
         title: str,
         author: str,
-        status_val: str,
-        publish_date: str,
-        isbn: str,
-        final_start_date: str,
-        final_end_date: str,
+        status_val: str = "planned",
+        publish_date: str = "",
+        isbn: str = "",
+        final_start_date: str = "",
+        final_end_date: str = "",
         image_url: str = "",
         description: str = "",
-        cover_filename: str = None,
-        cover_data: bytes = None
+        cover_filename: str | None = None,
+        cover_data: bytes | None = None,
+        completed: str = "",
+        **kwargs,
     ):
-        isbn = isbn.replace("-", "")
+        isbn = isbn.replace("-", "").replace(" ", "").strip() if isbn else ""
+        status_val = kwargs.get("status", status_val)
+        final_start_date = kwargs.get("startDate", kwargs.get("start_date", final_start_date))
+        final_end_date = kwargs.get("endDate", kwargs.get("end_date", final_end_date))
+        publish_date = kwargs.get("publishDate", publish_date)
+        completed = kwargs.get("completed", completed)
+        description = kwargs.get("description", description)
 
         def _add():
             pb = self.get_pb_client()
@@ -155,16 +170,16 @@ class ReadingList(commands.Cog):
                 "isbn": isbn,
                 "startDate": final_start_date,
                 "endDate": final_end_date,
-                "imageUrl": image_url,
+                "completed": str(completed) if completed is not None else "",
                 "description": description,
             }
             
             files = {"cover": (cover_filename, cover_data)} if cover_filename and cover_data else None
             final_entry = prepare_file_upload_payload(new_book, files)
                 
-            pb.collection("shisho_books").create(final_entry)
+            return pb.collection("shisho_books").create(final_entry)
 
-        await run_in_executor(_add)
+        return await run_in_executor(_add)
 
     async def fetch_reading_list(self, discord_id: str) -> list[dict]:
         def _fetch():
@@ -177,15 +192,26 @@ class ReadingList(commands.Cog):
                 records = pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
                 result = []
                 for r in records:
+                    def _g(obj, attr, fallback=""):
+                        val = getattr(obj, attr, None)
+                        if val is None and isinstance(obj, dict):
+                            val = obj.get(attr)
+                        if val is None and hasattr(obj, "get"):
+                            val = obj.get(attr)
+                        return val if val is not None else fallback
+
                     result.append({
-                        "id": getattr(r, "id", ""),
-                        "title": getattr(r, "title", ""),
-                        "author": getattr(r, "author", ""),
-                        "status": getattr(r, "status", ""),
-                        "publishDate": getattr(r, "publish_date", getattr(r, "publishDate", "")),
-                        "isbn": getattr(r, "isbn", ""),
-                        "startDate": getattr(r, "start_date", getattr(r, "startDate", "")),
-                        "endDate": getattr(r, "end_date", getattr(r, "endDate", "")),
+                        "id": _g(r, "id"),
+                        "title": _g(r, "title"),
+                        "author": _g(r, "author"),
+                        "status": _g(r, "status"),
+                        "publishDate": _g(r, "publishDate", _g(r, "publish_date")),
+                        "isbn": _g(r, "isbn"),
+                        "startDate": _g(r, "startDate", _g(r, "start_date")),
+                        "endDate": _g(r, "endDate", _g(r, "end_date")),
+                        "completed": _g(r, "completed"),
+                        "cover": _g(r, "cover"),
+                        "description": _g(r, "description"),
                     })
                 return result
             except Exception as e:
@@ -193,6 +219,136 @@ class ReadingList(commands.Cog):
                 return []
 
         return await run_in_executor(_fetch)
+
+    async def update_book_in_pocketbase(
+        self,
+        user_id: str,
+        book_query: str,
+        update_data: dict,
+        cover_file: tuple[str, bytes] | None = None,
+    ) -> dict:
+        def _update():
+            pb = self.get_pb_client()
+            pb_user_id = get_discord_user_id(pb, str(user_id))
+            if not pb_user_id:
+                raise Exception("You have not linked your Discord account to Shisho. Please link it in the app.")
+
+            clean_target = str(book_query).strip()
+            if not clean_target:
+                raise ValueError("Book query is required.")
+
+            def _g(obj, attr, fallback=""):
+                val = getattr(obj, attr, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(attr)
+                if val is None and hasattr(obj, "get"):
+                    val = obj.get(attr)
+                return val if val is not None else fallback
+
+            # 1. Try exact ID lookup
+            matched = None
+            try:
+                rec = pb.collection("shisho_books").get_one(clean_target)
+                rec_owner = _g(rec, "owner")
+                if rec_owner == pb_user_id:
+                    matched = rec
+            except Exception:
+                matched = None
+
+            # 2. If not found by ID, search by owner and fuzzy filter
+            if not matched:
+                clean_isbn = clean_target.replace("-", "").replace(" ", "").strip()
+                safe_query = clean_target.replace("'", "\\'")
+                filter_str = f"owner = '{pb_user_id}' && (title ~ '{safe_query}' || author ~ '{safe_query}' || isbn ~ '{clean_isbn}')"
+                records = pb.collection("shisho_books").get_full_list(query_params={"filter": filter_str})
+                if not records:
+                    raise ValueError(f"No book found matching '{clean_target}' on your reading list.")
+
+                # Prefer exact title or ISBN match
+                for r in records:
+                    r_title = _g(r, "title")
+                    r_isbn = _g(r, "isbn")
+                    if r_title.lower() == clean_target.lower() or (clean_isbn and r_isbn == clean_isbn):
+                        matched = r
+                        break
+                if not matched:
+                    matched = records[0]
+
+            # Build fields to update
+            payload = {}
+            if "title" in update_data and update_data["title"] is not None:
+                payload["title"] = str(update_data["title"]).strip()
+
+            if "author" in update_data and update_data["author"] is not None:
+                payload["author"] = str(update_data["author"]).strip()
+
+            if "status" in update_data and update_data["status"] is not None:
+                status_val = str(update_data["status"]).strip().lower()
+                valid_statuses = ["planned", "reading", "read", "dropped"]
+                if status_val not in valid_statuses:
+                    raise ValueError(f"Invalid status '{status_val}'. Must be one of: {', '.join(valid_statuses)}")
+                payload["status"] = status_val
+
+            if "startDate" in update_data and update_data["startDate"] is not None:
+                payload["startDate"] = str(update_data["startDate"]).strip()
+            elif "start_date" in update_data and update_data["start_date"] is not None:
+                payload["startDate"] = str(update_data["start_date"]).strip()
+
+            if "endDate" in update_data and update_data["endDate"] is not None:
+                payload["endDate"] = str(update_data["endDate"]).strip()
+            elif "end_date" in update_data and update_data["end_date"] is not None:
+                payload["endDate"] = str(update_data["end_date"]).strip()
+
+            if "completed" in update_data and update_data["completed"] is not None:
+                payload["completed"] = str(update_data["completed"]).strip()
+
+            if "publishDate" in update_data and update_data["publishDate"] is not None:
+                payload["publishDate"] = str(update_data["publishDate"]).strip()
+            elif "publish_date" in update_data and update_data["publish_date"] is not None:
+                payload["publishDate"] = str(update_data["publish_date"]).strip()
+
+            if "description" in update_data and update_data["description"] is not None:
+                payload["description"] = str(update_data["description"]).strip()
+
+            if "isbn" in update_data and update_data["isbn"] is not None:
+                payload["isbn"] = str(update_data["isbn"]).replace("-", "").replace(" ", "").strip()
+
+            # Handle cover
+            files = None
+            if cover_file and isinstance(cover_file, tuple) and len(cover_file) == 2:
+                cover_filename, cover_data = cover_file
+                if cover_filename and cover_data:
+                    files = {"cover": (cover_filename, cover_data)}
+            elif "cover" in update_data and isinstance(update_data["cover"], tuple):
+                files = {"cover": update_data["cover"]}
+
+            if not payload and not files:
+                raise ValueError("No fields provided to update.")
+
+            matched_id = getattr(matched, "id", None) or (matched.get("id") if hasattr(matched, "get") else None)
+
+            if files:
+                final_entry = prepare_file_upload_payload(payload, files)
+                updated_rec = pb.collection("shisho_books").update(matched_id, final_entry)
+            else:
+                updated_rec = pb.collection("shisho_books").update(matched_id, payload)
+
+            # Return updated dictionary
+            return {
+                "id": matched_id,
+                "title": _g(updated_rec, "title", payload.get("title", _g(matched, "title"))),
+                "author": _g(updated_rec, "author", payload.get("author", _g(matched, "author"))),
+                "status": _g(updated_rec, "status", payload.get("status", _g(matched, "status"))),
+                "publishDate": _g(updated_rec, "publishDate", _g(updated_rec, "publish_date", payload.get("publishDate", _g(matched, "publishDate", _g(matched, "publish_date"))))),
+                "isbn": _g(updated_rec, "isbn", payload.get("isbn", _g(matched, "isbn"))),
+                "startDate": _g(updated_rec, "startDate", _g(updated_rec, "start_date", payload.get("startDate", _g(matched, "startDate", _g(matched, "start_date"))))),
+                "endDate": _g(updated_rec, "endDate", _g(updated_rec, "end_date", payload.get("endDate", _g(matched, "endDate", _g(matched, "end_date"))))),
+                "completed": _g(updated_rec, "completed", payload.get("completed", _g(matched, "completed"))),
+                "cover": _g(updated_rec, "cover", _g(matched, "cover")),
+                "description": _g(updated_rec, "description", payload.get("description", _g(matched, "description"))),
+            }
+
+        return await run_in_executor(_update)
 
     async def delete_book_from_pocketbase(self, discord_id: str, query_or_id: str) -> str:
         def _delete():
@@ -271,6 +427,84 @@ class ReadingList(commands.Cog):
             return choices[:25]
         except Exception:
             return []
+
+    @app_commands.command(name="editbook", description="Edits an existing book on your reading list.")
+    @app_commands.describe(
+        book="The book to edit (select from list or type title/ISBN/ID)",
+        status="New status of the book",
+        start_date="Start reading date (YYYY-MM-DD)",
+        end_date="Finished reading date (YYYY-MM-DD)",
+        completed="Completion details or notes",
+        description="Book synopsis or notes",
+        publish_date="Publish date or year",
+        isbn="ISBN of the book",
+        cover_image="Optional cover image to upload"
+    )
+    @app_commands.choices(status=[
+        app_commands.Choice(name="Planned", value="planned"),
+        app_commands.Choice(name="Reading", value="reading"),
+        app_commands.Choice(name="Read", value="read"),
+        app_commands.Choice(name="Dropped", value="dropped"),
+    ])
+    async def edit_book(
+        self,
+        interaction: discord.Interaction,
+        book: str,
+        status: app_commands.Choice[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        completed: str | None = None,
+        description: str | None = None,
+        publish_date: str | None = None,
+        isbn: str | None = None,
+        cover_image: discord.Attachment | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        update_data = {}
+        if status is not None:
+            update_data["status"] = status.value
+        if start_date is not None:
+            update_data["startDate"] = start_date
+        if end_date is not None:
+            update_data["endDate"] = end_date
+        if completed is not None:
+            update_data["completed"] = completed
+        if description is not None:
+            update_data["description"] = description
+        if publish_date is not None:
+            update_data["publishDate"] = publish_date
+        if isbn is not None:
+            update_data["isbn"] = isbn
+
+        cover_file = None
+        if cover_image:
+            cover_filename = cover_image.filename
+            cover_data = await cover_image.read()
+            cover_file = (cover_filename, cover_data)
+
+        if not update_data and not cover_file:
+            await interaction.followup.send("Please specify at least one field to update.")
+            return
+
+        try:
+            updated_record = await self.update_book_in_pocketbase(
+                user_id=str(interaction.user.id),
+                book_query=book,
+                update_data=update_data,
+                cover_file=cover_file,
+            )
+            title = updated_record.get("title", "book")
+            await interaction.followup.send(f"Successfully updated **{title}**!")
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await interaction.followup.send(f"Failed to update book: {e}")
+
+    @edit_book.autocomplete("book")
+    async def edit_book_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self.book_autocomplete(interaction, current)
 
     @app_commands.command(name="deletebook", description="Removes a book from your reading list.")
     @app_commands.describe(book="The book to remove (select from list or type title/ISBN/ID)")

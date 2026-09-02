@@ -1,3 +1,7 @@
+"""
+tools/printing.py - AI Tool definitions and handlers for the Printing domain.
+"""
+
 import os
 import sentry_sdk
 from google.genai import types
@@ -26,15 +30,48 @@ PRINT_DOCUMENT_TOOL = types.FunctionDeclaration(
     ),
 )
 
+LIST_PRINT_JOBS_TOOL = types.FunctionDeclaration(
+    name="list_print_jobs",
+    description="Lists and checks the status of print jobs in the PocketBase print queue (status: queued, printing, completed, or all).",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "status": types.Schema(
+                type=types.Type.STRING,
+                description="Optional filter by status: 'queued', 'printing', 'completed', or 'all' (default is 'all')",
+            ),
+            "limit": types.Schema(
+                type=types.Type.INTEGER,
+                description="Maximum number of print jobs to return (optional, default 10)",
+            ),
+        },
+    ),
+)
+
+CANCEL_PRINT_JOB_TOOL = types.FunctionDeclaration(
+    name="cancel_print_job",
+    description="Cancels a queued or printing print job in the PocketBase print queue by filename, job ID, or index.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query": types.Schema(
+                type=types.Type.STRING,
+                description="Filename, job ID, or index of the print job to cancel",
+            ),
+        },
+        required=["query"],
+    ),
+)
+
 
 async def handle_print_document(bot, args: dict, user_id: str, context: dict | None = None) -> str:
     """Handler for the print_document AI tool."""
     print_cog = bot.get_cog("Print")
     if not print_cog:
         return "Error: Print cog is unavailable."
-    content = str(args.get("content", "")).strip()
-    filename = str(args.get("filename", "")).strip()
-    note_id = str(args.get("note_id", "")).strip()
+    content = str(args.get("content") or "").strip()
+    filename = str(args.get("filename") or "").strip()
+    note_id = str(args.get("note_id") or "").strip()
 
     file_bytes = b""
     attachments = (context or {}).get("attachments", []) if isinstance(context, dict) else []
@@ -132,3 +169,29 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
             return f"Failed to queue print job via PocketBase ({e}) and email fallback failed ({mail_err})."
 
     return "Error: Failed to process print job."
+
+
+async def handle_list_print_jobs(bot, args: dict, user_id: str, context: dict | None = None) -> str:
+    """Handler for the list_print_jobs AI tool."""
+    print_cog = bot.get_cog("Print")
+    if not print_cog:
+        return "Error: Print cog is unavailable."
+    raw_status = args.get("status") or args.get("filter")
+    status = str(raw_status).strip().lower() if raw_status is not None else "all"
+    limit = args.get("limit")
+    if isinstance(limit, str) and limit.isdigit():
+        limit = int(limit)
+    elif not isinstance(limit, int):
+        limit = 10
+    return await print_cog.get_print_jobs_text(user_id, status=status, limit=limit)
+
+
+async def handle_cancel_print_job(bot, args: dict, user_id: str, context: dict | None = None) -> str:
+    """Handler for the cancel_print_job AI tool."""
+    print_cog = bot.get_cog("Print")
+    if not print_cog:
+        return "Error: Print cog is unavailable."
+    query = str(args.get("query") or args.get("job") or args.get("filename") or args.get("id") or "").strip()
+    if not query:
+        return "Error: Print job filename, ID, or index is required."
+    return await print_cog.cancel_print_job(user_id, query)

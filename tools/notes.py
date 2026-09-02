@@ -19,12 +19,15 @@ ADD_NOTE_TOOL = types.FunctionDeclaration(
                 type=types.Type.STRING,
                 description="Optional title or subject for the note",
             ),
+            "editor": types.Schema(
+                type=types.Type.STRING,
+                description="Optional rich text / HTML / editor content for the note",
+            ),
             "archived": types.Schema(
                 type=types.Type.BOOLEAN,
                 description="Optional flag whether to create this note as archived (defaults to false)",
             ),
         },
-        required=["text"],
     ),
 )
 
@@ -102,7 +105,7 @@ DELETE_ARCHIVED_NOTES_TOOL = types.FunctionDeclaration(
 
 UPDATE_NOTE_TOOL = types.FunctionDeclaration(
     name="update_note",
-    description="Updates an existing personal note in PocketBase (title, content, or archived status).",
+    description="Updates an existing personal note in PocketBase (title, content, rich text editor, or archived status).",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -117,6 +120,10 @@ UPDATE_NOTE_TOOL = types.FunctionDeclaration(
             "text": types.Schema(
                 type=types.Type.STRING,
                 description="New text/content for the note (optional)",
+            ),
+            "editor": types.Schema(
+                type=types.Type.STRING,
+                description="New rich text / HTML / editor content for the note (optional)",
             ),
             "archived": types.Schema(
                 type=types.Type.BOOLEAN,
@@ -147,16 +154,23 @@ async def handle_add_note(bot, args: dict, user_id: str, context: dict | None = 
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    text = str(args.get("text", "")).strip()
-    title = str(args.get("title", "")).strip()
-    archived = bool(args.get("archived", False))
-    if not text and not title:
-        return "Error: Note text or title is required."
+    text = str(args.get("text") or "").strip()
+    title = str(args.get("title") or "").strip()
+    editor = str(args.get("editor") or "").strip()
+    raw_archived = args.get("archived")
+    if isinstance(raw_archived, str):
+        archived = raw_archived.strip().lower() in ("true", "1", "yes")
+    else:
+        archived = bool(raw_archived) if raw_archived is not None else False
+
     attachments = extract_attachments_from_context(context)
+    if not text and not title and not editor and not attachments:
+        return "Error: Note text, editor content, or title is required."
     res = await notes_cog.add_note(
         user_id,
         text=text,
         title=title,
+        editor=editor,
         attachments=attachments or None,
         archived=archived,
     )
@@ -168,7 +182,7 @@ async def handle_get_notes(bot, args: dict, user_id: str) -> str:
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    query = str(args.get("query", "")).strip()
+    query = str(args.get("query") or args.get("search") or "").strip()
     archived_arg = args.get("archived")
     if archived_arg is None:
         archived = False
@@ -203,7 +217,7 @@ async def handle_archive_note(bot, args: dict, user_id: str) -> str:
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    query = str(args.get("query", args.get("title", ""))).strip()
+    query = str(args.get("query") or args.get("title") or args.get("id") or "").strip()
     if not query:
         return "Error: Note title, keyword, or ID is required."
     return await notes_cog.archive_note(user_id, query)
@@ -214,7 +228,7 @@ async def handle_unarchive_note(bot, args: dict, user_id: str) -> str:
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    query = str(args.get("query", args.get("title", ""))).strip()
+    query = str(args.get("query") or args.get("title") or args.get("id") or "").strip()
     if not query:
         return "Error: Note title, keyword, or ID is required."
     return await notes_cog.unarchive_note(user_id, query)
@@ -225,7 +239,7 @@ async def handle_delete_note(bot, args: dict, user_id: str) -> str:
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    query = str(args.get("query", args.get("title", ""))).strip()
+    query = str(args.get("query") or args.get("title") or args.get("id") or "").strip()
     if not query:
         return "Error: Note title, keyword, or ID is required."
     res = await notes_cog.delete_note(user_id, query)
@@ -245,7 +259,7 @@ async def handle_update_note(bot, args: dict, user_id: str, context: dict | None
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
         return "Error: Notes cog is unavailable."
-    query = str(args.get("query", "")).strip()
+    query = str(args.get("query") or args.get("title") or args.get("id") or "").strip()
     if not query:
         return "Error: Note title, keyword, or ID is required."
     title = args.get("title")
@@ -253,7 +267,9 @@ async def handle_update_note(bot, args: dict, user_id: str, context: dict | None
     editor = args.get("editor")
     archived = args.get("archived")
     if isinstance(archived, str):
-        archived = archived.lower() in ("true", "1", "yes")
+        archived = archived.strip().lower() in ("true", "1", "yes")
+    elif archived is not None:
+        archived = bool(archived)
     attachments = extract_attachments_from_context(context)
     return await notes_cog.update_note(
         user_id,

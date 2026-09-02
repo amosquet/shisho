@@ -8,13 +8,13 @@ from google.genai import types
 
 GET_RECOMMENDATIONS_TOOL = types.FunctionDeclaration(
     name="get_recommendations",
-    description="Retrieves books recommended to or by the user, or public recommendations from friends, from the recommendations database (shisho_books_recommendations). Use this whenever the user asks what books are on their recommended list or what friends have suggested to them.",
+    description="Retrieves books recommended to or by the user, or public recommendations from friends, from the recommendations database (shisho_books_recommendations). Use this whenever the user asks what books are on their recommended list, what friends have suggested to them, or wants to view book recommendations.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
             "filter": types.Schema(
                 type=types.Type.STRING,
-                description="Filter scope: 'for_me' (books recommended to the user), 'from_me' (books the user recommended), 'public' (public recommendations), or 'all' (all relevant recommendations)",
+                description="Filter scope: 'for_me' (books recommended to the user), 'from_me' (books the user recommended), 'public' (public recommendations), or 'all' (all relevant recommendations). Defaults to 'all'.",
                 enum=["for_me", "from_me", "public", "all"],
             ),
         },
@@ -51,6 +51,14 @@ ADD_RECOMMENDATION_TOOL = types.FunctionDeclaration(
                 type=types.Type.BOOLEAN,
                 description="Whether this recommendation is public for everyone (optional)",
             ),
+            "publish_date": types.Schema(
+                type=types.Type.STRING,
+                description="The publication date or year of the book (optional)",
+            ),
+            "description": types.Schema(
+                type=types.Type.STRING,
+                description="Synopsis, summary, or detailed description of the book (optional)",
+            ),
         },
         required=["title"],
     ),
@@ -58,7 +66,7 @@ ADD_RECOMMENDATION_TOOL = types.FunctionDeclaration(
 
 DELETE_RECOMMENDATION_TOOL = types.FunctionDeclaration(
     name="delete_recommendation",
-    description="Deletes a book recommendation.",
+    description="Deletes a book recommendation by title, ISBN, or record ID.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -72,31 +80,71 @@ DELETE_RECOMMENDATION_TOOL = types.FunctionDeclaration(
 )
 
 
-async def handle_get_recommendations(bot, args: dict, user_id: str) -> str:
+async def handle_get_recommendations(
+    bot=None,
+    args: dict | None = None,
+    user_id: str = "",
+    context: dict | None = None,
+    **kwargs,
+) -> str:
     """Handler for the get_recommendations AI tool."""
+    if bot is None:
+        return "Error: Bot instance is required."
     suggested_cog = bot.get_cog("SuggestedBooks")
     if not suggested_cog:
         return "Error: SuggestedBooks cog is unavailable."
-    filter_type = str(args.get("filter", "all")).strip().lower()
+
+    if args is None:
+        args = {}
+    combined_args = {**args, **kwargs}
+    uid = user_id or str(combined_args.get("user_id") or "").strip()
+    raw_filter = combined_args.get("filter")
+    filter_type = str(raw_filter).strip().lower() if raw_filter is not None else "all"
+    if filter_type not in ("for_me", "from_me", "public", "all"):
+        filter_type = "all"
+
     res = await suggested_cog.get_suggestions_text(
-        user_discord_id=user_id, filter_type=filter_type
+        user_discord_id=uid, filter_type=filter_type
     )
     return res or "No recommendations found."
 
 
-async def handle_add_recommendation(bot, args: dict, user_id: str) -> str:
+async def handle_add_recommendation(
+    bot=None,
+    args: dict | None = None,
+    user_id: str = "",
+    context: dict | None = None,
+    **kwargs,
+) -> str:
     """Handler for the add_recommendation AI tool."""
+    if bot is None:
+        return "Error: Bot instance is required."
     suggested_cog = bot.get_cog("SuggestedBooks")
     if not suggested_cog:
         return "Error: SuggestedBooks cog is unavailable."
-    title = str(args.get("title", "")).strip()
-    author = str(args.get("author", "")).strip()
-    isbn = str(args.get("isbn", "")).strip()
-    rec_raw = str(
-        args.get("recipient_discord_id", args.get("recipient", ""))
+
+    if args is None:
+        args = {}
+    combined_args = {**args, **kwargs}
+    uid = user_id or str(combined_args.get("user_id") or "").strip()
+
+    title = str(combined_args.get("title") or "").strip()
+    author = str(combined_args.get("author") or "").strip()
+    isbn = str(combined_args.get("isbn") or "").strip()
+    publish_date = str(
+        combined_args.get("publish_date") or combined_args.get("publishDate") or ""
     ).strip()
-    msg = str(args.get("message", "")).strip()
-    is_pub = args.get("is_public")
+    description = str(combined_args.get("description") or "").strip()
+    rec_raw = str(
+        combined_args.get("recipient_discord_id") or combined_args.get("recipient") or ""
+    ).strip()
+    msg = str(combined_args.get("message") or "").strip()
+    is_pub = combined_args.get("is_public")
+    if isinstance(is_pub, str):
+        is_pub = is_pub.strip().lower() in ("true", "1", "yes")
+
+    if not title and not isbn:
+        return "Error: Book title or ISBN is required."
 
     rec_did = ""
     rec_digits = "".join(c for c in rec_raw if c.isdigit())
@@ -127,7 +175,9 @@ async def handle_add_recommendation(bot, args: dict, user_id: str) -> str:
         title=title,
         author=author,
         isbn=isbn,
-        sender_discord_id=user_id,
+        publish_date=publish_date,
+        description=description,
+        sender_discord_id=uid,
         recipient_discord_id=rec_did,
         message=msg,
         is_public=is_pub,
@@ -137,17 +187,36 @@ async def handle_add_recommendation(bot, args: dict, user_id: str) -> str:
     return f"Successfully added recommendation for {disp}."
 
 
-async def handle_delete_recommendation(bot, args: dict, user_id: str) -> str:
+async def handle_delete_recommendation(
+    bot=None,
+    args: dict | None = None,
+    user_id: str = "",
+    context: dict | None = None,
+    **kwargs,
+) -> str:
     """Handler for the delete_recommendation AI tool."""
+    if bot is None:
+        return "Error: Bot instance is required."
     suggested_cog = bot.get_cog("SuggestedBooks")
     if not suggested_cog:
         return "Error: SuggestedBooks cog is unavailable."
-    query = str(args.get("query", args.get("title", ""))).strip()
+
+    if args is None:
+        args = {}
+    combined_args = {**args, **kwargs}
+    uid = user_id or str(combined_args.get("user_id") or "").strip()
+    query = str(
+        combined_args.get("query")
+        or combined_args.get("title")
+        or combined_args.get("isbn")
+        or ""
+    ).strip()
+
     if not query:
         return "Error: Query is required."
     owner_id_str = os.getenv("OWNER_ID", "0")
-    is_owner = str(user_id) == owner_id_str
+    is_owner = str(uid) == owner_id_str
     res = await suggested_cog.delete_suggestion(
-        query, user_discord_id=user_id, is_owner=is_owner
+        query, user_discord_id=uid, is_owner=is_owner
     )
     return res
