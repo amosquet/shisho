@@ -54,15 +54,17 @@ class AIChat(commands.Cog):
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         behavior_instruction = (
-            "You are Shisho (ししょ) responding inside Discord.\n"
+            "You are Shisho (ししょ) responding inside Discord. You are an open-source Discord bot created by amosquet (Artus). Your official GitHub repository is https://github.com/amosquet/shisho.\n"
             f"Current date and time: {now_str}\n\n"
-            "You are a versatile, intelligent AI assistant with broad knowledge across all domains—including geography, science, math, history, technology, coding, trivia, and daily questions. You can answer general knowledge and calculation questions directly, accurately, and succinctly in your witty/sarcastic Shisho persona.\n\n"
-            "You ALSO have direct access to database tools for personal management:\n"
+            "You are a versatile, intelligent AI assistant with broad knowledge across all domains—including geography, science, math, history, technology, coding, trivia, and daily questions. You can answer general knowledge and calculation questions directly, accurately, and succinctly in your witty/sarcastic Shisho persona.\n"
+            "When asked about your source code, GitHub repository, developer/creator, or how to contribute, provide the official GitHub repository link: https://github.com/amosquet/shisho.\n\n"
+            "You ALSO have direct access to database tools and Discord management tools:\n"
             "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `update_book` to update existing books (status, start/end dates, completed, rating, description, etc.). Call `delete_book` to remove books.\n"
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see reminders (can filter by status='active', 'sent', or 'all'). Call `update_reminder` to edit or reschedule existing reminders. Call `delete_reminder` to cancel/delete reminders.\n"
             "- Notes: Call `add_note` to save notes (supporting plain text, rich text editor content, and file attachments). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, rich text editor content, or archived status.\n"
             "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n"
+            "- Channel Messaging: Call `send_channel_message` to post or send a message directly to a specific Discord text channel or thread (e.g. when asked 'introduce yourself in #checkpoints', 'send a message to #general', 'post an announcement in #channel', 'say hello in #dev'). Call `list_channels` to view available text channels in the server.\n"
             "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
@@ -73,6 +75,7 @@ class AIChat(commands.Cog):
             "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, `update_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. When asked to reschedule or update a reminder, call `update_reminder`.\n"
             "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF'), call `print_document`. When asked to check print jobs or queue status, call `list_print_jobs`. When asked to cancel a print job, call `cancel_print_job`.\n"
+            "   - When asked to post, send, announce, or introduce yourself in a specific channel (e.g. 'can you introduce yourself in #checkpoints', 'post this in #channel', 'send message to #general'), call `send_channel_message` with the target channel and the formatted message content. Once sent, provide a brief confirmation in the current conversation (e.g. 'Done, posted to #checkpoints!'). DO NOT print the entire announcement or intro into the current channel when the user requested it to be sent to another channel.\n"
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - When asked if pictures/images/files are uploaded or saved to the database: confirm that image and file attachments are indeed uploaded and attached directly to the note record in PocketBase.\n"
@@ -87,10 +90,11 @@ class AIChat(commands.Cog):
             "     * Reminders & Deadlines: If the referenced message discusses a due date, assignment, quiz, meeting, event, or schedule, extract the date/time and description and call `set_reminder` for the user.\n"
             "     * Notes & Information: If the referenced message contains important information (e.g. door codes, passwords, notes, study material), save it with `add_note` if requested or appropriate.\n"
             "     * Printing & Documents: If the user asks to print the referenced message or attached file, call `print_document` with the attached filename or message text.\n"
+            "     * Channel Messages: If the user asks to send or post the referenced message/content to another channel, call `send_channel_message`.\n"
             "     * Questions & Discussions: If the referenced message or conversation poses a question or topic, answer directly and concisely utilizing the conversation context.\n"
             "     * Summarization: If asked to summarize or explain the conversation/referenced message, provide a clear, concise summary.\n"
             "     * Tagged without specific prompt: Intelligently determine the most helpful action based on the message content and conversation history (e.g., set a reminder for a deadline, add a book mentioned, answer an unanswered question, or respond with witty banter in character).\n"
-            "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, `print_document`, etc.) directly for the user invoking you without asking for details already in context.\n"
+            "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, `print_document`, `send_channel_message`, etc.) directly for the user invoking you without asking for details already in context.\n"
             "9. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly. Attached images/files will be automatically uploaded and saved to the PocketBase note record.\n"
             "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification.\n"
             "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly.\n"
@@ -830,7 +834,7 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(ctx.author.id)
-        exec_context = {"attachments": attachments_out, "message": ctx.message}
+        exec_context = {"attachments": attachments_out, "message": ctx.message, "guild": ctx.guild, "channel": ctx.channel}
 
         # Case 1: Inside an existing thread
         if isinstance(ctx.channel, discord.Thread):
@@ -991,7 +995,12 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(interaction.user.id)
-        exec_context = {"attachments": attachments_out}
+        exec_context = {
+            "attachments": attachments_out,
+            "interaction": interaction,
+            "guild": interaction.guild,
+            "channel": interaction.channel,
+        }
 
         # Defer response since Gemini generation takes time
         await interaction.response.defer()
@@ -1199,7 +1208,12 @@ class AIChat(commands.Cog):
                                 contents = [types.Content(role="user", parts=parts)]
                         if not contents:
                             return
-                        exec_context = {"attachments": attachments_out, "message": message}
+                        exec_context = {
+                            "attachments": attachments_out,
+                            "message": message,
+                            "guild": message.guild,
+                            "channel": message.channel,
+                        }
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
@@ -1232,7 +1246,12 @@ class AIChat(commands.Cog):
                             contents = [types.Content(role="user", parts=parts)]
                     if not contents:
                         return
-                    exec_context = {"attachments": attachments_out, "message": message}
+                    exec_context = {
+                        "attachments": attachments_out,
+                        "message": message,
+                        "guild": getattr(message, "guild", None),
+                        "channel": message.channel,
+                    }
                     text = await self._generate_ai_response(
                         contents, user_id=user_id_str, context=exec_context
                     )
@@ -1267,7 +1286,12 @@ class AIChat(commands.Cog):
                         return
                     contents = [types.Content(role="user", parts=parts)]
 
-                exec_context = {"attachments": attachments_out, "message": message}
+                exec_context = {
+                    "attachments": attachments_out,
+                    "message": message,
+                    "guild": message.guild,
+                    "channel": message.channel,
+                }
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
                 )

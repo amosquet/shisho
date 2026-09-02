@@ -64,6 +64,12 @@ from tools.models import (
     handle_set_ai_model,
     handle_get_ai_model,
 )
+from tools.channels import (
+    SEND_CHANNEL_MESSAGE_TOOL,
+    LIST_CHANNELS_TOOL,
+    handle_send_channel_message,
+    handle_list_channels,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -90,6 +96,8 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     CANCEL_PRINT_JOB_TOOL,
     SET_AI_MODEL_TOOL,
     GET_AI_MODEL_TOOL,
+    SEND_CHANNEL_MESSAGE_TOOL,
+    LIST_CHANNELS_TOOL,
 ]
 
 AI_CHAT_TOOLS: list[types.Tool] = [
@@ -121,6 +129,8 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "cancel_print_job": handle_cancel_print_job,
     "set_ai_model": handle_set_ai_model,
     "get_ai_model": handle_get_ai_model,
+    "send_channel_message": handle_send_channel_message,
+    "list_channels": handle_list_channels,
 }
 
 
