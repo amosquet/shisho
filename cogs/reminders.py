@@ -412,7 +412,7 @@ class Reminders(commands.Cog):
 
                     sub_body = {
                         "clientId": client_id,
-                        "subscriptions": ["reminders"],
+                        "subscriptions": ["reminders", "reminders/*", "*"],
                     }
                     async with session.post(
                         f"{base_url}/api/realtime",
@@ -427,7 +427,7 @@ class Reminders(commands.Cog):
                     # Synchronize active records on connection
                     await self._sync_pending_reminders()
 
-            elif event_name == "reminders" or event_name.startswith("reminders/"):
+            elif event_name in ("reminders", "*") or event_name.startswith("reminders/"):
                 payload = json.loads(data_str) if data_str else {}
                 action = payload.get("action", "")
                 record = payload.get("record", {})
@@ -489,7 +489,7 @@ class Reminders(commands.Cog):
             if task_id not in active_ids:
                 self._cancel_scheduled(task_id)
 
-    @tasks.loop(minutes=5.0)
+    @tasks.loop(seconds=30.0)
     async def fallback_sync(self):
         try:
             await self._sync_pending_reminders()
@@ -552,14 +552,14 @@ class Reminders(commands.Cog):
         if parsed_time < datetime.now(timezone.utc):
             return "That time is in the past! Please specify a future time."
 
+        dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
+
         try:
             def add_to_pocketbase():
                 pb = get_pb_client()
                 pb_user_id = get_discord_user_id(pb, user_id)
                 if not pb_user_id:
-                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}"
-
-                dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}", None
 
                 entry = {
                     "owner": str(pb_user_id),
@@ -567,12 +567,26 @@ class Reminders(commands.Cog):
                     "remind_at": dt_str,
                     "is_sent": False,
                 }
-                pb.collection("reminders").create(entry)
-                return "success"
+                created_rec = pb.collection("reminders").create(entry)
+                return "success", created_rec
 
-            res = await run_in_executor(add_to_pocketbase)
+            res, created_record = await run_in_executor(add_to_pocketbase)
             if res != "success":
                 return res
+
+            if created_record:
+                rec_id = getattr(created_record, "id", "") or (created_record.get("id", "") if hasattr(created_record, "get") else "")
+                rec_owner = getattr(created_record, "owner", "") or (created_record.get("owner", "") if hasattr(created_record, "get") else "")
+                rec_text = getattr(created_record, "reminder_text", text) or (created_record.get("reminder_text", text) if hasattr(created_record, "get") else text)
+                rec_time = getattr(created_record, "remind_at", dt_str) or (created_record.get("remind_at", dt_str) if hasattr(created_record, "get") else dt_str)
+                rec_dict = {
+                    "id": rec_id,
+                    "owner": rec_owner,
+                    "reminder_text": rec_text,
+                    "remind_at": rec_time,
+                    "is_sent": False,
+                }
+                self._schedule_from_record(rec_dict)
 
             if for_discord:
                 unix_timestamp = int(parsed_time.timestamp())
