@@ -7,7 +7,7 @@ from google.genai import types
 
 ADD_NOTE_TOOL = types.FunctionDeclaration(
     name="add_note",
-    description="Saves a personal note to the user's notes in PocketBase.",
+    description="Saves a personal note to the user's notes in PocketBase. If image, audio, or document attachments are provided with the message, they are automatically uploaded and stored with the note.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -128,7 +128,21 @@ UPDATE_NOTE_TOOL = types.FunctionDeclaration(
 )
 
 
-async def handle_add_note(bot, args: dict, user_id: str) -> str:
+def extract_attachments_from_context(context: dict | None) -> list[tuple[str, bytes]]:
+    """Extracts a list of (filename, bytes) tuples from an execution context."""
+    if not context or not isinstance(context, dict):
+        return []
+    raw_atts = context.get("attachments", [])
+    result: list[tuple[str, bytes]] = []
+    for att in raw_atts:
+        if isinstance(att, dict) and "filename" in att and "bytes" in att:
+            result.append((att["filename"], att["bytes"]))
+        elif isinstance(att, (tuple, list)) and len(att) == 2:
+            result.append((att[0], att[1]))
+    return result
+
+
+async def handle_add_note(bot, args: dict, user_id: str, context: dict | None = None) -> str:
     """Handler for the add_note AI tool."""
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
@@ -138,7 +152,14 @@ async def handle_add_note(bot, args: dict, user_id: str) -> str:
     archived = bool(args.get("archived", False))
     if not text and not title:
         return "Error: Note text or title is required."
-    res = await notes_cog.add_note(user_id, text=text, title=title, archived=archived)
+    attachments = extract_attachments_from_context(context)
+    res = await notes_cog.add_note(
+        user_id,
+        text=text,
+        title=title,
+        attachments=attachments or None,
+        archived=archived,
+    )
     return res
 
 
@@ -170,7 +191,10 @@ async def handle_get_notes(bot, args: dict, user_id: str) -> str:
         txt = n.get("text") or n.get("editor") or ""
         created = n.get("created") or ""
         status = " [Archived]" if n.get("archived") else ""
-        formatted.append(f"Title: {t}{status}\nContent: {txt}\nDate: {created}")
+        att_info = ""
+        if n.get("attachment_filenames"):
+            att_info = f"\nAttachments: {', '.join(n['attachment_filenames'])}"
+        formatted.append(f"Title: {t}{status}\nContent: {txt}{att_info}\nDate: {created}")
     return "\n---\n".join(formatted)
 
 
@@ -216,7 +240,7 @@ async def handle_delete_archived_notes(bot, args: dict, user_id: str) -> str:
     return await notes_cog.delete_archived_notes(user_id)
 
 
-async def handle_update_note(bot, args: dict, user_id: str) -> str:
+async def handle_update_note(bot, args: dict, user_id: str, context: dict | None = None) -> str:
     """Handler for the update_note AI tool."""
     notes_cog = bot.get_cog("Notes")
     if not notes_cog:
@@ -230,6 +254,7 @@ async def handle_update_note(bot, args: dict, user_id: str) -> str:
     archived = args.get("archived")
     if isinstance(archived, str):
         archived = archived.lower() in ("true", "1", "yes")
+    attachments = extract_attachments_from_context(context)
     return await notes_cog.update_note(
         user_id,
         query,
@@ -237,5 +262,6 @@ async def handle_update_note(bot, args: dict, user_id: str) -> str:
         text=text if text is not None else None,
         editor=editor if editor is not None else None,
         archived=archived if archived is not None else None,
+        attachments=attachments or None,
     )
 

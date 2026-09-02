@@ -405,6 +405,7 @@ class Notes(commands.Cog):
         text: str | None = None,
         editor: str | None = None,
         archived: bool | None = None,
+        attachments: list = None,
     ) -> str:
         try:
             def _update_in_pb():
@@ -431,10 +432,13 @@ class Notes(commands.Cog):
                 if archived is not None:
                     update_data["archived"] = archived
 
-                if not update_data:
+                if not update_data and not attachments:
                     return "Error: No update fields provided."
 
-                pb.collection("notes").update(matched_record.id, update_data)
+                files = {"attachment": attachments} if attachments else None
+                final_entry = prepare_file_upload_payload(update_data, files)
+
+                pb.collection("notes").update(matched_record.id, final_entry)
                 note_title = title or getattr(matched_record, "title", "") or (matched_record.get("title", "") if hasattr(matched_record, "get") else "") or "Untitled Note"
                 return f"Successfully updated note: **{note_title}**"
 
