@@ -139,7 +139,11 @@ def extract_attachments_from_context(context: dict | None) -> list[tuple[str, by
     """Extracts a list of (filename, bytes) tuples from an execution context."""
     if not context or not isinstance(context, dict):
         return []
-    raw_atts = context.get("attachments", [])
+    # Prioritize attachments directly uploaded on the current message or reply message
+    # rather than attaching arbitrary historical attachments to notes.
+    raw_atts = context.get("current_attachments") or context.get("reply_attachments")
+    if raw_atts is None:
+        raw_atts = context.get("attachments", [])
     result: list[tuple[str, bytes]] = []
     for att in raw_atts:
         if isinstance(att, dict) and "filename" in att and "bytes" in att:

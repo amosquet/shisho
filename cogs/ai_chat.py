@@ -79,7 +79,7 @@ class AIChat(commands.Cog):
             "   - When asked about recommendations / recommended list / suggestions (e.g. 'what books are on my recommended list', 'show my recommendations', 'what did friends suggest'), call ONLY `get_recommendations` (filter='for_me' or 'all') and respond with the books from the recommendations list. DO NOT say you don't have a recommended list.\n"
             "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, `update_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. When asked to reschedule or update a reminder, call `update_reminder`.\n"
-            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF', 'print my biology lecture note from today', 'print note X from vault'): call `print_document` directly. If it refers to an Obsidian vault note, provide `vault_path` or the note title in `print_document`. When asked to check print jobs or queue status, call `list_print_jobs`. When asked to cancel a print job, call `cancel_print_job`.\n"
+            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF', 'print my biology lecture note from today', 'print note X from vault'): call `print_document` directly. If it refers to an Obsidian vault note, provide `vault_path` or the note title in `print_document`. When asked to check print jobs or queue status, or verify what was printed/sent (e.g. 'are you sure you sent the right file?', 'check the print queue', 'query the database', 'what file did you print?'), call `list_print_jobs`. DO NOT call `print_document` when the user is merely asking to verify, check, or confirm what was already sent or printed. When asked to cancel a print job, call `cancel_print_job`.\n"
             "   - When asked to post, send, announce, or introduce yourself in a specific channel (e.g. 'can you introduce yourself in #checkpoints', 'post this in #channel', 'send message to #general'), call `send_channel_message` with the target channel and the formatted message content. Once sent, provide a brief confirmation in the current conversation (e.g. 'Done, posted to #checkpoints!'). DO NOT print the entire announcement or intro into the current channel when the user requested it to be sent to another channel.\n"
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
@@ -103,7 +103,7 @@ class AIChat(commands.Cog):
             "     * Tagged without specific prompt: Intelligently determine the most helpful action based on the message content and conversation history (e.g., set a reminder for a deadline, add a book mentioned, answer an unanswered question, or respond with witty banter in character).\n"
             "   - Execute any necessary database tools (`add_book`, `set_reminder`, `add_note`, `get_reading_list`, `add_recommendation`, `print_document`, `send_channel_message`, etc.) directly for the user invoking you without asking for details already in context.\n"
             "9. When the user attaches or shares an image (such as an assignment, syllabus, schedule, screenshot, or book cover) with a request like 'create a reminder for this', 'add this to my reading list', or 'save this note', analyze the image content to extract all relevant details (such as assignment/quiz name, due date/time, start date, book title, author) and execute the appropriate tool (`set_reminder`, `add_book`, or `add_note`) directly. Attached images/files will be automatically uploaded and saved to the PocketBase note record.\n"
-            "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification.\n"
+            "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification. When printing an attached document, specify the exact filename of the attachment if known.\n"
             "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly.\n"
             "12. DISCORD MARKDOWN & NO LATEX: You are outputting directly into Discord chat. Discord does NOT support LaTeX or MathJax equations. NEVER use LaTeX tags or delimiters (do NOT use `$$...$$`, `$...$`, `\\text{}`, `\\mathbf{}`, `\\times`, `\\approx`, `\\frac{}{}`). Format all calculations, math, formulas, and balance breakdowns using standard plain text, clean Unicode (×, ÷, ≈, ±, ≤, ≥, °), and Discord markdown (**bold**, `inline code`, code blocks). Write currency amounts normally (e.g. $1,484.63) without LaTeX syntax.\n"
             "13. DISCORD SLASH COMMANDS & ACCOUNT MANAGEMENT: When a user asks about account management, account details/profile, registration, PIN resets, or actions for which Shisho has a dedicated slash command without a natural language AI tool, inform and guide them to the appropriate slash command directly (e.g. `/account` to view their linked account details/email/registration, `/register` to link/create a Shisho account, `/resetpin` to regenerate their companion app PIN, `/check_authors` to check for author releases, `/force_sync` to sync book metadata, or `/ping` for latency). Do not search notes or claim account info does not exist when the user is simply looking for their Shisho profile."
@@ -359,6 +359,122 @@ class AIChat(commands.Cog):
 
         return parts
 
+    async def _extract_attachments_from_message(self, message: discord.Message | None) -> list[dict]:
+        """Extract all valid attachments from a single Discord message."""
+        if not message:
+            return []
+        results: list[dict] = []
+        for att in getattr(message, "attachments", []):
+            try:
+                raw_bytes = await att.read()
+                if not raw_bytes:
+                    continue
+                ctype = (
+                    att.content_type
+                    or self._get_document_mime(att.filename, None)
+                    or self._get_image_mime(att.filename, None)
+                    or self._get_audio_mime(att.filename, None)
+                    or "application/octet-stream"
+                )
+                results.append({
+                    "filename": att.filename,
+                    "bytes": raw_bytes,
+                    "content_type": ctype,
+                    "size": len(raw_bytes),
+                    "message_id": getattr(message, "id", None),
+                })
+            except Exception as e:
+                print(f"Failed to read attachment {getattr(att, 'filename', '')}: {e}")
+                sentry_sdk.capture_exception(e)
+        return results
+
+    async def _gather_context_attachments(
+        self,
+        current_message: discord.Message | None = None,
+        referenced_message: discord.Message | None = None,
+        channel: discord.abc.Messageable | None = None,
+        explicit_attachments: list[dict] | None = None,
+        history_limit: int = 15,
+    ) -> dict[str, list[dict]]:
+        """
+        Gather attachments prioritized by recency and relevance:
+        - current_attachments: From the current message or slash command options.
+        - reply_attachments: From the message being directly replied to.
+        - history_attachments: From recent conversation history, ordered NEWEST FIRST.
+        - attachments: Consolidated list ordered: current -> reply -> history (newest first).
+        """
+        current_attachments: list[dict] = []
+        reply_attachments: list[dict] = []
+        history_attachments: list[dict] = []
+
+        # 1. Current message / explicit attachments
+        if explicit_attachments:
+            current_attachments.extend(explicit_attachments)
+        elif current_message:
+            current_attachments = await self._extract_attachments_from_message(current_message)
+
+        # 2. Reply attachments
+        ref_msg = referenced_message
+        if not ref_msg and current_message and getattr(current_message, "reference", None) and current_message.reference.message_id:
+            ref_id = current_message.reference.message_id
+            resolved = current_message.reference.resolved
+            if isinstance(resolved, discord.Message) or (
+                hasattr(resolved, "attachments")
+                and not isinstance(resolved, getattr(discord, "DeletedReferencedMessage", type(None)))
+            ):
+                ref_msg = resolved
+            elif channel and hasattr(channel, "fetch_message"):
+                try:
+                    ref_msg = await channel.fetch_message(ref_id)
+                except Exception:
+                    ref_msg = None
+
+        if ref_msg:
+            reply_attachments = await self._extract_attachments_from_message(ref_msg)
+
+        # 3. History attachments (newest first, excluding current and reply messages)
+        excluded_ids = set()
+        if current_message and getattr(current_message, "id", None):
+            excluded_ids.add(current_message.id)
+        if ref_msg and getattr(ref_msg, "id", None):
+            excluded_ids.add(ref_msg.id)
+
+        target_channel = channel or (getattr(current_message, "channel", None))
+        if target_channel and hasattr(target_channel, "history"):
+            try:
+                # In discord.py, channel.history yields newest to oldest
+                async for h_msg in target_channel.history(limit=history_limit):
+                    if h_msg.id in excluded_ids:
+                        continue
+                    if getattr(h_msg.author, "bot", False):
+                        continue
+                    if getattr(h_msg, "attachments", None):
+                        msg_atts = await self._extract_attachments_from_message(h_msg)
+                        for a in msg_atts:
+                            history_attachments.append(a)
+                            if len(history_attachments) >= 10:
+                                break
+                    if len(history_attachments) >= 10:
+                        break
+            except Exception as e:
+                print(f"Could not gather history attachments: {e}")
+
+        # 4. Consolidated list (preserving priority order: current -> reply -> history)
+        seen_keys = set()
+        combined: list[dict] = []
+        for att in current_attachments + reply_attachments + history_attachments:
+            key = (att.get("filename"), len(att.get("bytes") or b""))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                combined.append(att)
+
+        return {
+            "current_attachments": current_attachments,
+            "reply_attachments": reply_attachments,
+            "history_attachments": history_attachments,
+            "attachments": combined,
+        }
+
     def _generate_thread_name(self, prompt: str) -> str:
         clean = " ".join(prompt.split())
         clean = re.sub(
@@ -534,7 +650,8 @@ class AIChat(commands.Cog):
                             "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
                         })
             else:
-                parts = await self._extract_message_parts(msg, is_prefix=False, attachments_out=attachments_out)
+                curr_atts_out = attachments_out if msg.id == message.id else None
+                parts = await self._extract_message_parts(msg, is_prefix=False, attachments_out=curr_atts_out)
                 author_name = getattr(msg.author, "display_name", "User")
                 author_handle = getattr(msg.author, "name", "")
                 author_id = getattr(msg.author, "id", "")
@@ -622,7 +739,7 @@ class AIChat(commands.Cog):
                             "parts": [types.Part.from_text(text=content)]
                         })
                 else:
-                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True, attachments_out=attachments_out)
+                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True, attachments_out=None)
                     if user_parts:
                         author_name = getattr(starter_msg.author, "display_name", "User")
                         author_handle = getattr(starter_msg.author, "name", "")
@@ -667,7 +784,7 @@ class AIChat(commands.Cog):
                                 "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
                             })
                 else:
-                    user_parts = await self._extract_message_parts(msg, is_prefix=True, attachments_out=attachments_out)
+                    user_parts = await self._extract_message_parts(msg, is_prefix=True, attachments_out=None)
                     if user_parts:
                         author_name = getattr(msg.author, "display_name", "User")
                         author_handle = getattr(msg.author, "name", "")
@@ -840,9 +957,18 @@ class AIChat(commands.Cog):
             await ctx.send("Please provide a question, prompt, image, audio, or file attachment.")
             return
 
+        att_context = await self._gather_context_attachments(
+            current_message=ctx.message,
+            channel=ctx.channel,
+            explicit_attachments=attachments_out,
+        )
+
         user_id_str = str(ctx.author.id)
         exec_context = {
-            "attachments": attachments_out,
+            "attachments": att_context["attachments"],
+            "current_attachments": att_context["current_attachments"],
+            "reply_attachments": att_context["reply_attachments"],
+            "history_attachments": att_context["history_attachments"],
             "message": ctx.message,
             "guild": ctx.guild,
             "channel": ctx.channel,
@@ -856,7 +982,7 @@ class AIChat(commands.Cog):
                 self.active_threads.add(ctx.channel.id)
                 async with ctx.typing():
                     try:
-                        contents = await self._build_thread_contents(ctx.channel, attachments_out=attachments_out)
+                        contents = await self._build_thread_contents(ctx.channel, attachments_out=None)
                         if not contents:
                             contents = [types.Content(role="user", parts=parts)]
                         text = await self._generate_ai_response(
@@ -910,7 +1036,7 @@ class AIChat(commands.Cog):
                 contents = None
                 if ctx.message.reference and ctx.message.reference.message_id:
                     contents = await self._build_reply_chain_contents(
-                        ctx.message, attachments_out=attachments_out
+                        ctx.message, attachments_out=None
                     )
                 if not contents:
                     contents = [types.Content(role="user", parts=parts)]
@@ -1034,8 +1160,15 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(interaction.user.id)
+        att_context = await self._gather_context_attachments(
+            channel=interaction.channel,
+            explicit_attachments=attachments_out,
+        )
         exec_context = {
-            "attachments": attachments_out,
+            "attachments": att_context["attachments"],
+            "current_attachments": att_context["current_attachments"],
+            "reply_attachments": att_context["reply_attachments"],
+            "history_attachments": att_context["history_attachments"],
             "interaction": interaction,
             "guild": interaction.guild,
             "channel": interaction.channel,
@@ -1052,7 +1185,7 @@ class AIChat(commands.Cog):
                 self.active_threads.add(interaction.channel.id)
                 try:
                     contents = await self._build_thread_contents(
-                        interaction.channel, additional_parts=parts, attachments_out=attachments_out
+                        interaction.channel, additional_parts=parts, attachments_out=None
                     )
                     if not contents:
                         contents = [types.Content(role="user", parts=parts)]
@@ -1261,7 +1394,20 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(message.author.id)
-        attachments_out: list[dict] = []
+        att_context = await self._gather_context_attachments(
+            current_message=message,
+            channel=message.channel,
+        )
+        exec_context = {
+            "attachments": att_context["attachments"],
+            "current_attachments": att_context["current_attachments"],
+            "reply_attachments": att_context["reply_attachments"],
+            "history_attachments": att_context["history_attachments"],
+            "message": message,
+            "guild": getattr(message, "guild", None),
+            "channel": message.channel,
+            "out_files": [],
+        }
 
         # Case 1: Message is inside a thread
         if is_in_thread:
@@ -1272,27 +1418,20 @@ class AIChat(commands.Cog):
                     try:
                         if is_reply:
                             contents = await self._build_reply_chain_contents(
-                                message, attachments_out=attachments_out
+                                message, attachments_out=None
                             )
                         else:
                             contents = await self._build_channel_contents(
-                                message.channel, attachments_out=attachments_out
+                                message.channel, attachments_out=None
                             )
                         if not contents:
                             parts = await self._extract_message_parts(
-                                message, is_prefix=False, attachments_out=attachments_out
+                                message, is_prefix=False, attachments_out=None
                             )
                             if parts:
                                 contents = [types.Content(role="user", parts=parts)]
                         if not contents:
                             return
-                        exec_context = {
-                            "attachments": attachments_out,
-                            "message": message,
-                            "guild": message.guild,
-                            "channel": message.channel,
-                            "out_files": [],
-                        }
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
@@ -1319,27 +1458,20 @@ class AIChat(commands.Cog):
                 try:
                     if is_reply:
                         contents = await self._build_reply_chain_contents(
-                            message, attachments_out=attachments_out
+                            message, attachments_out=None
                         )
                     else:
                         contents = await self._build_channel_contents(
-                            message.channel, attachments_out=attachments_out
+                            message.channel, attachments_out=None
                         )
                     if not contents:
                         parts = await self._extract_message_parts(
-                            message, is_prefix=False, attachments_out=attachments_out
+                            message, is_prefix=False, attachments_out=None
                         )
                         if parts:
                             contents = [types.Content(role="user", parts=parts)]
                     if not contents:
                         return
-                    exec_context = {
-                        "attachments": attachments_out,
-                        "message": message,
-                        "guild": getattr(message, "guild", None),
-                        "channel": message.channel,
-                        "out_files": [],
-                    }
                     text = await self._generate_ai_response(
                         contents, user_id=user_id_str, context=exec_context
                     )
@@ -1366,29 +1498,22 @@ class AIChat(commands.Cog):
                 contents = None
                 if is_reply:
                     contents = await self._build_reply_chain_contents(
-                        message, attachments_out=attachments_out
+                        message, attachments_out=None
                     )
                 else:
                     parts = await self._extract_message_parts(
-                        message, is_prefix=False, attachments_out=attachments_out
+                        message, is_prefix=False, attachments_out=None
                     )
                     if parts:
                         contents = [types.Content(role="user", parts=parts)]
                 if not contents:
                     parts = await self._extract_message_parts(
-                        message, is_prefix=False, attachments_out=attachments_out
+                        message, is_prefix=False, attachments_out=None
                     )
                     if not parts:
                         return
                     contents = [types.Content(role="user", parts=parts)]
 
-                exec_context = {
-                    "attachments": attachments_out,
-                    "message": message,
-                    "guild": message.guild,
-                    "channel": message.channel,
-                    "out_files": [],
-                }
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
                 )

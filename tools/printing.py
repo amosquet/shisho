@@ -68,6 +68,122 @@ CANCEL_PRINT_JOB_TOOL = types.FunctionDeclaration(
 )
 
 
+GENERIC_FILENAMES = {
+    "",
+    "document.pdf",
+    "document.txt",
+    "file.pdf",
+    "print.pdf",
+    "attachment",
+    "attachment.pdf",
+    "attachment.txt",
+    "document",
+    "file",
+    "print",
+    "this",
+    "print_text.txt",
+    "untitled",
+    "untitled.pdf",
+    "untitled.txt",
+}
+
+DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".json", ".py", ".html"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def score_attachment_match(att: dict, target_filename: str) -> float:
+    """
+    Score how well an attachment matches a target filename or description.
+    Returns a score between 0.0 and 100.0+.
+    """
+    att_name = (att.get("filename") or "").strip()
+    target = target_filename.strip()
+    if not att_name or not target:
+        return 0.0
+
+    att_lower = att_name.lower()
+    target_lower = target.lower()
+
+    # 1. Exact full match
+    if att_lower == target_lower:
+        return 100.0
+
+    att_stem = os.path.splitext(att_lower)[0]
+    target_stem = os.path.splitext(target_lower)[0]
+
+    # 2. Exact stem match (e.g. "invoice" vs "invoice.pdf")
+    if att_stem == target_stem:
+        return 95.0
+
+    # 3. Direct stem containment (e.g. "hw1" in "hw1_260825.pdf")
+    if (len(att_stem) >= 3 and att_stem in target_lower) or (len(target_stem) >= 3 and target_stem in att_lower):
+        return 85.0
+
+    # 4. Token-based overlap
+    import re
+    att_tokens = set(t for t in re.findall(r"[a-z0-9]+", att_lower) if len(t) >= 2)
+    target_tokens = set(t for t in re.findall(r"[a-z0-9]+", target_lower) if len(t) >= 2)
+
+    stop_words = {"the", "a", "an", "and", "or", "to", "for", "of", "in", "with", "on", "at", "by", "pdf", "txt", "doc", "file", "document", "print"}
+    clean_att = att_tokens - stop_words
+    clean_target = target_tokens - stop_words
+
+    if clean_att and clean_target:
+        overlap = clean_att & clean_target
+        if overlap:
+            overlap_ratio = len(overlap) / min(len(clean_att), len(clean_target))
+            score = 50.0 + (len(overlap) * 10.0) + (overlap_ratio * 10.0)
+
+            # Preference bonus: if target mentions pdf/document and attachment is PDF
+            att_ext = os.path.splitext(att_lower)[1]
+            if att_ext == ".pdf" and any(k in target_lower for k in ("pdf", "homework", "hw", "assignment", "paper", "doc")):
+                score += 10.0
+            return score
+
+    return 0.0
+
+
+def select_best_attachment(
+    attachments: list[dict],
+    filename: str,
+    has_explicit_other_target: bool = False,
+) -> dict | None:
+    """
+    Selects the most appropriate attachment from attachments:
+    - If filename is generic or empty, picks the best attachment (preferring documents over images).
+    - If filename is specific, scores attachments and picks the highest scoring match above threshold.
+    - If filename is specific and no attachment matches, returns None to allow note/vault fallback.
+    """
+    if not attachments:
+        return None
+
+    clean_filename = filename.strip().lower()
+    is_generic = clean_filename in GENERIC_FILENAMES
+
+    if is_generic or not clean_filename:
+        # Prioritize document attachments (.pdf, .txt, .md) over images
+        for att in attachments:
+            ext = os.path.splitext((att.get("filename") or "").lower())[1]
+            if ext in DOCUMENT_EXTENSIONS:
+                return att
+        return attachments[0]
+
+    # Specific filename provided: score each attachment
+    best_att = None
+    best_score = 0.0
+
+    for att in attachments:
+        score = score_attachment_match(att, filename)
+        if score > best_score:
+            best_score = score
+            best_att = att
+
+    if best_score >= 50.0:
+        return best_att
+
+    return None
+
+
 async def handle_print_document(bot, args: dict, user_id: str, context: dict | None = None) -> str:
     """Handler for the print_document AI tool."""
     print_cog = bot.get_cog("Print")
@@ -83,25 +199,11 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
 
     # 1. Check if an attached file matches the requested filename or if user wants to print the attachment
     if attachments:
-        matched_att = None
-        if filename:
-            for att in attachments:
-                att_name = att.get("filename", "")
-                if att_name.lower() == filename.lower():
-                    matched_att = att
-                    break
-            if not matched_att:
-                # Check base filename without extension or case-insensitive partial match
-                for att in attachments:
-                    att_name = att.get("filename", "")
-                    if os.path.splitext(att_name.lower())[0] == os.path.splitext(filename.lower())[0]:
-                        matched_att = att
-                        break
-        # If no explicit match or generic filename, pick the attachment
-        if not matched_att and (not note_id and not content and not vault_path or filename in ("document.pdf", "document.txt", "file.pdf", "print.pdf", "attachment")):
-            matched_att = attachments[0]
-        elif not matched_att and len(attachments) == 1 and not note_id and not content and not vault_path:
-            matched_att = attachments[0]
+        matched_att = select_best_attachment(
+            attachments,
+            filename,
+            has_explicit_other_target=bool(note_id or vault_path or content),
+        )
 
         if matched_att:
             file_bytes = matched_att.get("bytes", b"")
