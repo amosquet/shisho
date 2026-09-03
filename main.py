@@ -126,6 +126,11 @@ class ShishoBot(commands.Bot):
         traceback.print_exception(type(error), error, error.__traceback__)
         sentry_sdk.capture_exception(error)
 
+    async def on_error(self, event_method: str, *args, **kwargs):
+        import traceback
+        traceback.print_exc()
+        sentry_sdk.capture_exception()
+
     def _format_duration(self, duration_seconds: int) -> str:
         hours, remainder = divmod(duration_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)

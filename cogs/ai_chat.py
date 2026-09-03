@@ -64,11 +64,11 @@ class AIChat(commands.Cog):
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see reminders (can filter by status='active', 'sent', or 'all'). Call `update_reminder` to edit or reschedule existing reminders. Call `delete_reminder` to cancel/delete reminders.\n"
             "- Notes: Call `add_note` to save notes (supporting plain text, rich text editor content, and file attachments). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, rich text editor content, or archived status.\n"
-            "- Printing: Call `print_document` to send a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file.\n"
+            "- Printing: Call `print_document` to send a document, note, text summary, attached file, or Obsidian vault note to the physical printer via PocketBase Realtime queue or email fallback. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file. When asked to print a note from the Obsidian vault (e.g. 'print my biology lecture note from today', 'print note X from vault'), call `print_document` with `vault_path` set to the note's relative path or title (or search/read it with `vault_read_note`/`vault_search` and print it).\n"
             "- Channel Messaging: Call `send_channel_message` to post or send a message directly to a specific Discord text channel or thread (e.g. when asked 'introduce yourself in #checkpoints', 'send a message to #general', 'post an announcement in #channel', 'say hello in #dev'). Call `list_channels` to view available text channels in the server.\n"
             "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n"
             "- Obsidian / Markdown Vault: Call `vault_read_note` to read a markdown note (including parsed YAML frontmatter and body). Call `vault_write_note` to create or overwrite a note with markdown formatting, YAML frontmatter, and wikilinks. Call `vault_patch_note` to surgically replace a specific text snippet or block within an existing note. Call `vault_append_note` to append text, logs, or quotes to a note (optionally under a markdown heading). Call `vault_search` to search across the vault by note body, filenames, tags (`#tag`), or frontmatter. Call `vault_list_files` to explore the vault directory structure and notes. Call `vault_delete_note` to delete or safely move notes to the vault trash (`.trash/`). Call `vault_move_note` to rename or relocate notes. Call `vault_get_backlinks` to find notes linking to a target note via `[[wikilinks]]`.\n"
-            "  * Note: Vault operations are strictly restricted to the bot owner.\n"
+            "  * Note: Vault operations are available to the bot owner and whitelisted users.\n"
             "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
             "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
@@ -79,7 +79,7 @@ class AIChat(commands.Cog):
             "   - When asked about recommendations / recommended list / suggestions (e.g. 'what books are on my recommended list', 'show my recommendations', 'what did friends suggest'), call ONLY `get_recommendations` (filter='for_me' or 'all') and respond with the books from the recommendations list. DO NOT say you don't have a recommended list.\n"
             "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, `update_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. When asked to reschedule or update a reminder, call `update_reminder`.\n"
-            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF'), call `print_document`. When asked to check print jobs or queue status, call `list_print_jobs`. When asked to cancel a print job, call `cancel_print_job`.\n"
+            "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF', 'print my biology lecture note from today', 'print note X from vault'): call `print_document` directly. If it refers to an Obsidian vault note, provide `vault_path` or the note title in `print_document`. When asked to check print jobs or queue status, call `list_print_jobs`. When asked to cancel a print job, call `cancel_print_job`.\n"
             "   - When asked to post, send, announce, or introduce yourself in a specific channel (e.g. 'can you introduce yourself in #checkpoints', 'post this in #channel', 'send message to #general'), call `send_channel_message` with the target channel and the formatted message content. Once sent, provide a brief confirmation in the current conversation (e.g. 'Done, posted to #checkpoints!'). DO NOT print the entire announcement or intro into the current channel when the user requested it to be sent to another channel.\n"
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
@@ -89,14 +89,14 @@ class AIChat(commands.Cog):
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
             "5. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
-            "6. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help, reply ONLY with '[NO_ACTION]'.\n"
+            "6. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help (e.g. 'shisho is so funny lol'), reply ONLY with '[NO_ACTION]'. However, if a user replies to a message and tags you, or asks for help/actions (like 'can you print...', 'add this...', 'remind me...'), NEVER reply with '[NO_ACTION]'; inspect the conversation and execute the requested action directly.\n"
             "7. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
             "8. When a user replies to someone's message (or references a previous message) and tags/pings you, or asks for follow-up actions like 'add this to my reading list', 'remind me about this', 'save this note', 'print this', or simply tags you:\n"
             "   - Carefully inspect the referenced message, any attachments/images/audio/documents, and the surrounding conversation history to determine the intent and correct course of action:\n"
             "     * Book Mentions & Suggestions: If the referenced message or conversation mentions a book title/author, book recommendation, or book cover image: if the user says 'add this' or tags you in response, call `add_book` to add it to their reading list. If recommending to a friend, call `add_recommendation`.\n"
             "     * Reminders & Deadlines: If the referenced message discusses a due date, assignment, quiz, meeting, event, or schedule, extract the date/time and description and call `set_reminder` for the user.\n"
             "     * Notes & Information: If the referenced message contains important information (e.g. door codes, passwords, notes, study material), save it with `add_note` if requested or appropriate.\n"
-            "     * Printing & Documents: If the user asks to print the referenced message or attached file, call `print_document` with the attached filename or message text.\n"
+            "     * Printing & Documents: If the user asks to print the referenced message, an attached file, or a note from their vault/notes, call `print_document` directly with `vault_path`, `filename`, or message text.\n"
             "     * Channel Messages: If the user asks to send or post the referenced message/content to another channel, call `send_channel_message`.\n"
             "     * Questions & Discussions: If the referenced message or conversation poses a question or topic, answer directly and concisely utilizing the conversation context.\n"
             "     * Summarization: If asked to summarize or explain the conversation/referenced message, provide a clear, concise summary.\n"
@@ -1209,8 +1209,8 @@ class AIChat(commands.Cog):
 
         # Verify user authorization
         if not self.is_user_authorized(message.author.id):
-            if is_dm:
-                print(f"[AIChat] Unauthorized DM from user {message.author} (ID: {message.author.id})")
+            if is_dm or is_bot_mentioned or is_reply_to_bot:
+                print(f"[AIChat] Unauthorized access attempt from user {message.author} (ID: {message.author.id})")
                 try:
                     await message.channel.send("❌ You are not authorized to use Shisho AI chat.")
                 except Exception:
@@ -1309,6 +1309,7 @@ class AIChat(commands.Cog):
                             else:
                                 await message.channel.send(chunk)
                     except Exception as e:
+                        sentry_sdk.capture_exception(e)
                         await message.channel.send(format_gemini_error(e, include_details=False))
             return
 
@@ -1355,6 +1356,7 @@ class AIChat(commands.Cog):
                         else:
                             await message.channel.send(chunk)
                 except Exception as e:
+                    sentry_sdk.capture_exception(e)
                     await message.channel.send(format_gemini_error(e, include_details=False))
             return
 
@@ -1393,6 +1395,7 @@ class AIChat(commands.Cog):
                 if not text or text.strip() == "[NO_ACTION]":
                     return
             except Exception as e:
+                sentry_sdk.capture_exception(e)
                 await message.channel.send(format_gemini_error(e, include_details=False))
                 return
 

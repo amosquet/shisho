@@ -421,6 +421,11 @@ def search_vault(
                 if clean_query in rel_path.lower() or clean_query in note_title.lower():
                     matched = True
                     matches_info.append(f"Title/Path matched: '{rel_path}'")
+                else:
+                    tokens = [t for t in re.findall(r"\w+", clean_query) if len(t) > 1]
+                    if tokens and all(t in rel_path.lower() or t in note_title.lower() for t in tokens):
+                        matched = True
+                        matches_info.append(f"Title/Path matched all tokens: '{rel_path}'")
 
             try:
                 raw_text = file_path.read_text(encoding="utf-8", errors="replace")
@@ -468,6 +473,11 @@ def search_vault(
                         matches_info.append(f"Line {line_no}: {snippet}")
                         if len(matches_info) >= 4:
                             break
+                if not matched:
+                    tokens = [t for t in re.findall(r"\w+", clean_query) if len(t) > 2 and t not in ("note", "notes", "today", "yesterday", "from", "with")]
+                    if tokens and all(t in raw_text.lower() or t in rel_path.lower() for t in tokens):
+                        matched = True
+                        matches_info.append(f"Matched keywords: {', '.join(tokens)}")
 
             if matched:
                 results.append({
