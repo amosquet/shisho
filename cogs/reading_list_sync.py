@@ -1,0 +1,143 @@
+import os
+import asyncio
+import aiohttp
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+import sentry_sdk
+
+from utils import google_books
+from utils.db import (
+    get_pb_client,
+    get_discord_user_id,
+    prepare_file_upload_payload,
+    run_in_executor,
+)
+
+class ReadingListSync(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.pb_url = os.getenv("POCKETBASE_URL")
+        self.pb_user = os.getenv("POCKETBASE_USER")
+        self.pb_password = os.getenv("POCKETBASE_PASSWORD")
+        self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+        self.owner_id = int(os.getenv("OWNER_ID", "0"))
+        
+        if self.pb_url and self.pb_user and self.pb_password and self.google_books_api_key and self.owner_id:
+            self.sync_reading_list.start()
+
+    def get_pb_client(self):
+        return get_pb_client()
+
+    def cog_unload(self):
+        self.sync_reading_list.cancel()
+
+    async def _sync_logic(self):
+        def _fetch_books():
+            pb = self.get_pb_client()
+            pb_user_id = get_discord_user_id(pb, self.owner_id)
+            if not pb_user_id:
+                return []
+            return pb.collection("shisho_books").get_full_list(query_params={"filter": f"owner='{pb_user_id}'"})
+
+        try:
+            records = await run_in_executor(_fetch_books)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return
+
+        for record in records:
+            title = getattr(record, "title", "")
+            author = getattr(record, "author", "")
+            isbn = getattr(record, "isbn", "")
+            publish_date = getattr(record, "publish_date", getattr(record, "publishDate", ""))
+            cover = getattr(record, "cover", "")
+            description = getattr(record, "description", "")
+            
+            # Check if any important metadata is missing
+            if not isbn or not publish_date or not cover or not title or not author or not description:
+                queries_to_try = []
+                clean_isbn = isbn.replace("-", "").replace(" ", "").strip() if isbn else ""
+                if clean_isbn and clean_isbn.isdigit() and len(clean_isbn) in (10, 13):
+                    queries_to_try.append(f"isbn:{clean_isbn}")
+                elif isbn:
+                    queries_to_try.append(f"isbn:{isbn}")
+                
+                if title and author:
+                    queries_to_try.append(f"{title} {author}")
+                elif title:
+                    queries_to_try.append(title)
+                
+                if not queries_to_try:
+                    continue
+                    
+                try:
+                    book_data = None
+                    for query in queries_to_try:
+                        res = await google_books.fetch_book_data(query, self.google_books_api_key)
+                        if isinstance(res, dict):
+                            # If we are missing publish_date and this result has it, or if it has valid info
+                            if not publish_date and (not res.get("publishedDate") or res.get("publishedDate") == "Unknown"):
+                                if book_data is None:
+                                    book_data = res
+                                continue
+                            book_data = res
+                            break
+
+                    if isinstance(book_data, dict):
+                        update_data = {}
+                        if not isbn and book_data.get("isbn"):
+                            update_data["isbn"] = book_data["isbn"]
+                        if not publish_date and book_data.get("publishedDate") and book_data["publishedDate"] != "Unknown":
+                            update_data["publishDate"] = book_data["publishedDate"]
+                        if not title and book_data.get("title") and book_data["title"] != "Unknown Title":
+                            update_data["title"] = book_data["title"]
+                        if not author and book_data.get("authors") and book_data["authors"] != ["Unknown Author"]:
+                            update_data["author"] = ", ".join(book_data["authors"])
+                        if not description and book_data.get("description") and book_data["description"] != "No description available.":
+                            update_data["description"] = book_data["description"]
+                            
+                        cover_data = None
+                        cover_filename = None
+                        thumbnail_url = book_data.get("thumbnail")
+                        
+                        if not cover and thumbnail_url:
+                            cover_filename, cover_data = await google_books.download_image(thumbnail_url)
+                        
+                        if update_data or (cover_data and cover_filename):
+                            def _update():
+                                pb = self.get_pb_client()
+                                files = {"cover": (cover_filename, cover_data)} if cover_data and cover_filename else None
+                                final_entry = prepare_file_upload_payload(update_data, files)
+                                pb.collection("shisho_books").update(record.id, final_entry)
+                                
+                            await run_in_executor(_update)
+                except Exception as e:
+                    sentry_sdk.capture_exception(e)
+                
+                await asyncio.sleep(2) # rate limiting
+                
+    @tasks.loop(hours=12.0)
+    async def sync_reading_list(self):
+        try:
+            await self._sync_logic()
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            print(f"Error in background reading list sync task: {e}")
+
+    @sync_reading_list.before_loop
+    async def before_sync_reading_list(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="force_sync", description="Force sync missing reading list data from Google Books API.")
+    async def force_sync(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self._sync_logic()
+            await interaction.followup.send("Sync completed successfully.")
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await interaction.followup.send(f"An error occurred during sync: {e}")
+
+async def setup(bot):
+    await bot.add_cog(ReadingListSync(bot))

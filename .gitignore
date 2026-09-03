@@ -11,3 +11,18 @@ wheels/
 
 # Environment variables
 .env
+
+# Configuration files
+gemini_prompt.txt
+
+# Data runtime caches
+data/book_cache.json
+data/notified_books.json
+data/permissions.json
+data/config.json
+book_cache.json
+notified_books.json
+tests/
+
+# Agent artifacts
+.agents/

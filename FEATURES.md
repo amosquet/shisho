@@ -16,3 +16,32 @@
 ## Local Focus / Pomodoro Timer
 - **Command:** `!focus 25`
 - **Description:** A simple, completely offline focus timer that runs in the bot's memory and DMs you when it's time to take a break. No external services required.
+
+## Author / Series Tracking
+- **Description:** A feature that tracks your favorite authors or series based on your reading history and notifies you via DM when a new book is coming out soon.
+- **Workflow:** Runs a weekly background task that checks an API like Google Books or OpenLibrary for upcoming releases related to authors in your `reading.json`.
+
+## Personal Notes & Media
+- **Commands:** `!note <text> [attachment]` to add, `!notes` to list.
+- **Description:** A quick way to save personal thoughts, ideas, or media (images, links). 
+- **Storage:** Notes are saved in a dedicated `notes` collection in your self-hosted PocketBase database for easy retrieval and management.
+
+## Summary / Review Generation
+- **Description:** Whenever you mark a book as `read`, the bot automatically DMs you asking if you'd like to write a quick review, summary, or final thoughts.
+- **Workflow:** Your responses are saved alongside the book's entry in your database, allowing you to build a personal catalog of book reviews over time.
+
+## AI Book Concierge
+- **Commands:** `!recommend <prompt>` or `!ask <question>`
+- **Description:** Integrates an LLM (like Gemini or Claude) to provide highly specific book recommendations based on natural language queries (e.g., "I want a fast-paced sci-fi book similar to Project Hail Mary, but shorter").
+- **Workflow:** The AI provides a curated list, and you can instantly add any of the suggested books to your reading list.
+
+## General AI Chat
+- **Command:** `!gemini <prompt>` or `/gemini`
+- **Description:** A simple passthrough command to send general prompts and questions to the Gemini API right from within Discord. 
+- **Workflow:** Useful as a quick assistant without having to open the browser, easily accessible by you and any friends you whitelist.
+
+## Anki Flashcards & Spaced Repetition (.apkg)
+- **Commands:** `/flashcards create`, `/flashcards from_note`, `!flashcards <prompt>`
+- **Description:** Generate structured Anki flashcards (`.apkg` format) and Obsidian Spaced Repetition markdown notes from uploaded PDFs, documents, Obsidian vault notes, or prompts.
+- **Workflow:** Gemini extracts key facts and definitions into atomic flashcards, builds a custom-styled `.apkg` package using `genanki`, attaches it to Discord for instant download/import into Anki, and optionally writes a spaced repetition markdown note to your Obsidian vault.
+
