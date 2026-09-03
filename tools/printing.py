@@ -10,7 +10,7 @@ from utils.db import run_in_executor
 
 PRINT_DOCUMENT_TOOL = types.FunctionDeclaration(
     name="print_document",
-    description="Sends a document, note, text summary, or attached file to the physical printer via PocketBase Realtime queue or email fallback.",
+    description="Sends a document, note, text summary, attached file, or Obsidian vault note to the physical printer via PocketBase Realtime queue or email fallback.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -24,7 +24,11 @@ PRINT_DOCUMENT_TOOL = types.FunctionDeclaration(
             ),
             "note_id": types.Schema(
                 type=types.Type.STRING,
-                description="Optional saved note ID or title to print",
+                description="Optional saved PocketBase note ID or title to print",
+            ),
+            "vault_path": types.Schema(
+                type=types.Type.STRING,
+                description="Optional relative path or note title in the Obsidian vault to print (e.g. 'Biology/Lecture Note.md', 'biology lecture note')",
             ),
         },
     ),
@@ -72,6 +76,7 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
     content = str(args.get("content") or "").strip()
     filename = str(args.get("filename") or "").strip()
     note_id = str(args.get("note_id") or "").strip()
+    vault_path = str(args.get("vault_path") or "").strip()
 
     file_bytes = b""
     attachments = (context or {}).get("attachments", []) if isinstance(context, dict) else []
@@ -93,9 +98,9 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                         matched_att = att
                         break
         # If no explicit match or generic filename, pick the attachment
-        if not matched_att and (not note_id and not content or filename in ("document.pdf", "document.txt", "file.pdf", "print.pdf", "attachment")):
+        if not matched_att and (not note_id and not content and not vault_path or filename in ("document.pdf", "document.txt", "file.pdf", "print.pdf", "attachment")):
             matched_att = attachments[0]
-        elif not matched_att and len(attachments) == 1 and not note_id and not content:
+        elif not matched_att and len(attachments) == 1 and not note_id and not content and not vault_path:
             matched_att = attachments[0]
 
         if matched_att:
@@ -134,11 +139,74 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                     ).strip()
                     filename = f"{clean_title or 'Note'}.txt"
 
-    # 3. Check content if no attachment or note attachment was found
+    # 3. Check vault_path if provided
+    if not file_bytes and vault_path:
+        from tools.obsidian import _is_vault_authorized
+        from utils import obsidian as vault_utils
+
+        if not await _is_vault_authorized(bot, user_id):
+            return "Permission Denied: You are not authorized to access or print notes from the Obsidian vault."
+
+        if not vault_utils.get_vault_path():
+            return "Error: Obsidian vault path is not configured on the bot."
+
+        note_data = None
+        try:
+            note_data = await run_in_executor(vault_utils.read_note, rel_path=vault_path)
+        except Exception:
+            # Fallback to search query across vault
+            try:
+                results = await run_in_executor(vault_utils.search_vault, query=vault_path, max_results=1)
+                if results:
+                    note_data = await run_in_executor(vault_utils.read_note, rel_path=results[0]["path"])
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+
+        if note_data and note_data.get("content"):
+            file_bytes = note_data["content"].encode("utf-8")
+            if not filename:
+                filename = note_data.get("filename") or f"{vault_path}.md"
+
+    # 4. Check content if no attachment, note attachment, or vault note was found
     if not file_bytes and content:
         if not filename:
             filename = "document.txt"
         file_bytes = content.encode("utf-8")
+
+    # 5. Fallback: if filename or note_id was specified but no printable content was found, check Obsidian vault
+    if not file_bytes and (filename or note_id):
+        from tools.obsidian import _is_vault_authorized
+        from utils import obsidian as vault_utils
+
+        search_target = note_id or filename
+        if search_target and search_target.lower() not in (
+            "document.pdf",
+            "document.txt",
+            "file.pdf",
+            "print.pdf",
+            "attachment",
+            "document",
+        ):
+            try:
+                if vault_utils.get_vault_path() and await _is_vault_authorized(bot, user_id):
+                    note_data = None
+                    try:
+                        note_data = await run_in_executor(vault_utils.read_note, rel_path=search_target)
+                    except Exception:
+                        results = await run_in_executor(vault_utils.search_vault, query=search_target, max_results=1)
+                        if not results:
+                            import re
+                            tokens = [w for w in re.findall(r"\w+", search_target) if w.lower() not in ("from", "today", "yesterday", "the", "my", "a", "an")]
+                            if tokens:
+                                results = await run_in_executor(vault_utils.search_vault, query=" ".join(tokens), max_results=1)
+                        if results:
+                            note_data = await run_in_executor(vault_utils.read_note, rel_path=results[0]["path"])
+
+                    if note_data and note_data.get("content"):
+                        file_bytes = note_data["content"].encode("utf-8")
+                        filename = note_data.get("filename") or f"{search_target}.md"
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
 
     if not file_bytes:
         return "Error: No printable content, note, or attachment found to print."

@@ -9,6 +9,7 @@ import discord
 from google.genai import types
 
 from utils.db import run_in_executor
+from utils.discord_helpers import is_user_authorized
 from utils import obsidian as vault_utils
 
 
@@ -37,8 +38,26 @@ async def _is_bot_owner(bot, user_id: str) -> bool:
     return False
 
 
+async def _is_vault_authorized(bot, user_id: str) -> bool:
+    """Checks if the user ID belongs to the bot owner or is whitelisted for vault access."""
+    if not user_id:
+        return False
+
+    if await _is_bot_owner(bot, user_id):
+        return True
+
+    try:
+        uid_int = int(user_id)
+        if is_user_authorized(uid_int, "VAULT") or is_user_authorized(uid_int, "OBSIDIAN"):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 OWNER_DENIED_MSG = (
-    "Permission Denied: Only the bot owner is permitted to access or modify the Obsidian vault."
+    "Permission Denied: Only the bot owner or authorized whitelisted users are permitted to access or modify the Obsidian vault."
 )
 
 
@@ -235,7 +254,7 @@ VAULT_GET_BACKLINKS_TOOL = types.FunctionDeclaration(
 
 async def handle_vault_list_files(bot, args: dict, user_id: str) -> str:
     """Handler for vault_list_files."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     directory = str(args.get("directory", "")).strip()
@@ -261,7 +280,7 @@ async def handle_vault_list_files(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_read_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_read_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     path = str(args.get("path", "")).strip()
@@ -283,7 +302,7 @@ async def handle_vault_read_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_write_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_write_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     path = str(args.get("path", "")).strip()
@@ -307,7 +326,7 @@ async def handle_vault_write_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_patch_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_patch_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     path = str(args.get("path", "")).strip()
@@ -333,7 +352,7 @@ async def handle_vault_patch_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_append_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_append_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     path = str(args.get("path", "")).strip()
@@ -360,7 +379,7 @@ async def handle_vault_append_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_search(bot, args: dict, user_id: str) -> str:
     """Handler for vault_search."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     query = str(args.get("query", "")).strip()
@@ -392,7 +411,7 @@ async def handle_vault_search(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_delete_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_delete_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     path = str(args.get("path", "")).strip()
@@ -416,7 +435,7 @@ async def handle_vault_delete_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_move_note(bot, args: dict, user_id: str) -> str:
     """Handler for vault_move_note."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     source_path = str(args.get("source_path", "")).strip()
@@ -438,7 +457,7 @@ async def handle_vault_move_note(bot, args: dict, user_id: str) -> str:
 
 async def handle_vault_get_backlinks(bot, args: dict, user_id: str) -> str:
     """Handler for vault_get_backlinks."""
-    if not await _is_bot_owner(bot, user_id):
+    if not await _is_vault_authorized(bot, user_id):
         return OWNER_DENIED_MSG
 
     target = str(args.get("target", "")).strip()

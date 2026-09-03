@@ -45,3 +45,9 @@
 - **Description:** Generate structured Anki flashcards (`.apkg` format) and Obsidian Spaced Repetition markdown notes from uploaded PDFs, documents, Obsidian vault notes, or prompts.
 - **Workflow:** Gemini extracts key facts and definitions into atomic flashcards, builds a custom-styled `.apkg` package using `genanki`, attaches it to Discord for instant download/import into Anki, and optionally writes a spaced repetition markdown note to your Obsidian vault.
 
+## Obsidian Vault Integration & Vault Printing
+- **AI Tools:** `vault_read_note`, `vault_write_note`, `vault_patch_note`, `vault_append_note`, `vault_search`, `vault_list_files`, `vault_delete_note`, `vault_move_note`, `vault_get_backlinks`
+- **Printing:** Direct printing from your local Obsidian vault to the physical printer via PocketBase Realtime queue or email fallback (e.g. "can you print my biology lecture note from today?", "print note X from my vault").
+- **Permissions:** Whitelist management via `!whitelist add vault <user_id>` / `!whitelist remove vault <user_id>`, `WHITELIST_VAULT=...` in `.env`, or owner bypass via `OWNER_ID`.
+
+
