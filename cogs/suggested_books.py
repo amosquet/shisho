@@ -141,6 +141,18 @@ class SuggestedBooks(commands.Cog):
         cover_filename = None
         cover_data = None
         if cover_image:
+            max_size = 5 * 1024 * 1024  # 5 MB
+            allowed_exts = (".png", ".jpg", ".jpeg", ".webp")
+            if cover_image.size and cover_image.size > max_size:
+                await interaction.followup.send(
+                    "❌ Cover image file is too large (maximum size is 5 MB).", ephemeral=True
+                )
+                return
+            if not any((cover_image.filename or "").lower().endswith(ext) for ext in allowed_exts):
+                await interaction.followup.send(
+                    "❌ Invalid cover image format. Allowed formats: PNG, JPG, JPEG, WEBP.", ephemeral=True
+                )
+                return
             try:
                 cover_data = await cover_image.read()
                 cover_filename = cover_image.filename
@@ -229,9 +241,16 @@ class SuggestedBooks(commands.Cog):
         **kwargs,
     ) -> dict:
         title = (kwargs.get("title", title) or "").strip()
-        author = (kwargs.get("author", author) or "").strip()
-        isbn = (kwargs.get("isbn", isbn) or "").replace("-", "").replace(" ", "").strip()
-        message = (kwargs.get("message", message) or "").strip()
+        raw_isbn = (kwargs.get("isbn", isbn) or "").replace("-", "").replace(" ", "").strip()
+        # Validate ISBN: must be 10 or 13 alphanumeric chars if provided
+        if raw_isbn:
+            clean_digits = "".join(c for c in raw_isbn if c.isdigit() or c.upper() == 'X')
+            if len(clean_digits) in (10, 13):
+                isbn = clean_digits
+            else:
+                isbn = ""
+        else:
+            isbn = ""
         publish_date = (kwargs.get("publishDate", kwargs.get("publish_date", publish_date)) or "").strip()
         description = (kwargs.get("description", description) or "").strip()
         date_suggested = (kwargs.get("date_suggested", date_suggested) or "").strip()
@@ -528,8 +547,8 @@ class SuggestedBooks(commands.Cog):
                 return True
             s_did = getattr(r, "sender_discord_id", "") or (r.get("sender_discord_id", "") if hasattr(r, "get") else "")
             r_did = getattr(r, "recipient_discord_id", "") or (r.get("recipient_discord_id", "") if hasattr(r, "get") else "")
-            s_by = getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")
-            if uid and (str(s_did) == str(uid) or str(r_did) == str(uid)):
+            clean_uid = str(uid).strip()
+            if clean_uid and clean_uid.isdigit() and (str(s_did) == clean_uid or str(r_did) == clean_uid):
                 return True
             if user_name and str(s_by) == str(user_name):
                 return True
@@ -557,7 +576,7 @@ class SuggestedBooks(commands.Cog):
 
                 # 2. Search suggestions
                 clean_isbn = clean_target.replace("-", "").replace(" ", "").strip()
-                safe_query = clean_target.replace("'", "\\'")
+                safe_query = clean_target.replace("\\", "\\\\").replace("'", "\\'")
                 filter_str = f"title ~ '{safe_query}' || author ~ '{safe_query}' || isbn ~ '{clean_isbn}'"
                 records = pb.collection("shisho_books_recommendations").get_full_list(
                     query_params={"filter": filter_str}
