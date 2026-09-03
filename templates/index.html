@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Book Suggestion - Shisho</title>
+
+        <!-- Google Fonts: Noto Sans JP -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap"
+            rel="stylesheet"
+        />
+
+        <!-- Tailwind CSS -->
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: "class",
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            sans: ['"Noto Sans JP"', "sans-serif"],
+                        },
+                    },
+                },
+            };
+        </script>
+        <script>
+            // Avoid FOUC for dark mode
+            if (
+                localStorage.getItem("color-theme") === "dark" ||
+                (!("color-theme" in localStorage) &&
+                    window.matchMedia("(prefers-color-scheme: dark)").matches)
+            ) {
+                document.documentElement.classList.add("dark");
+            } else {
+                document.documentElement.classList.remove("dark");
+            }
+        </script>
+    </head>
+    <body
+        class="bg-white dark:bg-gray-950 min-h-screen flex flex-col font-sans transition-colors duration-200"
+    >
+        <!-- Theme Toggle Button -->
+        <button
+            id="theme-toggle"
+            type="button"
+            class="absolute top-4 right-4 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:focus:ring-indigo-500 text-sm p-2.5 transition-colors shadow-sm"
+            aria-label="Toggle Theme"
+        >
+            <svg
+                id="theme-toggle-dark-icon"
+                class="hidden w-5 h-5"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+                xmlns="http://www.w3.org/2000/svg"
+            >
+                <path
+                    d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"
+                ></path>
+            </svg>
+            <svg
+                id="theme-toggle-light-icon"
+                class="hidden w-5 h-5"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+                xmlns="http://www.w3.org/2000/svg"
+            >
+                <path
+                    d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+                    fill-rule="evenodd"
+                    clip-rule="evenodd"
+                ></path>
+            </svg>
+        </button>
+
+        <main
+            class="grow flex items-center justify-center py-12 px-4 mt-8 sm:mt-0"
+        >
+            <div class="max-w-xl w-full">
+                <div
+                    class="bg-linear-to-br from-blue-50 to-indigo-100 dark:from-gray-800 dark:to-gray-900 p-8 sm:p-10 flex flex-col justify-center transition-colors duration-200"
+                >
+                    <div
+                        class="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-8 gap-4"
+                    >
+                        <div>
+                            <h1
+                                class="text-4xl font-bold text-gray-900 dark:text-white mb-2"
+                            >
+                                Book Suggestion
+                            </h1>
+                            <p class="text-lg text-gray-700 dark:text-gray-400">
+                                Suggest a new book to add to the Shisho
+                                collection.
+                            </p>
+                        </div>
+                        <a
+                            href="suggestions.html"
+                            class="bg-black text-white dark:bg-white dark:text-black font-semibold px-4 py-2 transition-colors hover:bg-gray-800 dark:hover:bg-gray-200 whitespace-nowrap text-center"
+                        >
+                            View List &rarr;
+                        </a>
+                    </div>
+
+                    <!-- Dynamic Alert Box -->
+                    <div id="alert-box" class="hidden p-4 mb-6 transition-all duration-200" role="alert"></div>
+
+                    <form id="suggest-form" class="space-y-5">
+                        <div>
+                            <label
+                                for="title"
+                                class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1"
+                                >Book Title</label
+                            >
+                            <input
+                                type="text"
+                                id="title"
+                                name="title"
+                                class="w-full bg-white dark:bg-gray-950 p-3 border border-gray-200 dark:border-gray-700 dark:text-white dark:placeholder-gray-500 focus:outline-none focus:border-blue-400 dark:focus:border-indigo-500 focus:ring-1 focus:ring-blue-400 dark:focus:ring-indigo-500 transition-colors shadow-sm"
+                                placeholder="e.g., The Martian"
+                            />
+                        </div>
+
+                        <div>
+                            <label
+                                for="author"
+                                class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1"
+                                >Author</label
+                            >
+                            <input
+                                type="text"
+                                id="author"
+                                name="author"
+                                class="w-full bg-white dark:bg-gray-950 p-3 border border-gray-200 dark:border-gray-700 dark:text-white dark:placeholder-gray-500 focus:outline-none focus:border-blue-400 dark:focus:border-indigo-500 focus:ring-1 focus:ring-blue-400 dark:focus:ring-indigo-500 transition-colors shadow-sm"
+                                placeholder="e.g., Andy Weir"
+                            />
+                        </div>
+
+                        <div>
+                            <label
+                                for="isbn"
+                                class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1"
+                                >ISBN (Optional)</label
+                            >
+                            <input
+                                type="text"
+                                id="isbn"
+                                name="isbn"
+                                class="w-full bg-white dark:bg-gray-950 p-3 border border-gray-200 dark:border-gray-700 dark:text-white dark:placeholder-gray-500 focus:outline-none focus:border-blue-400 dark:focus:border-indigo-500 focus:ring-1 focus:ring-blue-400 dark:focus:ring-indigo-500 transition-colors shadow-sm"
+                                placeholder="e.g., 9780804139038"
+                            />
+                        </div>
+
+                        <div>
+                            <label
+                                for="reason"
+                                class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1"
+                                >Why should I read it?</label
+                            >
+                            <textarea
+                                id="reason"
+                                name="reason"
+                                rows="3"
+                                class="w-full bg-white dark:bg-gray-950 p-3 border border-gray-200 dark:border-gray-700 dark:text-white dark:placeholder-gray-500 focus:outline-none focus:border-blue-400 dark:focus:border-indigo-500 focus:ring-1 focus:ring-blue-400 dark:focus:ring-indigo-500 transition-colors shadow-sm"
+                                placeholder="Optional but appreciated..."
+                            ></textarea>
+                        </div>
+
+                        <div>
+                            <label
+                                for="submitter"
+                                class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1"
+                                >Your Name (Optional)</label
+                            >
+                            <input
+                                type="text"
+                                id="submitter"
+                                name="submitter"
+                                class="w-full bg-white dark:bg-gray-950 p-3 border border-gray-200 dark:border-gray-700 dark:text-white dark:placeholder-gray-500 focus:outline-none focus:border-blue-400 dark:focus:border-indigo-500 focus:ring-1 focus:ring-blue-400 dark:focus:ring-indigo-500 transition-colors shadow-sm"
+                                placeholder="e.g., Alice"
+                            />
+                        </div>
+
+                        <button
+                            id="submit-btn"
+                            type="submit"
+                            class="w-full bg-gray-900 dark:bg-indigo-600 text-white font-bold p-4 shadow-lg hover:scale-[1.02] dark:hover:bg-indigo-500 transition-all mt-2 disabled:opacity-50 disabled:pointer-events-none"
+                        >
+                            Submit Suggestion
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            // Configuration for Shisho API URL:
+            // When hosted on GitHub Pages, set this to your Shisho Cloudflare Tunnel URL, e.g.:
+            // window.SHISHO_API_URL = "https://api.shisho.yourdomain.com";
+            const API_BASE_URL = window.SHISHO_API_URL || (window.location.protocol.startsWith('http') && !window.location.hostname.endsWith('github.io') ? '' : '');
+
+            // Theme Toggle Logic
+            const themeToggleDarkIcon = document.getElementById("theme-toggle-dark-icon");
+            const themeToggleLightIcon = document.getElementById("theme-toggle-light-icon");
+
+            if (
+                localStorage.getItem("color-theme") === "dark" ||
+                (!("color-theme" in localStorage) &&
+                    window.matchMedia("(prefers-color-scheme: dark)").matches)
+            ) {
+                themeToggleLightIcon.classList.remove("hidden");
+            } else {
+                themeToggleDarkIcon.classList.remove("hidden");
+            }
+
+            document.getElementById("theme-toggle").addEventListener("click", function () {
+                themeToggleDarkIcon.classList.toggle("hidden");
+                themeToggleLightIcon.classList.toggle("hidden");
+
+                if (localStorage.getItem("color-theme")) {
+                    if (localStorage.getItem("color-theme") === "light") {
+                        document.documentElement.classList.add("dark");
+                        localStorage.setItem("color-theme", "dark");
+                    } else {
+                        document.documentElement.classList.remove("dark");
+                        localStorage.setItem("color-theme", "light");
+                    }
+                } else {
+                    if (document.documentElement.classList.contains("dark")) {
+                        document.documentElement.classList.remove("dark");
+                        localStorage.setItem("color-theme", "light");
+                    } else {
+                        document.documentElement.classList.add("dark");
+                        localStorage.setItem("color-theme", "dark");
+                    }
+                }
+            });
+
+            // Form Submit Logic
+            const form = document.getElementById("suggest-form");
+            const submitBtn = document.getElementById("submit-btn");
+            const alertBox = document.getElementById("alert-box");
+
+            form.addEventListener("submit", async function (e) {
+                e.preventDefault();
+                alertBox.className = "hidden";
+                alertBox.textContent = "";
+                submitBtn.disabled = true;
+                submitBtn.textContent = "Submitting...";
+
+                const payload = {
+                    title: document.getElementById("title").value.trim(),
+                    author: document.getElementById("author").value.trim(),
+                    isbn: document.getElementById("isbn").value.trim(),
+                    reason: document.getElementById("reason").value.trim(),
+                    submitter: document.getElementById("submitter").value.trim()
+                };
+
+                if (!payload.title && !payload.isbn) {
+                    alertBox.className = "bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6";
+                    alertBox.textContent = "Please provide a Book Title or an ISBN.";
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = "Submit Suggestion";
+                    return;
+                }
+
+                try {
+                    const endpoint = `${API_BASE_URL.replace(/\/$/, '')}/api/books/suggest`;
+                    const res = await fetch(endpoint, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                        alertBox.className = "bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-800 text-green-800 dark:text-green-400 p-4 mb-6";
+                        alertBox.textContent = `Successfully suggested: ${data.display_name}!`;
+                        form.reset();
+                    } else {
+                        alertBox.className = "bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6";
+                        alertBox.textContent = data.error || "An error occurred while submitting your suggestion.";
+                    }
+                } catch (err) {
+                    alertBox.className = "bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6";
+                    alertBox.textContent = "Unable to connect to Shisho API. Please check your network connection or API URL.";
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = "Submit Suggestion";
+                }
+            });
+        </script>
+    </body>
+</html>
