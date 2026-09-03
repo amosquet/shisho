@@ -11,17 +11,38 @@ import sentry_sdk
 
 from utils.db import get_pb_client, validate_pb_token, run_in_executor
 
+@aiohttp.web.middleware
+async def cors_middleware(request: aiohttp.web.Request, handler):
+    if request.method == "OPTIONS":
+        response = aiohttp.web.Response(status=204)
+    else:
+        try:
+            response = await handler(request)
+        except aiohttp.web.HTTPException as ex:
+            response = ex
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
 class API(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.app = aiohttp.web.Application()
+        self.app = aiohttp.web.Application(middlewares=[cors_middleware])
         
         self.app.add_routes([
             aiohttp.web.get('/api/health', self.handle_health),
             aiohttp.web.post('/api/auth/request-pin', self.handle_request_pin),
             aiohttp.web.post('/api/auth/link-discord', self.handle_link_discord),
             aiohttp.web.post('/api/auth/unlink-discord', self.handle_unlink_discord),
-            aiohttp.web.get('/api/announcements', self.handle_get_announcements)
+            aiohttp.web.get('/api/announcements', self.handle_get_announcements),
+            aiohttp.web.post('/api/books/suggest', self.handle_book_suggest),
+            aiohttp.web.get('/api/books/suggestions', self.handle_get_suggestions),
+            aiohttp.web.get('/', self.handle_serve_index),
+            aiohttp.web.get('/index.html', self.handle_serve_index),
+            aiohttp.web.get('/suggestions', self.handle_serve_suggestions),
+            aiohttp.web.get('/suggestions.html', self.handle_serve_suggestions),
         ])
         
         self.runner = None
@@ -225,6 +246,105 @@ class API(commands.Cog):
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": "An internal error occurred"}, status=500)
+
+    async def handle_book_suggest(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request, limit=15, window=300):
+            return aiohttp.web.json_response({"error": "Rate limit exceeded. Please try again later."}, status=429)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return aiohttp.web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        title = str(data.get("title", "")).strip()
+        author = str(data.get("author", "")).strip()
+        isbn = str(data.get("isbn", "")).strip()
+        reason = str(data.get("reason", "")).strip()
+        submitter = str(data.get("submitter", "")).strip() or "Anonymous"
+
+        if not title and not isbn:
+            return aiohttp.web.json_response({"error": "Please provide a Book Title or an ISBN."}, status=400)
+
+        suggested_books_cog = self.bot.get_cog("SuggestedBooks")
+        if not suggested_books_cog:
+            return aiohttp.web.json_response({"error": "Suggestion service is temporarily unavailable."}, status=503)
+
+        try:
+            res_data = await suggested_books_cog.add_suggestion(
+                title=title,
+                author=author,
+                isbn=isbn,
+                sender_name=submitter,
+                message=reason,
+                is_public=True,
+                suggested_from="Web Form",
+            )
+            display_name = res_data.get("display_name", title or isbn or "Unknown Book")
+            return aiohttp.web.json_response({
+                "success": True,
+                "display_name": display_name,
+                "book": {
+                    "id": res_data.get("id", ""),
+                    "title": res_data.get("title", title),
+                    "author": res_data.get("author", author),
+                    "isbn": res_data.get("isbn", isbn),
+                }
+            })
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": f"Failed to save suggestion: {str(e)}"}, status=500)
+
+    async def handle_get_suggestions(self, request: aiohttp.web.Request):
+        def _fetch():
+            pb = get_pb_client()
+            records = pb.collection("shisho_books_recommendations").get_list(
+                1, 50, query_params={
+                    "sort": "-date_suggested,-created",
+                    "filter": "is_public = true"
+                }
+            )
+            books = []
+            for r in records.items:
+                cover_name = getattr(r, "cover", "") or (r.get("cover", "") if hasattr(r, "get") else "")
+                coll_id = getattr(r, "collection_id", "") or (r.get("collection_id", "") if hasattr(r, "get") else "shisho_books_recommendations")
+                rec_id = getattr(r, "id", "") or (r.get("id", "") if hasattr(r, "get") else "")
+
+                cover_url = ""
+                if cover_name and self.pb_url and rec_id:
+                    cover_url = f"{self.pb_url.rstrip('/')}/api/files/{coll_id}/{rec_id}/{cover_name}"
+
+                books.append({
+                    "id": rec_id,
+                    "title": getattr(r, "title", "") or (r.get("title", "") if hasattr(r, "get") else ""),
+                    "author": getattr(r, "author", "") or (r.get("author", "") if hasattr(r, "get") else ""),
+                    "isbn": getattr(r, "isbn", "") or (r.get("isbn", "") if hasattr(r, "get") else ""),
+                    "message": getattr(r, "message", "") or (r.get("message", "") if hasattr(r, "get") else ""),
+                    "date_suggested": getattr(r, "date_suggested", "") or (r.get("date_suggested", "") if hasattr(r, "get") else ""),
+                    "suggested_from": getattr(r, "suggested_from", "") or (r.get("suggested_from", "") if hasattr(r, "get") else ""),
+                    "cover_url": cover_url,
+                })
+            return books
+
+        try:
+            books = await run_in_executor(_fetch)
+            return aiohttp.web.json_response({"books": books})
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response({"error": "Failed to fetch suggestions"}, status=500)
+
+    async def handle_serve_index(self, request: aiohttp.web.Request):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        index_path = os.path.join(base_dir, "templates", "index.html")
+        if os.path.exists(index_path):
+            return aiohttp.web.FileResponse(index_path)
+        return aiohttp.web.Response(text="Index page not found", status=404)
+
+    async def handle_serve_suggestions(self, request: aiohttp.web.Request):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        suggestions_path = os.path.join(base_dir, "templates", "suggestions.html")
+        if os.path.exists(suggestions_path):
+            return aiohttp.web.FileResponse(suggestions_path)
+        return aiohttp.web.Response(text="Suggestions page not found", status=404)
 
     @tasks.loop(minutes=5.0)
     async def cleanup_task(self):

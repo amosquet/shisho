@@ -25,7 +25,7 @@
         }
     </script>
     <script>
-        // On page load or when changing themes, best to add inline in `head` to avoid FOUC
+        // Avoid FOUC for dark mode
         if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark');
         } else {
@@ -36,7 +36,7 @@
 <body class="bg-white dark:bg-gray-950 min-h-screen flex flex-col font-sans transition-colors duration-200">
     
     <!-- Theme Toggle Button -->
-    <button id="theme-toggle" type="button" class="absolute top-4 right-4 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:focus:ring-indigo-500 text-sm p-2.5 transition-colors shadow-sm">
+    <button id="theme-toggle" type="button" class="absolute top-4 right-4 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:focus:ring-indigo-500 text-sm p-2.5 transition-colors shadow-sm" aria-label="Toggle Theme">
         <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
         <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
     </button>
@@ -47,52 +47,31 @@
                 <h1 class="text-4xl font-bold text-gray-900 dark:text-white">Suggested Books</h1>
                 <p class="text-gray-600 dark:text-gray-400 mt-2">Books suggested by the community.</p>
             </div>
-            <a href="/" class="bg-black text-white dark:bg-white dark:text-black font-semibold px-4 py-2 transition-colors hover:bg-gray-800 dark:hover:bg-gray-200">
+            <a href="index.html" class="bg-black text-white dark:bg-white dark:text-black font-semibold px-4 py-2 transition-colors hover:bg-gray-800 dark:hover:bg-gray-200">
                 + New Suggestion
             </a>
         </div>
 
-        {% if error %}
-        <div class="w-full bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6">
-            {{ error }}
-        </div>
-        {% endif %}
+        <!-- Dynamic Error Alert -->
+        <div id="error-alert" class="hidden w-full bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6"></div>
 
-        <div class="w-full space-y-4">
-            {% if books %}
-                {% for book in books %}
-                <div class="bg-gray-50 dark:bg-gray-900 p-5 border border-gray-100 dark:border-gray-800 hover:border-blue-200 dark:hover:border-indigo-700 transition-colors shadow-sm flex flex-col gap-1">
-                    <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">
-                        {{ book.title if book.title else ('ISBN: ' ~ book.isbn if book.isbn else 'Unknown Book') }}
-                    </h2>
-                    {% if book.author %}
-                    <p class="text-gray-600 dark:text-gray-400 font-medium">by {{ book.author }}</p>
-                    {% endif %}
-                    
-                    <div class="flex items-center gap-4 mt-2 text-sm text-gray-400 dark:text-gray-500">
-                        {% if book.dateSuggested %}
-                        <span>Suggested on {{ book.dateSuggested }}</span>
-                        {% endif %}
-                        {% if book.suggestedFrom %}
-                        <span class="text-blue-500 dark:text-indigo-400 font-semibold">via {{ book.suggestedFrom }}</span>
-                        {% endif %}
-                        {% if book.isbn %}
-                        <span class="bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-0.5 text-xs font-mono">ISBN: {{ book.isbn }}</span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="text-center py-12 bg-gray-50 dark:bg-gray-900 border border-dashed border-gray-200 dark:border-gray-800">
-                    <p class="text-gray-500 dark:text-gray-400">No books have been suggested yet!</p>
-                </div>
-            {% endif %}
+        <!-- Suggestions List Container -->
+        <div id="suggestions-container" class="w-full space-y-4">
+            <div id="loading-state" class="text-center py-12 text-gray-500 dark:text-gray-400">
+                Loading suggestions...
+            </div>
         </div>
     </main>
 
     <script>
-        var themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
-        var themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
+        // Configuration for Shisho API URL:
+        // When hosted on GitHub Pages, set this to your Shisho Cloudflare Tunnel URL, e.g.:
+        // window.SHISHO_API_URL = "https://api.shisho.yourdomain.com";
+        const API_BASE_URL = window.SHISHO_API_URL || (window.location.protocol.startsWith('http') && !window.location.hostname.endsWith('github.io') ? '' : '');
+
+        // Theme Toggle Logic
+        const themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
+        const themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
 
         if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             themeToggleLightIcon.classList.remove('hidden');
@@ -100,9 +79,7 @@
             themeToggleDarkIcon.classList.remove('hidden');
         }
 
-        var themeToggleBtn = document.getElementById('theme-toggle');
-
-        themeToggleBtn.addEventListener('click', function() {
+        document.getElementById('theme-toggle').addEventListener('click', function() {
             themeToggleDarkIcon.classList.toggle('hidden');
             themeToggleLightIcon.classList.toggle('hidden');
 
@@ -115,10 +92,89 @@
                     localStorage.setItem('color-theme', 'light');
                 }
             } else {
-                document.documentElement.classList.add('dark');
-                localStorage.setItem('color-theme', 'dark');
+                if (document.documentElement.classList.contains("dark")) {
+                    document.documentElement.classList.remove("dark");
+                    localStorage.setItem("color-theme", "light");
+                } else {
+                    document.documentElement.classList.add("dark");
+                    localStorage.setItem("color-theme", "dark");
+                }
             }
         });
+
+        // Fetch and Render Suggestions
+        async function loadSuggestions() {
+            const container = document.getElementById("suggestions-container");
+            const errorAlert = document.getElementById("error-alert");
+            errorAlert.className = "hidden";
+            errorAlert.textContent = "";
+
+            try {
+                const endpoint = `${API_BASE_URL.replace(/\/$/, '')}/api/books/suggestions`;
+                const res = await fetch(endpoint);
+                if (!res.ok) {
+                    throw new Error(`HTTP error ${res.status}`);
+                }
+                const data = await res.json();
+                const books = data.books || [];
+
+                if (books.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center py-12 bg-gray-50 dark:bg-gray-900 border border-dashed border-gray-200 dark:border-gray-800">
+                            <p class="text-gray-500 dark:text-gray-400">No books have been suggested yet!</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = books.map(book => {
+                    const title = escapeHtml(book.title || (book.isbn ? `ISBN: ${book.isbn}` : "Unknown Book"));
+                    const author = book.author ? `<p class="text-gray-600 dark:text-gray-400 font-medium">by ${escapeHtml(book.author)}</p>` : "";
+                    const message = book.message ? `<p class="text-sm text-gray-700 dark:text-gray-300 italic mt-1 bg-white dark:bg-gray-950 p-2.5 border border-gray-100 dark:border-gray-800">"${escapeHtml(book.message)}"</p>` : "";
+                    
+                    const dateTag = book.date_suggested ? `<span>Suggested on ${escapeHtml(book.date_suggested.split(' ')[0])}</span>` : "";
+                    const sourceTag = book.suggested_from ? `<span class="text-blue-500 dark:text-indigo-400 font-semibold">via ${escapeHtml(book.suggested_from)}</span>` : "";
+                    const isbnTag = book.isbn ? `<span class="bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-0.5 text-xs font-mono">ISBN: ${escapeHtml(book.isbn)}</span>` : "";
+                    
+                    const coverImg = book.cover_url ? `<img src="${escapeHtml(book.cover_url)}" alt="${title}" class="w-16 h-24 object-cover shrink-0 border border-gray-200 dark:border-gray-700" loading="lazy" />` : "";
+
+                    return `
+                        <div class="bg-gray-50 dark:bg-gray-900 p-5 border border-gray-100 dark:border-gray-800 hover:border-blue-200 dark:hover:border-indigo-700 transition-colors shadow-sm flex gap-4 items-start">
+                            ${coverImg}
+                            <div class="flex-1 flex flex-col gap-1">
+                                <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">${title}</h2>
+                                ${author}
+                                ${message}
+                                <div class="flex flex-wrap items-center gap-3 mt-2 text-sm text-gray-400 dark:text-gray-500">
+                                    ${dateTag}
+                                    ${sourceTag}
+                                    ${isbnTag}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join("");
+
+            } catch (err) {
+                container.innerHTML = "";
+                errorAlert.className = "w-full bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-400 p-4 mb-6";
+                errorAlert.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span>Failed to load suggestions. Could not reach Shisho API.</span>
+                        <button onclick="loadSuggestions()" class="underline font-semibold ml-4">Retry</button>
+                    </div>
+                `;
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return "";
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        loadSuggestions();
     </script>
 </body>
 </html>
