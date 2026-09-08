@@ -598,6 +598,161 @@ class Reminders(commands.Cog):
             sentry_sdk.capture_exception(e)
             return f"An error occurred while saving the reminder: {e}"
 
+    async def add_reminders_batch(
+        self,
+        user_id: str,
+        reminders: list[dict],
+        user_tz: str = None,
+        for_discord: bool = True,
+    ) -> str:
+        """Add multiple reminders in a batch, saving to PocketBase and arming in-memory timers."""
+        if not reminders or not isinstance(reminders, list):
+            return "Error: 'reminders' must be a non-empty list of reminder objects."
+
+        if len(reminders) > 100:
+            return "Error: Batch size exceeds limit of 100 reminders at a time."
+
+        tz_map = {
+            "jp": "Asia/Tokyo",
+            "fr": "Europe/Paris",
+            "uk": "Europe/London",
+            "de": "Europe/Berlin",
+            "us": "US/Eastern",
+            "est": "US/Eastern",
+            "edt": "US/Eastern",
+            "california": "US/Pacific",
+            "ca": "US/Pacific",
+            "pt": "US/Pacific",
+            "pst": "US/Pacific",
+            "pdt": "US/Pacific",
+            "chicago": "US/Central",
+            "il": "US/Central",
+            "ct": "US/Central",
+            "cst": "US/Central",
+            "cdt": "US/Central",
+        }
+
+        if not user_tz:
+            resolved_tz = "US/Eastern"
+        else:
+            resolved_tz = tz_map.get(user_tz.lower(), user_tz)
+
+        settings = {
+            "PREFER_DATES_FROM": "future",
+            "TO_TIMEZONE": "UTC",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": resolved_tz,
+        }
+
+        now_utc = datetime.now(timezone.utc)
+
+        try:
+            def batch_add_to_pocketbase():
+                pb = get_pb_client()
+                pb_user_id = get_discord_user_id(pb, user_id)
+                if not pb_user_id:
+                    return f"Error: {UNLINKED_ACCOUNT_MESSAGE}", [], []
+
+                created_records = []
+                skipped_items = []
+
+                for idx, item in enumerate(reminders, 1):
+                    if not isinstance(item, dict):
+                        skipped_items.append(f"Item #{idx}: invalid structure")
+                        continue
+
+                    when = str(item.get("when") or item.get("time") or item.get("remind_at") or "").strip()
+                    text = str(item.get("text") or item.get("reminder_text") or item.get("message") or "").strip()
+
+                    if not when or not text:
+                        skipped_items.append(f"Item #{idx}: missing 'when' or 'text'")
+                        continue
+
+                    parsed_time = dateparser.parse(when, settings=settings)
+                    if not parsed_time:
+                        skipped_items.append(f"'{text[:25]}...': unrecognized time '{when}'")
+                        continue
+
+                    if parsed_time < now_utc:
+                        skipped_items.append(f"'{text[:25]}...': time is in the past ({when})")
+                        continue
+
+                    dt_str = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
+                    entry = {
+                        "owner": str(pb_user_id),
+                        "reminder_text": text,
+                        "remind_at": dt_str,
+                        "is_sent": False,
+                    }
+
+                    try:
+                        rec = pb.collection("reminders").create(entry)
+                        created_records.append((rec, parsed_time, text))
+                    except Exception as ce:
+                        skipped_items.append(f"'{text[:25]}...': creation failed ({ce})")
+
+                return "success", created_records, skipped_items
+
+            res, created_records, skipped_items = await run_in_executor(batch_add_to_pocketbase)
+            if res != "success":
+                return res
+
+            if not created_records:
+                err_msg = "Could not schedule any reminders."
+                if skipped_items:
+                    err_msg += " Issues encountered:\n" + "\n".join(f"- {s}" for s in skipped_items[:5])
+                return err_msg
+
+            # Schedule in-memory timers for all created records
+            for created_rec, parsed_time, text in created_records:
+                rec_id = getattr(created_rec, "id", "") or (created_rec.get("id", "") if hasattr(created_rec, "get") else "")
+                rec_owner = getattr(created_rec, "owner", "") or (created_rec.get("owner", "") if hasattr(created_rec, "get") else "")
+                rec_text = getattr(created_rec, "reminder_text", text) or (created_rec.get("reminder_text", text) if hasattr(created_rec, "get") else text)
+                rec_time = getattr(created_rec, "remind_at", "") or (created_rec.get("remind_at", "") if hasattr(created_rec, "get") else "")
+                if not rec_time:
+                    rec_time = parsed_time.strftime("%Y-%m-%d %H:%M:%S.%fZ")
+
+                rec_dict = {
+                    "id": rec_id,
+                    "owner": rec_owner,
+                    "reminder_text": rec_text,
+                    "remind_at": rec_time,
+                    "is_sent": False,
+                }
+                self._schedule_from_record(rec_dict)
+
+            # Build response summary
+            success_count = len(created_records)
+            lines = [f"✅ Successfully scheduled **{success_count}** reminder{'s' if success_count != 1 else ''} in PocketBase:"]
+
+            # Sort created records by parsed_time for display
+            created_records.sort(key=lambda x: x[1])
+
+            def _fmt_time(pt: datetime) -> str:
+                if for_discord:
+                    ts = int(pt.timestamp())
+                    return f"<t:{ts}:F> (<t:{ts}:R>)"
+                return f"`{pt.strftime('%Y-%m-%d %H:%M UTC')}`"
+
+            first_few = created_records[:3]
+            for _, pt, txt in first_few:
+                lines.append(f"- **{txt}** at {_fmt_time(pt)}")
+
+            if len(created_records) > 4:
+                lines.append(f"- *... and {len(created_records) - 4} intermediate scheduled reminders ...*")
+
+            if len(created_records) >= 4:
+                _, last_pt, last_txt = created_records[-1]
+                lines.append(f"- **{last_txt}** at {_fmt_time(last_pt)}")
+
+            if skipped_items:
+                lines.append(f"\n⚠️ *Skipped {len(skipped_items)} item(s) due to invalid time or past date.*")
+
+            return "\n".join(lines)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return f"An error occurred while saving batch reminders: {e}"
+
     async def get_reminders_text(
         self, user_id: str, for_discord: bool = True, status: str = "active", limit: int | None = None
     ) -> str:

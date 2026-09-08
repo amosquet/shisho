@@ -92,6 +92,40 @@ UPDATE_REMINDER_TOOL = types.FunctionDeclaration(
     ),
 )
 
+BATCH_SET_REMINDERS_TOOL = types.FunctionDeclaration(
+    name="batch_set_reminders",
+    description="Schedules multiple reminders at once in PocketBase. Ideal for reading plans, study schedules, or multi-step tasks in a single tool call.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "reminders": types.Schema(
+                type=types.Type.ARRAY,
+                description="List of reminder objects to schedule.",
+                items=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "when": types.Schema(
+                            type=types.Type.STRING,
+                            description="When to remind the user (e.g. '2026-09-10 20:00', 'tomorrow at 8pm', 'Friday at 10am').",
+                        ),
+                        "text": types.Schema(
+                            type=types.Type.STRING,
+                            description="The reminder content or reading target (e.g. '📖 Read Dune: pp. 1–25').",
+                        ),
+                    },
+                    required=["when", "text"],
+                ),
+            ),
+            "timezone": types.Schema(
+                type=types.Type.STRING,
+                description="Optional user timezone or abbreviation (e.g. 'US/Eastern', 'US/Pacific', 'Asia/Tokyo', 'est', 'pst').",
+            ),
+        },
+        required=["reminders"],
+    ),
+)
+
+
 
 async def handle_set_reminder(bot, args: dict, user_id: str) -> str:
     """Handler for the set_reminder AI tool."""
@@ -167,4 +201,24 @@ async def handle_update_reminder(bot, args: dict, user_id: str) -> str:
         user_tz=tz_str,
         is_sent=is_sent,
     )
+
+
+async def handle_batch_set_reminders(bot, args: dict, user_id: str) -> str:
+    """Handler for the batch_set_reminders AI tool."""
+    reminders_cog = bot.get_cog("Reminders")
+    if not reminders_cog:
+        return "Error: Reminders cog is unavailable."
+
+    raw_reminders = args.get("reminders")
+    if not raw_reminders or not isinstance(raw_reminders, list):
+        return "Error: 'reminders' must be a non-empty list of reminder items."
+
+    tz = str(args.get("timezone") or args.get("tz") or "").strip()
+    return await reminders_cog.add_reminders_batch(
+        user_id=user_id,
+        reminders=raw_reminders,
+        user_tz=tz or None,
+        for_discord=True,
+    )
+
 

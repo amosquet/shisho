@@ -26,10 +26,12 @@ from tools.recommendations import (
 )
 from tools.reminders import (
     SET_REMINDER_TOOL,
+    BATCH_SET_REMINDERS_TOOL,
     LIST_REMINDERS_TOOL,
     UPDATE_REMINDER_TOOL,
     DELETE_REMINDER_TOOL,
     handle_set_reminder,
+    handle_batch_set_reminders,
     handle_list_reminders,
     handle_update_reminder,
     handle_delete_reminder,
@@ -96,6 +98,18 @@ from tools.anki import (
     handle_create_anki_deck,
     handle_vault_export_anki_deck,
 )
+from tools.ical import (
+    CREATE_ICAL_EVENT_TOOL,
+    CREATE_ICAL_TODO_TOOL,
+    EXPORT_REMINDERS_ICAL_TOOL,
+    handle_create_ical_event,
+    handle_create_ical_todo,
+    handle_export_reminders_ical,
+)
+from tools.reading_pacer import (
+    GENERATE_READING_PLAN_TOOL,
+    handle_generate_reading_plan,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -104,6 +118,7 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     UPDATE_BOOK_TOOL,
     DELETE_BOOK_TOOL,
     SET_REMINDER_TOOL,
+    BATCH_SET_REMINDERS_TOOL,
     LIST_REMINDERS_TOOL,
     UPDATE_REMINDER_TOOL,
     DELETE_REMINDER_TOOL,
@@ -135,6 +150,10 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     VAULT_GET_BACKLINKS_TOOL,
     CREATE_ANKI_DECK_TOOL,
     VAULT_EXPORT_ANKI_DECK_TOOL,
+    CREATE_ICAL_EVENT_TOOL,
+    CREATE_ICAL_TODO_TOOL,
+    EXPORT_REMINDERS_ICAL_TOOL,
+    GENERATE_READING_PLAN_TOOL,
 ]
 
 AI_CHAT_TOOLS: list[types.Tool] = [
@@ -151,6 +170,7 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "add_recommendation": handle_add_recommendation,
     "delete_recommendation": handle_delete_recommendation,
     "set_reminder": handle_set_reminder,
+    "batch_set_reminders": handle_batch_set_reminders,
     "list_reminders": handle_list_reminders,
     "update_reminder": handle_update_reminder,
     "delete_reminder": handle_delete_reminder,
@@ -179,6 +199,10 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "vault_get_backlinks": handle_vault_get_backlinks,
     "create_anki_deck": handle_create_anki_deck,
     "vault_export_anki_deck": handle_vault_export_anki_deck,
+    "create_ical_event": handle_create_ical_event,
+    "create_ical_todo": handle_create_ical_todo,
+    "export_reminders_ical": handle_export_reminders_ical,
+    "generate_reading_plan": handle_generate_reading_plan,
 }
 
 
