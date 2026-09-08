@@ -14,6 +14,7 @@ from google.genai import types
 import sentry_sdk
 
 from utils.discord_helpers import is_user_authorized, split_message
+from utils.gemini_files import stage_or_inline_part
 from utils.llm import (
     get_gemini_client,
     get_gemini_model,
@@ -138,7 +139,14 @@ class Flashcards(commands.Cog):
                 elif file.filename.lower().endswith((".txt", ".md", ".csv")):
                     mime = "text/plain"
                 
-                parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime))
+                part = await stage_or_inline_part(
+                    self.client,
+                    filename=file.filename,
+                    file_bytes=file_bytes,
+                    mime_type=mime,
+                    attachment_id=getattr(file, "id", None),
+                )
+                parts.append(part)
                 source_desc = f"uploaded file `{file.filename}`"
                 if not deck_name:
                     deck_name = os.path.splitext(file.filename)[0].replace("_", " ").title()
@@ -293,7 +301,14 @@ class Flashcards(commands.Cog):
                     mime = "application/pdf"
                 elif att.filename.lower().endswith((".txt", ".md", ".csv")):
                     mime = "text/plain"
-                parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime))
+                part = await stage_or_inline_part(
+                    self.client,
+                    filename=att.filename,
+                    file_bytes=file_bytes,
+                    mime_type=mime,
+                    attachment_id=getattr(att, "id", None),
+                )
+                parts.append(part)
             except Exception as e:
                 print(f"Error reading attachment for flashcards: {e}")
 
@@ -309,7 +324,18 @@ class Flashcards(commands.Cog):
                     try:
                         att_bytes = await att.read()
                         mime = att.content_type or "application/pdf"
-                        parts.append(types.Part.from_bytes(data=att_bytes, mime_type=mime))
+                        if att.filename.lower().endswith(".pdf"):
+                            mime = "application/pdf"
+                        elif att.filename.lower().endswith((".txt", ".md", ".csv")):
+                            mime = "text/plain"
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=att.filename,
+                            file_bytes=att_bytes,
+                            mime_type=mime,
+                            attachment_id=getattr(att, "id", None),
+                        )
+                        parts.append(part)
                     except Exception:
                         pass
             except Exception:

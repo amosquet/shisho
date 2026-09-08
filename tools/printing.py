@@ -6,6 +6,7 @@ import os
 import sentry_sdk
 from google.genai import types
 from utils.db import run_in_executor
+from utils.pdf import compile_text_to_pdf, is_pdf
 
 
 PRINT_DOCUMENT_TOOL = types.FunctionDeclaration(
@@ -29,6 +30,11 @@ PRINT_DOCUMENT_TOOL = types.FunctionDeclaration(
             "vault_path": types.Schema(
                 type=types.Type.STRING,
                 description="Optional relative path or note title in the Obsidian vault to print (e.g. 'Biology/Lecture Note.md', 'biology lecture note')",
+            ),
+            "paper_size": types.Schema(
+                type=types.Type.STRING,
+                description="Optional paper size for printing: 'letter' (default, 8.5x11 in) or 'legal' (8.5x14 in)",
+                enum=["letter", "legal"],
             ),
         },
     ),
@@ -193,6 +199,8 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
     filename = str(args.get("filename") or "").strip()
     note_id = str(args.get("note_id") or "").strip()
     vault_path = str(args.get("vault_path") or "").strip()
+    raw_paper_size = str(args.get("paper_size") or "letter").strip().lower()
+    paper_size = "legal" if raw_paper_size == "legal" else "letter"
 
     file_bytes = b""
     attachments = (context or {}).get("attachments", []) if isinstance(context, dict) else []
@@ -207,7 +215,8 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
 
         if matched_att:
             file_bytes = matched_att.get("bytes", b"")
-            filename = matched_att.get("filename", filename or "attachment.pdf")
+            fallback_name = "attachment.pdf" if is_pdf(file_bytes) else "attachment.txt"
+            filename = matched_att.get("filename") or filename or fallback_name
 
     # 2. Check note_id if no attachment matched
     if not file_bytes and note_id:
@@ -218,7 +227,7 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                 n = notes[0]
                 if n.get("attachment_urls") and len(n["attachment_urls"]) > 0:
                     att_url = n["attachment_urls"][0]
-                    att_name = n["attachment_filenames"][0] if n.get("attachment_filenames") else "note_attachment.pdf"
+                    att_name = n["attachment_filenames"][0] if n.get("attachment_filenames") else ""
                     headers = {}
                     if n.get("file_token"):
                         headers["Authorization"] = n["file_token"]
@@ -228,7 +237,8 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                             async with session.get(att_url, headers=headers) as resp:
                                 if resp.status == 200:
                                     file_bytes = await resp.read()
-                                    filename = att_name
+                                    fallback_name = "note_attachment.pdf" if is_pdf(file_bytes) else "note_attachment.txt"
+                                    filename = att_name or fallback_name
                     except Exception as e:
                         sentry_sdk.capture_exception(e)
 
@@ -316,12 +326,28 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
     if not filename:
         filename = "document.txt"
 
+    # PDF validation and on-the-fly compilation:
+    # If filename ends with .pdf but data is not a valid PDF binary, compile text/markdown into PDF.
+    if filename.lower().endswith(".pdf"):
+        if not is_pdf(file_bytes):
+            try:
+                text_content = file_bytes.decode("utf-8")
+                doc_title = os.path.splitext(filename)[0].replace("_", " ").title()
+                file_bytes = compile_text_to_pdf(
+                    text_content, title=doc_title, paper_size=paper_size
+                )
+            except Exception as pdf_err:
+                sentry_sdk.capture_exception(pdf_err)
+                # If compilation fails or content cannot be decoded as UTF-8, sanitize extension to .txt
+                filename = os.path.splitext(filename)[0] + ".txt"
+
     try:
         success, res_id = await run_in_executor(
             print_cog._add_to_pocketbase,
             file_bytes,
             filename,
             str(user_id),
+            paper_size,
         )
         if success:
             return f"Successfully added '{filename}' to the PocketBase Realtime print queue."

@@ -25,6 +25,12 @@ from utils.discord_helpers import (
     remove_user_from_whitelist,
     split_message,
 )
+from utils.gemini_files import (
+    DEFAULT_STAGING_THRESHOLD_BYTES,
+    GeminiFileCache,
+    get_gemini_file_cache,
+    stage_or_inline_part,
+)
 from utils.llm import (
     DEFAULT_GEMINI_MODEL,
     format_gemini_error,
@@ -33,10 +39,17 @@ from utils.llm import (
     get_gemini_model,
     is_transient_error,
 )
+from utils.pdf import (
+    compile_text_to_pdf,
+    is_pdf,
+)
 
 __all__ = [
     "BodyDict",
+    "compile_text_to_pdf",
     "DEFAULT_GEMINI_MODEL",
+    "DEFAULT_STAGING_THRESHOLD_BYTES",
+    "GeminiFileCache",
     "MultiFileUpload",
     "add_user_to_whitelist",
     "async_add_user_to_whitelist",
@@ -48,15 +61,18 @@ __all__ = [
     "get_cog_whitelist",
     "get_discord_user_id",
     "get_gemini_client",
+    "get_gemini_file_cache",
     "get_gemini_model",
     "get_pb_client",
     "get_pb_url",
     "get_pb_user_discord_id",
+    "is_pdf",
     "is_transient_error",
     "is_user_authorized",
     "prepare_file_upload_payload",
     "remove_user_from_whitelist",
     "run_in_executor",
     "split_message",
+    "stage_or_inline_part",
     "validate_pb_token",
 ]

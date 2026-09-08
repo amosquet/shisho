@@ -13,6 +13,7 @@ from google.genai import errors, types
 
 from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
 from utils.discord_helpers import split_message, is_user_authorized, format_for_discord
+from utils.gemini_files import stage_or_inline_part, get_gemini_file_cache
 from utils.llm import (
     get_gemini_client,
     get_gemini_model,
@@ -229,6 +230,7 @@ class AIChat(commands.Cog):
         message: discord.Message,
         is_prefix: bool = False,
         attachments_out: list[dict] | None = None,
+        force_stage: bool = False,
     ) -> list[types.Part]:
         parts: list[types.Part] = []
 
@@ -252,19 +254,44 @@ class AIChat(commands.Cog):
 
         # Check for audio, image, and document attachments
         for att in getattr(message, "attachments", []):
+            att_id = getattr(att, "id", None)
+
+            # Optimization: If force_stage is True and attachments_out is None,
+            # check if we already have a cached URI before downloading bytes from Discord CDN
+            if force_stage and attachments_out is None and att_id is not None:
+                cached = get_gemini_file_cache().get(f"att_{att_id}")
+                if cached and cached.get("uri"):
+                    target_mime = (
+                        cached.get("mime_type")
+                        or self._get_document_mime(att.filename, att.content_type)
+                        or self._get_image_mime(att.filename, att.content_type)
+                        or self._get_audio_mime(att.filename, att.content_type)
+                    )
+                    if target_mime:
+                        parts.append(types.Part.from_uri(file_uri=cached["uri"], mime_type=target_mime))
+                        continue
+
             # Check audio
             audio_mime = self._get_audio_mime(att.filename, att.content_type)
             if audio_mime:
                 try:
                     audio_bytes = await att.read()
                     if audio_bytes:
-                        parts.append(types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime))
                         if attachments_out is not None:
                             attachments_out.append({
                                 "filename": att.filename,
                                 "bytes": audio_bytes,
                                 "content_type": audio_mime,
                             })
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=att.filename,
+                            file_bytes=audio_bytes,
+                            mime_type=audio_mime,
+                            attachment_id=att_id,
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
                 except Exception as e:
                     print(f"Failed to read audio attachment {att.filename}: {e}")
                     sentry_sdk.capture_exception(e)
@@ -276,13 +303,21 @@ class AIChat(commands.Cog):
                 try:
                     image_bytes = await att.read()
                     if image_bytes:
-                        parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime))
                         if attachments_out is not None:
                             attachments_out.append({
                                 "filename": att.filename,
                                 "bytes": image_bytes,
                                 "content_type": image_mime,
                             })
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=att.filename,
+                            file_bytes=image_bytes,
+                            mime_type=image_mime,
+                            attachment_id=att_id,
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
                 except Exception as e:
                     print(f"Failed to read image attachment {att.filename}: {e}")
                     sentry_sdk.capture_exception(e)
@@ -294,14 +329,21 @@ class AIChat(commands.Cog):
                 try:
                     doc_bytes = await att.read()
                     if doc_bytes:
-                        if len(doc_bytes) <= 20 * 1024 * 1024:
-                            parts.append(types.Part.from_bytes(data=doc_bytes, mime_type=doc_mime))
                         if attachments_out is not None:
                             attachments_out.append({
                                 "filename": att.filename,
                                 "bytes": doc_bytes,
                                 "content_type": doc_mime,
                             })
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=att.filename,
+                            file_bytes=doc_bytes,
+                            mime_type=doc_mime,
+                            attachment_id=att_id,
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
                 except Exception as e:
                     print(f"Failed to read document attachment {att.filename}: {e}")
                     sentry_sdk.capture_exception(e)
@@ -651,7 +693,7 @@ class AIChat(commands.Cog):
                         })
             else:
                 curr_atts_out = attachments_out if msg.id == message.id else None
-                parts = await self._extract_message_parts(msg, is_prefix=False, attachments_out=curr_atts_out)
+                parts = await self._extract_message_parts(msg, is_prefix=False, attachments_out=curr_atts_out, force_stage=True)
                 author_name = getattr(msg.author, "display_name", "User")
                 author_handle = getattr(msg.author, "name", "")
                 author_id = getattr(msg.author, "id", "")
@@ -739,7 +781,7 @@ class AIChat(commands.Cog):
                             "parts": [types.Part.from_text(text=content)]
                         })
                 else:
-                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True, attachments_out=None)
+                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True, attachments_out=None, force_stage=True)
                     if user_parts:
                         author_name = getattr(starter_msg.author, "display_name", "User")
                         author_handle = getattr(starter_msg.author, "name", "")
@@ -784,7 +826,7 @@ class AIChat(commands.Cog):
                                 "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
                             })
                 else:
-                    user_parts = await self._extract_message_parts(msg, is_prefix=True, attachments_out=None)
+                    user_parts = await self._extract_message_parts(msg, is_prefix=True, attachments_out=None, force_stage=True)
                     if user_parts:
                         author_name = getattr(msg.author, "display_name", "User")
                         author_handle = getattr(msg.author, "name", "")
@@ -951,8 +993,11 @@ class AIChat(commands.Cog):
             await ctx.send("Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
             return
 
+        is_in_thread = isinstance(ctx.channel, discord.Thread)
         attachments_out: list[dict] = []
-        parts = await self._extract_message_parts(ctx.message, is_prefix=True, attachments_out=attachments_out)
+        parts = await self._extract_message_parts(
+            ctx.message, is_prefix=True, attachments_out=attachments_out, force_stage=is_in_thread
+        )
         if not parts:
             await ctx.send("Please provide a question, prompt, image, audio, or file attachment.")
             return
@@ -1100,6 +1145,7 @@ class AIChat(commands.Cog):
             await interaction.response.send_message("Gemini API key is not configured.", ephemeral=True)
             return
 
+        force_stage = isinstance(interaction.channel, discord.Thread)
         parts: list[types.Part] = []
         attachments_out: list[dict] = []
 
@@ -1109,12 +1155,20 @@ class AIChat(commands.Cog):
                 try:
                     img_bytes = await image.read()
                     if img_bytes:
-                        parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime))
                         attachments_out.append({
                             "filename": image.filename,
                             "bytes": img_bytes,
                             "content_type": mime,
                         })
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=image.filename,
+                            file_bytes=img_bytes,
+                            mime_type=mime,
+                            attachment_id=getattr(image, "id", None),
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
                 except Exception as e:
                     print(f"Failed to read slash image attachment: {e}")
                     sentry_sdk.capture_exception(e)
@@ -1125,12 +1179,20 @@ class AIChat(commands.Cog):
                 try:
                     audio_bytes = await audio.read()
                     if audio_bytes:
-                        parts.append(types.Part.from_bytes(data=audio_bytes, mime_type=mime))
                         attachments_out.append({
                             "filename": audio.filename,
                             "bytes": audio_bytes,
                             "content_type": mime,
                         })
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=audio.filename,
+                            file_bytes=audio_bytes,
+                            mime_type=mime,
+                            attachment_id=getattr(audio, "id", None),
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
                 except Exception as e:
                     print(f"Failed to read slash audio attachment: {e}")
                     sentry_sdk.capture_exception(e)
@@ -1140,13 +1202,21 @@ class AIChat(commands.Cog):
             try:
                 file_bytes = await file.read()
                 if file_bytes:
-                    if len(file_bytes) <= 20 * 1024 * 1024 and doc_mime != "application/octet-stream":
-                        parts.append(types.Part.from_bytes(data=file_bytes, mime_type=doc_mime))
                     attachments_out.append({
                         "filename": file.filename,
                         "bytes": file_bytes,
                         "content_type": doc_mime,
                     })
+                    if doc_mime != "application/octet-stream":
+                        part = await stage_or_inline_part(
+                            self.client,
+                            filename=file.filename,
+                            file_bytes=file_bytes,
+                            mime_type=doc_mime,
+                            attachment_id=getattr(file, "id", None),
+                            force_stage=force_stage,
+                        )
+                        parts.append(part)
             except Exception as e:
                 print(f"Failed to read slash file attachment: {e}")
                 sentry_sdk.capture_exception(e)
@@ -1426,7 +1496,7 @@ class AIChat(commands.Cog):
                             )
                         if not contents:
                             parts = await self._extract_message_parts(
-                                message, is_prefix=False, attachments_out=None
+                                message, is_prefix=False, attachments_out=None, force_stage=True
                             )
                             if parts:
                                 contents = [types.Content(role="user", parts=parts)]

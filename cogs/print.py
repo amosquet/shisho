@@ -16,6 +16,7 @@ from utils.db import (
     run_in_executor,
 )
 from utils.discord_helpers import is_user_authorized
+from utils.pdf import compile_text_to_pdf, is_pdf
 
 
 class RetryPrintWithEmailView(discord.ui.View):
@@ -126,14 +127,22 @@ class PrintCog(commands.Cog, name="Print"):
             server.send_message(msg)
 
     def _add_to_pocketbase(
-        self, file_bytes: bytes, filename: str, requester_discord_id: str
+        self,
+        file_bytes: bytes,
+        filename: str,
+        requester_discord_id: str,
+        paper_size: str = "letter",
     ) -> tuple[bool, str]:
         """Create a print_jobs record in PocketBase."""
         pb = get_pb_client()
+        norm_paper_size = (paper_size or "letter").strip().lower()
+        if norm_paper_size not in ("letter", "legal"):
+            norm_paper_size = "letter"
         entry = {
             "filename": filename,
             "status": "queued",
             "requester_discord_id": str(requester_discord_id),
+            "paper_size": norm_paper_size,
         }
         files = {"file": (filename, file_bytes)}
         payload = prepare_file_upload_payload(entry, files)
@@ -145,8 +154,24 @@ class PrintCog(commands.Cog, name="Print"):
         interaction: discord.Interaction,
         filename: str,
         file_bytes: bytes,
+        paper_size: str = "letter",
     ):
         """Attempt to queue print job in PocketBase, offering email retry on failure."""
+        norm_paper_size = (paper_size or "letter").strip().lower()
+        if norm_paper_size not in ("letter", "legal"):
+            norm_paper_size = "letter"
+
+        if filename.lower().endswith(".pdf") and not is_pdf(file_bytes):
+            try:
+                text_content = file_bytes.decode("utf-8")
+                doc_title = os.path.splitext(filename)[0].replace("_", " ").title()
+                file_bytes = compile_text_to_pdf(
+                    text_content, title=doc_title, paper_size=norm_paper_size
+                )
+            except Exception as pdf_err:
+                sentry_sdk.capture_exception(pdf_err)
+                filename = os.path.splitext(filename)[0] + ".txt"
+
         pb_success = False
         error_reason = ""
 
@@ -156,6 +181,7 @@ class PrintCog(commands.Cog, name="Print"):
                 file_bytes,
                 filename,
                 str(interaction.user.id),
+                norm_paper_size,
             )
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -190,6 +216,13 @@ class PrintCog(commands.Cog, name="Print"):
         file="File attachment to print (PDF, TXT, PNG, JPG)",
         note_id="Optional: Print an existing saved note by ID or keyword",
         text="Optional: Direct text snippet to print",
+        paper_size="Paper size to print on (Letter or Legal, default: Letter)",
+    )
+    @app_commands.choices(
+        paper_size=[
+            app_commands.Choice(name="Letter", value="letter"),
+            app_commands.Choice(name="Legal", value="legal"),
+        ]
     )
     async def print_command(
         self,
@@ -197,8 +230,15 @@ class PrintCog(commands.Cog, name="Print"):
         file: discord.Attachment | None = None,
         note_id: str | None = None,
         text: str | None = None,
+        paper_size: app_commands.Choice[str] = None,
     ):
         await interaction.response.defer(ephemeral=True)
+
+        paper_size_val = (
+            paper_size.value
+            if isinstance(paper_size, app_commands.Choice)
+            else (paper_size or "letter")
+        )
 
         if not file and not note_id and not text:
             await interaction.followup.send(
@@ -248,7 +288,7 @@ class PrintCog(commands.Cog, name="Print"):
             # Check if note has an attachment to print
             if note.get("attachment_urls") and len(note["attachment_urls"]) > 0:
                 att_url = note["attachment_urls"][0]
-                att_name = note["attachment_filenames"][0] if note.get("attachment_filenames") else "note_attachment.pdf"
+                att_name = note["attachment_filenames"][0] if note.get("attachment_filenames") else ""
                 headers = {}
                 if note.get("file_token"):
                     headers["Authorization"] = note["file_token"]
@@ -258,7 +298,8 @@ class PrintCog(commands.Cog, name="Print"):
                         async with session.get(att_url, headers=headers) as resp:
                             if resp.status == 200:
                                 file_bytes = await resp.read()
-                                filename = att_name
+                                fallback_name = "note_attachment.pdf" if is_pdf(file_bytes) else "note_attachment.txt"
+                                filename = att_name or fallback_name
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
 
@@ -274,7 +315,9 @@ class PrintCog(commands.Cog, name="Print"):
             filename = "print_text.txt"
             file_bytes = text.encode("utf-8")
 
-        await self.queue_or_fallback(interaction, filename, file_bytes)
+        await self.queue_or_fallback(
+            interaction, filename, file_bytes, paper_size=paper_size_val
+        )
 
     async def print_attachment_ctx(
         self, interaction: discord.Interaction, message: discord.Message
@@ -316,7 +359,9 @@ class PrintCog(commands.Cog, name="Print"):
                 "utf-8"
             )
 
-        await self.queue_or_fallback(interaction, filename, file_bytes)
+        await self.queue_or_fallback(
+            interaction, filename, file_bytes, paper_size="letter"
+        )
 
     async def get_print_jobs(
         self, user_id: str, status: str = "all", limit: int = 10
@@ -339,6 +384,7 @@ class PrintCog(commands.Cog, name="Print"):
                     "status": getattr(r, "status", "queued"),
                     "requester_discord_id": getattr(r, "requester_discord_id", ""),
                     "error_message": getattr(r, "error_message", None),
+                    "paper_size": getattr(r, "paper_size", "letter"),
                     "created": getattr(r, "created", ""),
                     "updated": getattr(r, "updated", ""),
                 })
