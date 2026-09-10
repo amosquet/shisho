@@ -349,3 +349,27 @@ def is_user_authorized(user_id: Union[int, str], cog_name: str) -> bool:
         return False
 
     return not owner_id
+
+
+def render_footer(
+    duration_s: float | None = None,
+    total_tokens: int | None = None,
+    tool_calls: int = 0,
+) -> str:
+    """
+    Format execution telemetry (duration, tokens consumed, tool calls)
+    into a Discord subtext footer using the '-# ' syntax.
+
+    Example: '-# 4.2s · 1,482 tokens · 2 tool calls'
+    """
+    parts: list[str] = []
+    if isinstance(duration_s, (int, float)) and duration_s >= 0:
+        parts.append(f"{duration_s:.1f}s")
+    if isinstance(total_tokens, (int, float)) and total_tokens > 0:
+        parts.append(f"{int(total_tokens):,} tokens")
+    if isinstance(tool_calls, (int, float)) and tool_calls > 0:
+        parts.append(f"{int(tool_calls)} tool call{'s' if int(tool_calls) != 1 else ''}")
+    if not parts:
+        return ""
+    return f"-# {' · '.join(parts)}"
+

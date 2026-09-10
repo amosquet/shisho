@@ -6,6 +6,7 @@ Enables creating Anki flashcards (.apkg) from uploaded PDFs, Obsidian vault note
 import io
 import os
 import re
+import time
 from typing import List, Optional
 import discord
 from discord import app_commands
@@ -13,7 +14,7 @@ from discord.ext import commands
 from google.genai import types
 import sentry_sdk
 
-from utils.discord_helpers import is_user_authorized, split_message
+from utils.discord_helpers import is_user_authorized, split_message, render_footer
 from utils.gemini_files import stage_or_inline_part
 from utils.llm import (
     get_gemini_client,
@@ -345,6 +346,16 @@ class Flashcards(commands.Cog):
             await ctx.send("Please provide a topic/prompt or attach a document/PDF to generate flashcards.")
             return
 
+        # Post immediate acknowledgment
+        ack_msg = None
+        try:
+            ack_msg = await ctx.reply("Working on it...")
+        except Exception:
+            try:
+                ack_msg = await ctx.send("Working on it...")
+            except Exception:
+                ack_msg = None
+
         clean_prompt = prompt.strip() or "Generate study flashcards"
         parts.append(
             types.Part.from_text(
@@ -352,6 +363,7 @@ class Flashcards(commands.Cog):
             )
         )
 
+        start_time = time.monotonic()
         async with ctx.typing():
             try:
                 exec_context = {
@@ -374,10 +386,26 @@ class Flashcards(commands.Cog):
                     config=config,
                 )
 
+                total_tokens = 0
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    um = response.usage_metadata
+                    turn_tokens = getattr(um, "total_token_count", None)
+                    if isinstance(turn_tokens, (int, float)):
+                        total_tokens = int(turn_tokens)
+                    else:
+                        p = getattr(um, "prompt_token_count", 0)
+                        c = getattr(um, "candidates_token_count", 0)
+                        p_val = int(p) if isinstance(p, (int, float)) else 0
+                        c_val = int(c) if isinstance(c, (int, float)) else 0
+                        if p_val or c_val:
+                            total_tokens = p_val + c_val
+
                 function_calls = response.function_calls or []
                 tool_output_msg = ""
+                tool_calls_count = 0
                 for fc in function_calls:
                     if fc.name in TOOL_HANDLERS:
+                        tool_calls_count += 1
                         tool_res = await execute_tool(
                             self.bot, fc.name, fc.args or {}, user_id_str, context=exec_context
                         )
@@ -389,18 +417,71 @@ class Flashcards(commands.Cog):
                     for f in out_files
                 ]
 
+                duration_s = time.monotonic() - start_time
+                footer = render_footer(
+                    duration_s=duration_s,
+                    total_tokens=total_tokens,
+                    tool_calls=tool_calls_count,
+                )
+
                 final_text = tool_output_msg.strip() or (response.text or "Flashcards generated!")
+                if footer:
+                    final_text = f"{final_text.rstrip()}\n\n{footer}"
+
                 chunks = split_message(final_text)
 
-                for idx, chunk in enumerate(chunks):
-                    if idx == 0 and discord_files:
-                        await ctx.send(chunk, files=discord_files)
-                    else:
-                        await ctx.send(chunk)
+                files_to_send = list(discord_files)
+                if ack_msg:
+                    edit_succeeded = False
+                    try:
+                        if files_to_send:
+                            await ack_msg.edit(content=chunks[0], attachments=files_to_send)
+                        else:
+                            await ack_msg.edit(content=chunks[0])
+                        files_to_send = []
+                        edit_succeeded = True
+                    except Exception:
+                        if files_to_send:
+                            try:
+                                await ack_msg.edit(content=chunks[0])
+                                edit_succeeded = True
+                            except Exception:
+                                pass
+
+                    if not edit_succeeded:
+                        if files_to_send:
+                            await ctx.send(chunks[0], files=files_to_send)
+                        else:
+                            await ctx.send(chunks[0])
+                        files_to_send = []
+
+                    for chunk in chunks[1:]:
+                        if files_to_send:
+                            await ctx.send(chunk, files=files_to_send)
+                            files_to_send = []
+                        else:
+                            await ctx.send(chunk)
+                else:
+                    for idx, chunk in enumerate(chunks):
+                        if idx == 0 and files_to_send:
+                            await ctx.send(chunk, files=files_to_send)
+                            files_to_send = []
+                        else:
+                            await ctx.send(chunk)
+
+                if files_to_send:
+                    await ctx.send(files=files_to_send)
 
             except Exception as e:
                 sentry_sdk.capture_exception(e)
-                await ctx.send(format_gemini_error(e, include_details=False))
+                err_text = format_gemini_error(e, include_details=False)
+                if ack_msg:
+                    try:
+                        await ack_msg.edit(content=err_text)
+                    except Exception:
+                        await ctx.send(err_text)
+                else:
+                    await ctx.send(err_text)
 
 
 async def setup(bot):

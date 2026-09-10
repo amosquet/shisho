@@ -23,6 +23,7 @@ from utils.discord_helpers import (
     get_cog_whitelist,
     is_user_authorized,
     remove_user_from_whitelist,
+    render_footer,
     split_message,
 )
 from utils.gemini_files import (
@@ -71,6 +72,7 @@ __all__ = [
     "is_user_authorized",
     "prepare_file_upload_payload",
     "remove_user_from_whitelist",
+    "render_footer",
     "run_in_executor",
     "split_message",
     "stage_or_inline_part",

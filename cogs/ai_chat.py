@@ -3,6 +3,7 @@ import io
 import mimetypes
 import os
 import re
+import time
 from datetime import datetime
 
 import discord
@@ -12,7 +13,12 @@ from discord.ext import commands
 from google.genai import errors, types
 
 from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
-from utils.discord_helpers import split_message, is_user_authorized, format_for_discord
+from utils.discord_helpers import (
+    split_message,
+    is_user_authorized,
+    format_for_discord,
+    render_footer,
+)
 from utils.gemini_files import stage_or_inline_part, get_gemini_file_cache
 from utils.llm import (
     get_gemini_client,
@@ -107,7 +113,8 @@ class AIChat(commands.Cog):
             "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly for the user without asking for clarification. When printing an attached document, specify the exact filename of the attachment if known.\n"
             "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly.\n"
             "12. DISCORD MARKDOWN & NO LATEX: You are outputting directly into Discord chat. Discord does NOT support LaTeX or MathJax equations. NEVER use LaTeX tags or delimiters (do NOT use `$$...$$`, `$...$`, `\\text{}`, `\\mathbf{}`, `\\times`, `\\approx`, `\\frac{}{}`). Format all calculations, math, formulas, and balance breakdowns using standard plain text, clean Unicode (×, ÷, ≈, ±, ≤, ≥, °), and Discord markdown (**bold**, `inline code`, code blocks). Write currency amounts normally (e.g. $1,484.63) without LaTeX syntax.\n"
-            "13. DISCORD SLASH COMMANDS & ACCOUNT MANAGEMENT: When a user asks about account management, account details/profile, registration, PIN resets, or actions for which Shisho has a dedicated slash command without a natural language AI tool, inform and guide them to the appropriate slash command directly (e.g. `/account` to view their linked account details/email/registration, `/register` to link/create a Shisho account, `/resetpin` to regenerate their companion app PIN, `/check_authors` to check for author releases, `/force_sync` to sync book metadata, or `/ping` for latency). Do not search notes or claim account info does not exist when the user is simply looking for their Shisho profile."
+            "13. DISCORD SLASH COMMANDS & ACCOUNT MANAGEMENT: When a user asks about account management, account details/profile, registration, PIN resets, or actions for which Shisho has a dedicated slash command without a natural language AI tool, inform and guide them to the appropriate slash command directly (e.g. `/account` to view their linked account details/email/registration, `/register` to link/create a Shisho account, `/resetpin` to regenerate their companion app PIN, `/check_authors` to check for author releases, `/force_sync` to sync book metadata, or `/ping` for latency). Do not search notes or claim account info does not exist when the user is simply looking for their Shisho profile.\n"
+            "14. ACTION & TOOL CONFIRMATIONS: When the user commands you to perform an action or tool operation (such as transcribing and saving documents into the Obsidian vault, updating notes/reading lists, setting reminders, adding books, or printing): once the task is completed, respond with a concise confirmation—either 'Done' or a brief 1-2 sentence summary of what was accomplished (such as the created note title and vault path). Avoid conversational filler or unnecessary preamble."
         )
 
         if base_prompt:
@@ -911,12 +918,132 @@ class AIChat(commands.Cog):
     ) -> str:
         return await execute_tool(self.bot, name, args, user_id, context=context)
 
+    async def _deliver_response(
+        self,
+        channel: discord.abc.Messageable,
+        text: str,
+        ack_msg: discord.Message | None = None,
+        discord_files: list[discord.File] | None = None,
+        reply_to: discord.Message | None = None,
+        telemetry: dict | None = None,
+    ) -> list[discord.Message]:
+        """
+        Delivers an AI response to a Discord channel or thread.
+        If ack_msg is provided, it edits ack_msg in-place with the first chunk (and any files),
+        and sends overflow chunks to the channel.
+        If text is empty or '[NO_ACTION]', deletes ack_msg (if present) and returns empty list.
+        Appends the telemetry footer (time, tokens, tool calls) to the final response.
+        """
+        if not text or text.strip() == "[NO_ACTION]":
+            if ack_msg:
+                try:
+                    await ack_msg.delete()
+                except Exception:
+                    pass
+            return []
+
+        full_text = text.rstrip()
+        if telemetry:
+            footer = render_footer(
+                duration_s=telemetry.get("duration_s"),
+                total_tokens=telemetry.get("total_tokens"),
+                tool_calls=telemetry.get("tool_calls", 0),
+            )
+            if footer:
+                full_text = f"{full_text}\n\n{footer}"
+
+        chunks = split_message(full_text)
+        if not chunks:
+            chunks = ["Done."]
+
+        sent_messages: list[discord.Message] = []
+        files_to_send = list(discord_files) if discord_files else []
+
+        # Deliver the first chunk
+        if ack_msg:
+            edit_succeeded = False
+            try:
+                if files_to_send:
+                    edited = await ack_msg.edit(content=chunks[0], attachments=files_to_send)
+                else:
+                    edited = await ack_msg.edit(content=chunks[0])
+                sent_messages.append(edited)
+                files_to_send = []
+                edit_succeeded = True
+            except Exception:
+                if files_to_send:
+                    try:
+                        edited = await ack_msg.edit(content=chunks[0])
+                        sent_messages.append(edited)
+                        edit_succeeded = True
+                    except Exception:
+                        pass
+
+            if not edit_succeeded:
+                try:
+                    if reply_to and hasattr(reply_to, "reply"):
+                        if files_to_send:
+                            msg = await reply_to.reply(chunks[0], files=files_to_send)
+                        else:
+                            msg = await reply_to.reply(chunks[0])
+                    else:
+                        if files_to_send:
+                            msg = await channel.send(chunks[0], files=files_to_send)
+                        else:
+                            msg = await channel.send(chunks[0])
+                    sent_messages.append(msg)
+                    files_to_send = []
+                except Exception:
+                    pass
+        else:
+            try:
+                if reply_to and hasattr(reply_to, "reply"):
+                    if files_to_send:
+                        msg = await reply_to.reply(chunks[0], files=files_to_send)
+                    else:
+                        msg = await reply_to.reply(chunks[0])
+                else:
+                    if files_to_send:
+                        msg = await channel.send(chunks[0], files=files_to_send)
+                    else:
+                        msg = await channel.send(chunks[0])
+                sent_messages.append(msg)
+                files_to_send = []
+            except Exception:
+                pass
+
+        # Deliver overflow chunks (chunks[1:])
+        for chunk in chunks[1:]:
+            try:
+                if files_to_send:
+                    msg = await channel.send(chunk, files=files_to_send)
+                    files_to_send = []
+                else:
+                    msg = await channel.send(chunk)
+                sent_messages.append(msg)
+            except Exception:
+                pass
+
+        # If any files were unable to be attached, send them now
+        if files_to_send:
+            try:
+                msg = await channel.send(files=files_to_send)
+                sent_messages.append(msg)
+            except Exception:
+                pass
+
+        return sent_messages
+
     async def _generate_ai_response(
         self,
         contents: list[types.Content] | str,
         user_id: str = "",
         context: dict | None = None,
     ) -> str:
+        start_time = time.monotonic()
+        total_tokens = 0
+        tool_calls_count = 0
+
         if isinstance(contents, str):
             contents_list = [
                 types.Content(
@@ -934,6 +1061,8 @@ class AIChat(commands.Cog):
 
         model_name = get_gemini_model()
         max_tool_turns = 5
+        response_text = ""
+        last_response = None
         for _ in range(max_tool_turns):
             response = await generate_content_with_retry(
                 self.client,
@@ -941,17 +1070,36 @@ class AIChat(commands.Cog):
                 contents=contents_list,
                 config=config,
             )
+            last_response = response
+
+            # Accumulate token usage if available
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                um = response.usage_metadata
+                turn_tokens = getattr(um, "total_token_count", None)
+                if isinstance(turn_tokens, (int, float)):
+                    total_tokens += int(turn_tokens)
+                else:
+                    p = getattr(um, "prompt_token_count", 0)
+                    c = getattr(um, "candidates_token_count", 0)
+                    p_val = int(p) if isinstance(p, (int, float)) else 0
+                    c_val = int(c) if isinstance(c, (int, float)) else 0
+                    if p_val or c_val:
+                        total_tokens += p_val + c_val
 
             # Check if the model requested any tool calls
             function_calls = response.function_calls
             if not function_calls:
-                return format_for_discord(response.text or "")
+                response_text = format_for_discord(response.text or "")
+                break
 
             valid_function_calls = [
                 fc for fc in function_calls if fc.name in TOOL_HANDLERS
             ]
             if not valid_function_calls:
-                return format_for_discord(response.text or "")
+                response_text = format_for_discord(response.text or "")
+                break
+
+            tool_calls_count += len(valid_function_calls)
 
             # Append the model turn that requested tool calls
             candidate_parts = []
@@ -982,7 +1130,18 @@ class AIChat(commands.Cog):
                 types.Content(role="user", parts=tool_response_parts)
             )
 
-        return format_for_discord(response.text or "")
+        if not response_text and last_response is not None:
+            response_text = format_for_discord(last_response.text or "")
+
+        duration_s = time.monotonic() - start_time
+        if context is not None:
+            context["telemetry"] = {
+                "duration_s": duration_s,
+                "total_tokens": total_tokens,
+                "tool_calls": tool_calls_count,
+            }
+
+        return response_text
 
     @commands.command(name="ask", help="Ask Gemini a question or send an image, audio, or document.")
     async def ask_prefix(self, ctx: commands.Context, *, prompt: str = ""):
@@ -1001,6 +1160,16 @@ class AIChat(commands.Cog):
         if not parts:
             await ctx.send("Please provide a question, prompt, image, audio, or file attachment.")
             return
+
+        # Post immediate acknowledgment
+        ack_msg = None
+        try:
+            ack_msg = await ctx.reply("Working on it...")
+        except Exception:
+            try:
+                ack_msg = await ctx.send("Working on it...")
+            except Exception:
+                ack_msg = None
 
         att_context = await self._gather_context_attachments(
             current_message=ctx.message,
@@ -1033,21 +1202,27 @@ class AIChat(commands.Cog):
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
-                        if not text:
-                            await ctx.send("Received empty response from Gemini.")
-                            return
                         discord_files = [
                             discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                             for f in exec_context.get("out_files", [])
                         ]
-                        chunks = split_message(text)
-                        for i, chunk in enumerate(chunks):
-                            if i == 0 and discord_files:
-                                await ctx.send(chunk, files=discord_files)
-                            else:
-                                await ctx.send(chunk)
+                        await self._deliver_response(
+                            channel=ctx.channel,
+                            text=text,
+                            ack_msg=ack_msg,
+                            discord_files=discord_files,
+                            reply_to=ctx.message,
+                            telemetry=exec_context.get("telemetry"),
+                        )
                     except Exception as e:
-                        await ctx.send(format_gemini_error(e, include_details=False))
+                        err_text = format_gemini_error(e, include_details=False)
+                        if ack_msg:
+                            try:
+                                await ack_msg.edit(content=err_text)
+                            except Exception:
+                                await ctx.send(err_text)
+                        else:
+                            await ctx.send(err_text)
             return
 
         # Case 2: Direct Message (Threads not supported in DMs)
@@ -1058,21 +1233,27 @@ class AIChat(commands.Cog):
                     text = await self._generate_ai_response(
                         contents, user_id=user_id_str, context=exec_context
                     )
-                    if not text:
-                        await ctx.send("Received empty response from Gemini.")
-                        return
                     discord_files = [
                         discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                         for f in exec_context.get("out_files", [])
                     ]
-                    chunks = split_message(text)
-                    for i, chunk in enumerate(chunks):
-                        if i == 0 and discord_files:
-                            await ctx.send(chunk, files=discord_files)
-                        else:
-                            await ctx.send(chunk)
+                    await self._deliver_response(
+                        channel=ctx.channel,
+                        text=text,
+                        ack_msg=ack_msg,
+                        discord_files=discord_files,
+                        reply_to=ctx.message,
+                        telemetry=exec_context.get("telemetry"),
+                    )
                 except Exception as e:
-                    await ctx.send(format_gemini_error(e, include_details=False))
+                    err_text = format_gemini_error(e, include_details=False)
+                    if ack_msg:
+                        try:
+                            await ack_msg.edit(content=err_text)
+                        except Exception:
+                            await ctx.send(err_text)
+                    else:
+                        await ctx.send(err_text)
             return
 
         # Case 3: Guild Text Channel (Create a thread)
@@ -1088,14 +1269,17 @@ class AIChat(commands.Cog):
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
                 )
-                if not text:
-                    await ctx.send("Received empty response from Gemini.")
-                    return
             except Exception as e:
-                await ctx.send(format_gemini_error(e, include_details=False))
+                err_text = format_gemini_error(e, include_details=False)
+                if ack_msg:
+                    try:
+                        await ack_msg.edit(content=err_text)
+                    except Exception:
+                        await ctx.send(err_text)
+                else:
+                    await ctx.send(err_text)
                 return
 
-            chunks = split_message(text)
             discord_files = [
                 discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                 for f in exec_context.get("out_files", [])
@@ -1114,17 +1298,27 @@ class AIChat(commands.Cog):
                     thread = None
 
             if thread:
-                for i, chunk in enumerate(chunks):
-                    if i == 0 and discord_files:
-                        await thread.send(chunk, files=discord_files)
-                    else:
-                        await thread.send(chunk)
+                if ack_msg:
+                    try:
+                        await ack_msg.edit(content=f"Created thread: {thread.mention}")
+                    except Exception:
+                        pass
+                await self._deliver_response(
+                    channel=thread,
+                    text=text,
+                    ack_msg=None,
+                    discord_files=discord_files,
+                    telemetry=exec_context.get("telemetry"),
+                )
             else:
-                for i, chunk in enumerate(chunks):
-                    if i == 0 and discord_files:
-                        await ctx.send(chunk, files=discord_files)
-                    else:
-                        await ctx.send(chunk)
+                await self._deliver_response(
+                    channel=ctx.channel,
+                    text=text,
+                    ack_msg=ack_msg,
+                    discord_files=discord_files,
+                    reply_to=ctx.message,
+                    telemetry=exec_context.get("telemetry"),
+                )
 
     @app_commands.command(name="ask", description="Send a prompt, image, audio, or document to the Gemini API")
     @app_commands.describe(
@@ -1265,6 +1459,15 @@ class AIChat(commands.Cog):
                     if not text:
                         await interaction.followup.send("Received empty response from Gemini.")
                         return
+                    telemetry = exec_context.get("telemetry")
+                    if telemetry:
+                        footer = render_footer(
+                            duration_s=telemetry.get("duration_s"),
+                            total_tokens=telemetry.get("total_tokens"),
+                            tool_calls=telemetry.get("tool_calls", 0),
+                        )
+                        if footer:
+                            text = f"{text.rstrip()}\n\n{footer}"
                     discord_files = [
                         discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                         for f in exec_context.get("out_files", [])
@@ -1289,6 +1492,15 @@ class AIChat(commands.Cog):
                 if not text:
                     await interaction.followup.send("Received empty response from Gemini.")
                     return
+                telemetry = exec_context.get("telemetry")
+                if telemetry:
+                    footer = render_footer(
+                        duration_s=telemetry.get("duration_s"),
+                        total_tokens=telemetry.get("total_tokens"),
+                        tool_calls=telemetry.get("tool_calls", 0),
+                    )
+                    if footer:
+                        text = f"{text.rstrip()}\n\n{footer}"
                 discord_files = [
                     discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                     for f in exec_context.get("out_files", [])
@@ -1316,6 +1528,15 @@ class AIChat(commands.Cog):
             await interaction.followup.send(format_gemini_error(e, include_details=True))
             return
 
+        telemetry = exec_context.get("telemetry")
+        if telemetry:
+            footer = render_footer(
+                duration_s=telemetry.get("duration_s"),
+                total_tokens=telemetry.get("total_tokens"),
+                tool_calls=telemetry.get("tool_calls", 0),
+            )
+            if footer:
+                text = f"{text.rstrip()}\n\n{footer}"
         chunks = split_message(text)
         discord_files = [
             discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
@@ -1464,6 +1685,17 @@ class AIChat(commands.Cog):
             return
 
         user_id_str = str(message.author.id)
+
+        # Post immediate acknowledgment before downloading attachments or invoking AI
+        ack_msg = None
+        try:
+            ack_msg = await message.reply("Working on it...")
+        except Exception:
+            try:
+                ack_msg = await message.channel.send("Working on it...")
+            except Exception:
+                ack_msg = None
+
         att_context = await self._gather_context_attachments(
             current_message=message,
             channel=message.channel,
@@ -1501,25 +1733,37 @@ class AIChat(commands.Cog):
                             if parts:
                                 contents = [types.Content(role="user", parts=parts)]
                         if not contents:
+                            if ack_msg:
+                                try:
+                                    await ack_msg.delete()
+                                except Exception:
+                                    pass
                             return
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
-                        if not text or text.strip() == "[NO_ACTION]":
-                            return
                         discord_files = [
                             discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                             for f in exec_context.get("out_files", [])
                         ]
-                        chunks = split_message(text)
-                        for i, chunk in enumerate(chunks):
-                            if i == 0 and discord_files:
-                                await message.channel.send(chunk, files=discord_files)
-                            else:
-                                await message.channel.send(chunk)
+                        await self._deliver_response(
+                            channel=message.channel,
+                            text=text,
+                            ack_msg=ack_msg,
+                            discord_files=discord_files,
+                            reply_to=message,
+                            telemetry=exec_context.get("telemetry"),
+                        )
                     except Exception as e:
                         sentry_sdk.capture_exception(e)
-                        await message.channel.send(format_gemini_error(e, include_details=False))
+                        err_text = format_gemini_error(e, include_details=False)
+                        if ack_msg:
+                            try:
+                                await ack_msg.edit(content=err_text)
+                            except Exception:
+                                await message.channel.send(err_text)
+                        else:
+                            await message.channel.send(err_text)
             return
 
         # Case 2: Message is in DM (Maintains multi-turn context from DM history)
@@ -1541,25 +1785,37 @@ class AIChat(commands.Cog):
                         if parts:
                             contents = [types.Content(role="user", parts=parts)]
                     if not contents:
+                        if ack_msg:
+                            try:
+                                await ack_msg.delete()
+                            except Exception:
+                                pass
                         return
                     text = await self._generate_ai_response(
                         contents, user_id=user_id_str, context=exec_context
                     )
-                    if not text or text.strip() == "[NO_ACTION]":
-                        return
                     discord_files = [
                         discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                         for f in exec_context.get("out_files", [])
                     ]
-                    chunks = split_message(text)
-                    for i, chunk in enumerate(chunks):
-                        if i == 0 and discord_files:
-                            await message.channel.send(chunk, files=discord_files)
-                        else:
-                            await message.channel.send(chunk)
+                    await self._deliver_response(
+                        channel=message.channel,
+                        text=text,
+                        ack_msg=ack_msg,
+                        discord_files=discord_files,
+                        reply_to=message,
+                        telemetry=exec_context.get("telemetry"),
+                    )
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
-                    await message.channel.send(format_gemini_error(e, include_details=False))
+                    err_text = format_gemini_error(e, include_details=False)
+                    if ack_msg:
+                        try:
+                            await ack_msg.edit(content=err_text)
+                        except Exception:
+                            await message.channel.send(err_text)
+                    else:
+                        await message.channel.send(err_text)
             return
 
         # Case 3: Message is in a Guild Text Channel
@@ -1581,6 +1837,11 @@ class AIChat(commands.Cog):
                         message, is_prefix=False, attachments_out=None
                     )
                     if not parts:
+                        if ack_msg:
+                            try:
+                                await ack_msg.delete()
+                            except Exception:
+                                pass
                         return
                     contents = [types.Content(role="user", parts=parts)]
 
@@ -1588,17 +1849,29 @@ class AIChat(commands.Cog):
                     contents, user_id=user_id_str, context=exec_context
                 )
                 if not text or text.strip() == "[NO_ACTION]":
+                    if ack_msg:
+                        try:
+                            await ack_msg.delete()
+                        except Exception:
+                            pass
                     return
             except Exception as e:
                 sentry_sdk.capture_exception(e)
-                await message.channel.send(format_gemini_error(e, include_details=False))
+                err_text = format_gemini_error(e, include_details=False)
+                if ack_msg:
+                    try:
+                        await ack_msg.edit(content=err_text)
+                    except Exception:
+                        await message.channel.send(err_text)
+                else:
+                    await message.channel.send(err_text)
                 return
 
-            chunks = split_message(text)
             discord_files = [
                 discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
                 for f in exec_context.get("out_files", [])
             ]
+            chunks = split_message(text)
             should_create_thread = self._should_create_thread(clean_text, text, chunks)
 
             thread = None
@@ -1613,26 +1886,27 @@ class AIChat(commands.Cog):
                     thread = None
 
             if thread:
-                for i, chunk in enumerate(chunks):
-                    if i == 0 and discord_files:
-                        await thread.send(chunk, files=discord_files)
-                    else:
-                        await thread.send(chunk)
+                if ack_msg:
+                    try:
+                        await ack_msg.edit(content=f"Created thread: {thread.mention}")
+                    except Exception:
+                        pass
+                await self._deliver_response(
+                    channel=thread,
+                    text=text,
+                    ack_msg=None,
+                    discord_files=discord_files,
+                    telemetry=exec_context.get("telemetry"),
+                )
             else:
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        try:
-                            if discord_files:
-                                await message.reply(chunk, files=discord_files)
-                            else:
-                                await message.reply(chunk)
-                        except Exception:
-                            if discord_files:
-                                await message.channel.send(chunk, files=discord_files)
-                            else:
-                                await message.channel.send(chunk)
-                    else:
-                        await message.channel.send(chunk)
+                await self._deliver_response(
+                    channel=message.channel,
+                    text=text,
+                    ack_msg=ack_msg,
+                    discord_files=discord_files,
+                    reply_to=message,
+                    telemetry=exec_context.get("telemetry"),
+                )
 
 
 async def setup(bot):
