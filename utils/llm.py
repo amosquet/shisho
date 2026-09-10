@@ -15,7 +15,7 @@ from google.genai import errors, types
 import sentry_sdk
 
 # Shared Model Constant
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 CONFIG_PATH = os.path.join("data", "config.json")
 
 # Standard User-Facing Message Constants
@@ -43,11 +43,12 @@ _current_gemini_model: Optional[str] = None
 
 # Common model aliases
 MODEL_ALIASES = {
-    "flash": "gemini-2.5-flash",
+    "flash": "gemini-3.7-flash",
     "pro": "gemini-2.5-pro",
     "flash-lite": "gemini-2.5-flash-lite",
     "flash lite": "gemini-2.5-flash-lite",
     "lite": "gemini-2.5-flash-lite",
+    "3.7-flash": "gemini-3.7-flash",
     "2.5-flash": "gemini-2.5-flash",
     "2.5-pro": "gemini-2.5-pro",
     "2.5-flash-lite": "gemini-2.5-flash-lite",

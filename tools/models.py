@@ -17,7 +17,7 @@ SET_AI_MODEL_TOOL = types.FunctionDeclaration(
         properties={
             "model": types.Schema(
                 type=types.Type.STRING,
-                description="The name or alias of the Gemini model to switch to (e.g. 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'pro', 'flash', 'flash-lite')",
+                description="The name or alias of the Gemini model to switch to (e.g. 'gemini-3.7-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'pro', 'flash', 'flash-lite')",
             ),
         },
         required=["model"],
