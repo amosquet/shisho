@@ -14,17 +14,17 @@ from google.genai import errors, types
 
 from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
 from utils.discord_helpers import (
-    split_message,
-    is_user_authorized,
     format_for_discord,
+    is_user_authorized,
     render_footer,
+    split_message,
 )
-from utils.gemini_files import stage_or_inline_part, get_gemini_file_cache
+from utils.gemini_files import get_gemini_file_cache, stage_or_inline_part
 from utils.llm import (
-    get_gemini_client,
-    get_gemini_model,
     format_gemini_error,
     generate_content_with_retry,
+    get_gemini_client,
+    get_gemini_model,
 )
 
 
@@ -124,14 +124,22 @@ class AIChat(commands.Cog):
     def _should_create_thread(self, prompt: str, text: str, chunks: list[str]) -> bool:
         prompt_lower = (prompt or "").lower()
         # If user explicitly requested a thread in their prompt
-        if re.search(r"\b(make|create|start|open|put|post|in)\s+(?:a\s+)?thread\b|\b(new\s+thread|to\s+a\s+thread)\b", prompt_lower) or "thread" in prompt_lower:
+        if (
+            re.search(
+                r"\b(make|create|start|open|put|post|in)\s+(?:a\s+)?thread\b|\b(new\s+thread|to\s+a\s+thread)\b",
+                prompt_lower,
+            )
+            or "thread" in prompt_lower
+        ):
             return True
         # If response is long and split across multiple Discord chunks, create a thread
         if len(chunks) > 1 or len(text) > 400:
             return True
         return False
 
-    def _get_audio_mime(self, filename: str, content_type: str | None = None) -> str | None:
+    def _get_audio_mime(
+        self, filename: str, content_type: str | None = None
+    ) -> str | None:
         if content_type and content_type.startswith("audio/"):
             return content_type
 
@@ -158,7 +166,9 @@ class AIChat(commands.Cog):
             return mime
         return None
 
-    def _get_image_mime(self, filename: str, content_type: str | None = None) -> str | None:
+    def _get_image_mime(
+        self, filename: str, content_type: str | None = None
+    ) -> str | None:
         if content_type and content_type.startswith("image/"):
             return content_type
 
@@ -180,7 +190,9 @@ class AIChat(commands.Cog):
             return mime
         return None
 
-    def _get_document_mime(self, filename: str, content_type: str | None = None) -> str | None:
+    def _get_document_mime(
+        self, filename: str, content_type: str | None = None
+    ) -> str | None:
         if content_type:
             ct = content_type.lower().split(";")[0].strip()
             if ct in (
@@ -228,7 +240,11 @@ class AIChat(commands.Cog):
 
         mime, _ = mimetypes.guess_type(filename)
         if mime:
-            if mime == "application/pdf" or mime.startswith("text/") or mime == "application/json":
+            if (
+                mime == "application/pdf"
+                or mime.startswith("text/")
+                or mime == "application/json"
+            ):
                 return mime
         return None
 
@@ -249,12 +265,19 @@ class AIChat(commands.Cog):
         if self.bot.user:
             bot_name = getattr(self.bot.user, "name", "")
             if isinstance(bot_name, str) and bot_name:
-                content = re.sub(rf"@{re.escape(bot_name)}(?:\b|\s+|$)", "", content, flags=re.IGNORECASE).strip()
+                content = re.sub(
+                    rf"@{re.escape(bot_name)}(?:\b|\s+|$)",
+                    "",
+                    content,
+                    flags=re.IGNORECASE,
+                ).strip()
             guild = getattr(message, "guild", None)
             me = getattr(guild, "me", None) if guild else None
             nick = getattr(me, "nick", None) if me else None
             if isinstance(nick, str) and nick:
-                content = re.sub(rf"@{re.escape(nick)}(?:\b|\s+|$)", "", content, flags=re.IGNORECASE).strip()
+                content = re.sub(
+                    rf"@{re.escape(nick)}(?:\b|\s+|$)", "", content, flags=re.IGNORECASE
+                ).strip()
             bot_id = getattr(self.bot.user, "id", None)
             if bot_id:
                 content = re.sub(rf"<@!?{bot_id}>", "", content).strip()
@@ -275,7 +298,11 @@ class AIChat(commands.Cog):
                         or self._get_audio_mime(att.filename, att.content_type)
                     )
                     if target_mime:
-                        parts.append(types.Part.from_uri(file_uri=cached["uri"], mime_type=target_mime))
+                        parts.append(
+                            types.Part.from_uri(
+                                file_uri=cached["uri"], mime_type=target_mime
+                            )
+                        )
                         continue
 
             # Check audio
@@ -285,11 +312,13 @@ class AIChat(commands.Cog):
                     audio_bytes = await att.read()
                     if audio_bytes:
                         if attachments_out is not None:
-                            attachments_out.append({
-                                "filename": att.filename,
-                                "bytes": audio_bytes,
-                                "content_type": audio_mime,
-                            })
+                            attachments_out.append(
+                                {
+                                    "filename": att.filename,
+                                    "bytes": audio_bytes,
+                                    "content_type": audio_mime,
+                                }
+                            )
                         part = await stage_or_inline_part(
                             self.client,
                             filename=att.filename,
@@ -311,11 +340,13 @@ class AIChat(commands.Cog):
                     image_bytes = await att.read()
                     if image_bytes:
                         if attachments_out is not None:
-                            attachments_out.append({
-                                "filename": att.filename,
-                                "bytes": image_bytes,
-                                "content_type": image_mime,
-                            })
+                            attachments_out.append(
+                                {
+                                    "filename": att.filename,
+                                    "bytes": image_bytes,
+                                    "content_type": image_mime,
+                                }
+                            )
                         part = await stage_or_inline_part(
                             self.client,
                             filename=att.filename,
@@ -337,11 +368,13 @@ class AIChat(commands.Cog):
                     doc_bytes = await att.read()
                     if doc_bytes:
                         if attachments_out is not None:
-                            attachments_out.append({
-                                "filename": att.filename,
-                                "bytes": doc_bytes,
-                                "content_type": doc_mime,
-                            })
+                            attachments_out.append(
+                                {
+                                    "filename": att.filename,
+                                    "bytes": doc_bytes,
+                                    "content_type": doc_mime,
+                                }
+                            )
                         part = await stage_or_inline_part(
                             self.client,
                             filename=att.filename,
@@ -360,11 +393,14 @@ class AIChat(commands.Cog):
             try:
                 raw_bytes = await att.read()
                 if raw_bytes and attachments_out is not None:
-                    attachments_out.append({
-                        "filename": att.filename,
-                        "bytes": raw_bytes,
-                        "content_type": att.content_type or "application/octet-stream",
-                    })
+                    attachments_out.append(
+                        {
+                            "filename": att.filename,
+                            "bytes": raw_bytes,
+                            "content_type": att.content_type
+                            or "application/octet-stream",
+                        }
+                    )
             except Exception as e:
                 print(f"Failed to read attachment {att.filename}: {e}")
 
@@ -394,9 +430,14 @@ class AIChat(commands.Cog):
         # Append mentioned users info if any other users were tagged
         if hasattr(message, "mentions") and message.mentions:
             bot_id = getattr(self.bot.user, "id", None) if self.bot.user else None
-            other_mentions = [m for m in message.mentions if bot_id is None or m.id != bot_id]
+            other_mentions = [
+                m for m in message.mentions if bot_id is None or m.id != bot_id
+            ]
             if other_mentions:
-                mention_info = ", ".join(f"@{getattr(m, 'name', 'User')} (ID: {getattr(m, 'id', 'unknown')})" for m in other_mentions)
+                mention_info = ", ".join(
+                    f"@{getattr(m, 'name', 'User')} (ID: {getattr(m, 'id', 'unknown')})"
+                    for m in other_mentions
+                )
                 mention_block = f"[Context - Mentioned Discord Users: {mention_info}]"
                 if combined_text:
                     combined_text = f"{combined_text}\n{mention_block}"
@@ -408,7 +449,9 @@ class AIChat(commands.Cog):
 
         return parts
 
-    async def _extract_attachments_from_message(self, message: discord.Message | None) -> list[dict]:
+    async def _extract_attachments_from_message(
+        self, message: discord.Message | None
+    ) -> list[dict]:
         """Extract all valid attachments from a single Discord message."""
         if not message:
             return []
@@ -425,13 +468,15 @@ class AIChat(commands.Cog):
                     or self._get_audio_mime(att.filename, None)
                     or "application/octet-stream"
                 )
-                results.append({
-                    "filename": att.filename,
-                    "bytes": raw_bytes,
-                    "content_type": ctype,
-                    "size": len(raw_bytes),
-                    "message_id": getattr(message, "id", None),
-                })
+                results.append(
+                    {
+                        "filename": att.filename,
+                        "bytes": raw_bytes,
+                        "content_type": ctype,
+                        "size": len(raw_bytes),
+                        "message_id": getattr(message, "id", None),
+                    }
+                )
             except Exception as e:
                 print(f"Failed to read attachment {getattr(att, 'filename', '')}: {e}")
                 sentry_sdk.capture_exception(e)
@@ -460,16 +505,25 @@ class AIChat(commands.Cog):
         if explicit_attachments:
             current_attachments.extend(explicit_attachments)
         elif current_message:
-            current_attachments = await self._extract_attachments_from_message(current_message)
+            current_attachments = await self._extract_attachments_from_message(
+                current_message
+            )
 
         # 2. Reply attachments
         ref_msg = referenced_message
-        if not ref_msg and current_message and getattr(current_message, "reference", None) and current_message.reference.message_id:
+        if (
+            not ref_msg
+            and current_message
+            and getattr(current_message, "reference", None)
+            and current_message.reference.message_id
+        ):
             ref_id = current_message.reference.message_id
             resolved = current_message.reference.resolved
             if isinstance(resolved, discord.Message) or (
                 hasattr(resolved, "attachments")
-                and not isinstance(resolved, getattr(discord, "DeletedReferencedMessage", type(None)))
+                and not isinstance(
+                    resolved, getattr(discord, "DeletedReferencedMessage", type(None))
+                )
             ):
                 ref_msg = resolved
             elif channel and hasattr(channel, "fetch_message"):
@@ -542,9 +596,7 @@ class AIChat(commands.Cog):
             title = "Ask: Gemini Chat"
         return title
 
-    def _consolidate_turns(
-        self, raw_turns: list[dict]
-    ) -> list[types.Content]:
+    def _consolidate_turns(self, raw_turns: list[dict]) -> list[types.Content]:
         if not raw_turns:
             return []
 
@@ -563,10 +615,15 @@ class AIChat(commands.Cog):
 
         # Ensure conversation starts with a user turn without discarding model context
         if merged and merged[0]["role"] == "model":
-            merged.insert(0, {
-                "role": "user",
-                "parts": [types.Part.from_text(text="[Continuing previous conversation]")]
-            })
+            merged.insert(
+                0,
+                {
+                    "role": "user",
+                    "parts": [
+                        types.Part.from_text(text="[Continuing previous conversation]")
+                    ],
+                },
+            )
 
         while merged and merged[0]["role"] != "user":
             merged.pop(0)
@@ -578,10 +635,7 @@ class AIChat(commands.Cog):
         if not merged:
             return []
 
-        contents = [
-            types.Content(role=t["role"], parts=t["parts"])
-            for t in merged
-        ]
+        contents = [types.Content(role=t["role"], parts=t["parts"]) for t in merged]
         return contents
 
     async def _build_reply_chain_contents(
@@ -593,7 +647,11 @@ class AIChat(commands.Cog):
         curr_msg = message
 
         max_depth = 15
-        while curr_msg.reference and curr_msg.reference.message_id and len(chain) <= max_depth:
+        while (
+            curr_msg.reference
+            and curr_msg.reference.message_id
+            and len(chain) <= max_depth
+        ):
             ref_id = curr_msg.reference.message_id
             if ref_id in visited_ids:
                 break
@@ -602,7 +660,9 @@ class AIChat(commands.Cog):
             ref_msg = None
             if isinstance(curr_msg.reference.resolved, discord.Message) or (
                 hasattr(curr_msg.reference.resolved, "clean_content")
-                and not isinstance(curr_msg.reference.resolved, discord.DeletedReferencedMessage)
+                and not isinstance(
+                    curr_msg.reference.resolved, discord.DeletedReferencedMessage
+                )
             ):
                 ref_msg = curr_msg.reference.resolved
             else:
@@ -621,7 +681,11 @@ class AIChat(commands.Cog):
                     print(f"Could not fetch referenced message {ref_id}: {e}")
                     break
 
-            if not ref_msg or isinstance(ref_msg, discord.DeletedReferencedMessage) or not hasattr(ref_msg, "clean_content"):
+            if (
+                not ref_msg
+                or isinstance(ref_msg, discord.DeletedReferencedMessage)
+                or not hasattr(ref_msg, "clean_content")
+            ):
                 break
 
             chain.append(ref_msg)
@@ -636,7 +700,9 @@ class AIChat(commands.Cog):
         recent_history: list[discord.Message] = []
         if hasattr(message.channel, "history"):
             try:
-                history_msgs = [m async for m in message.channel.history(limit=15, before=message)]
+                history_msgs = [
+                    m async for m in message.channel.history(limit=15, before=message)
+                ]
                 recent_history = history_msgs
             except Exception as e:
                 print(f"Could not fetch channel history for reply: {e}")
@@ -677,7 +743,9 @@ class AIChat(commands.Cog):
                         content.startswith("Gemini API key is not configured")
                         or content.startswith("API Error:")
                         or content.startswith("An unexpected error occurred")
-                        or content.startswith("Gemini is currently experiencing high demand")
+                        or content.startswith(
+                            "Gemini is currently experiencing high demand"
+                        )
                         or content.startswith("What would you like to update")
                         or content.startswith("What would you like an update on")
                         or content.startswith("Here is your status update")
@@ -686,28 +754,47 @@ class AIChat(commands.Cog):
                     ):
                         continue
                     if content:
-                        raw_turns.append({
-                            "role": "model",
-                            "parts": [types.Part.from_text(text=content)]
-                        })
+                        raw_turns.append(
+                            {
+                                "role": "model",
+                                "parts": [types.Part.from_text(text=content)],
+                            }
+                        )
                 else:
                     # Message is from another bot - include as user context
                     content = msg.clean_content.strip()
                     if content:
-                        raw_turns.append({
-                            "role": "user",
-                            "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
-                        })
+                        raw_turns.append(
+                            {
+                                "role": "user",
+                                "parts": [
+                                    types.Part.from_text(
+                                        text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}"
+                                    )
+                                ],
+                            }
+                        )
             else:
                 curr_atts_out = attachments_out if msg.id == message.id else None
-                parts = await self._extract_message_parts(msg, is_prefix=False, attachments_out=curr_atts_out, force_stage=True)
+                parts = await self._extract_message_parts(
+                    msg,
+                    is_prefix=False,
+                    attachments_out=curr_atts_out,
+                    force_stage=True,
+                )
                 author_name = getattr(msg.author, "display_name", "User")
                 author_handle = getattr(msg.author, "name", "")
                 author_id = getattr(msg.author, "id", "")
 
                 if msg.id == message.id:
-                    ref_author_name = getattr(primary_ref_msg.author, "display_name", "the user") if primary_ref_msg and hasattr(primary_ref_msg, "author") else "the user"
-                    has_text = any(hasattr(p, "text") and p.text is not None for p in parts)
+                    ref_author_name = (
+                        getattr(primary_ref_msg.author, "display_name", "the user")
+                        if primary_ref_msg and hasattr(primary_ref_msg, "author")
+                        else "the user"
+                    )
+                    has_text = any(
+                        hasattr(p, "text") and p.text is not None for p in parts
+                    )
                     if not has_text:
                         # User replied with only a ping or attachments
                         text_label = f"[{author_name} (replying to {ref_author_name})]: [Tagged @Shisho in reply to the referenced message to determine correct course of action]"
@@ -716,39 +803,55 @@ class AIChat(commands.Cog):
                         new_parts = []
                         for p in parts:
                             if hasattr(p, "text") and p.text is not None:
-                                new_parts.append(types.Part.from_text(text=f"[{author_name} (replying to {ref_author_name})]: {p.text}"))
+                                new_parts.append(
+                                    types.Part.from_text(
+                                        text=f"[{author_name} (replying to {ref_author_name})]: {p.text}"
+                                    )
+                                )
                             else:
                                 new_parts.append(p)
                         parts = new_parts
                 elif primary_ref_msg and msg.id == primary_ref_msg.id:
                     id_info = f", ID: {author_id}" if author_id else ""
-                    handle_info = f" (@{author_handle}{id_info})" if author_handle else ""
+                    handle_info = (
+                        f" (@{author_handle}{id_info})" if author_handle else ""
+                    )
                     new_parts = []
                     has_text = False
                     for p in parts:
                         if hasattr(p, "text") and p.text is not None:
                             has_text = True
-                            new_parts.append(types.Part.from_text(text=f"[Referenced Message from {author_name}{handle_info}]: {p.text}"))
+                            new_parts.append(
+                                types.Part.from_text(
+                                    text=f"[Referenced Message from {author_name}{handle_info}]: {p.text}"
+                                )
+                            )
                         else:
                             new_parts.append(p)
                     if not has_text and parts:
-                        new_parts.insert(0, types.Part.from_text(text=f"[Referenced Message from {author_name}{handle_info}]"))
+                        new_parts.insert(
+                            0,
+                            types.Part.from_text(
+                                text=f"[Referenced Message from {author_name}{handle_info}]"
+                            ),
+                        )
                     parts = new_parts
                 else:
                     handle_info = f" (@{author_handle})" if author_handle else ""
                     new_parts = []
                     for p in parts:
                         if hasattr(p, "text") and p.text is not None:
-                            new_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                            new_parts.append(
+                                types.Part.from_text(
+                                    text=f"[{author_name}{handle_info}]: {p.text}"
+                                )
+                            )
                         else:
                             new_parts.append(p)
                     parts = new_parts
 
                 if parts:
-                    raw_turns.append({
-                        "role": "user",
-                        "parts": parts
-                    })
+                    raw_turns.append({"role": "user", "parts": parts})
 
         return self._consolidate_turns(raw_turns)
 
@@ -763,7 +866,11 @@ class AIChat(commands.Cog):
 
         if isinstance(channel, discord.Thread):
             starter_msg = channel.starter_message
-            if not starter_msg and channel.parent and hasattr(channel.parent, "fetch_message"):
+            if (
+                not starter_msg
+                and channel.parent
+                and hasattr(channel.parent, "fetch_message")
+            ):
                 try:
                     starter_msg = await channel.parent.fetch_message(channel.id)
                 except Exception:
@@ -778,25 +885,42 @@ class AIChat(commands.Cog):
                         re.DOTALL | re.IGNORECASE,
                     )
                     if match:
-                        raw_turns.append({
-                            "role": "user",
-                            "parts": [types.Part.from_text(text=match.group(1).strip())]
-                        })
+                        raw_turns.append(
+                            {
+                                "role": "user",
+                                "parts": [
+                                    types.Part.from_text(text=match.group(1).strip())
+                                ],
+                            }
+                        )
                     elif content:
-                        raw_turns.append({
-                            "role": "model",
-                            "parts": [types.Part.from_text(text=content)]
-                        })
+                        raw_turns.append(
+                            {
+                                "role": "model",
+                                "parts": [types.Part.from_text(text=content)],
+                            }
+                        )
                 else:
-                    user_parts = await self._extract_message_parts(starter_msg, is_prefix=True, attachments_out=None, force_stage=True)
+                    user_parts = await self._extract_message_parts(
+                        starter_msg,
+                        is_prefix=True,
+                        attachments_out=None,
+                        force_stage=True,
+                    )
                     if user_parts:
-                        author_name = getattr(starter_msg.author, "display_name", "User")
+                        author_name = getattr(
+                            starter_msg.author, "display_name", "User"
+                        )
                         author_handle = getattr(starter_msg.author, "name", "")
                         handle_info = f" (@{author_handle})" if author_handle else ""
                         formatted_parts = []
                         for p in user_parts:
                             if hasattr(p, "text") and p.text is not None:
-                                formatted_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                                formatted_parts.append(
+                                    types.Part.from_text(
+                                        text=f"[{author_name}{handle_info}]: {p.text}"
+                                    )
+                                )
                             else:
                                 formatted_parts.append(p)
                         raw_turns.append({"role": "user", "parts": formatted_parts})
@@ -812,7 +936,9 @@ class AIChat(commands.Cog):
                             content.startswith("Gemini API key is not configured")
                             or content.startswith("API Error:")
                             or content.startswith("An unexpected error occurred")
-                            or content.startswith("Gemini is currently experiencing high demand")
+                            or content.startswith(
+                                "Gemini is currently experiencing high demand"
+                            )
                             or content.startswith("What would you like to update")
                             or content.startswith("What would you like an update on")
                             or content.startswith("Here is your status update")
@@ -821,19 +947,29 @@ class AIChat(commands.Cog):
                         ):
                             continue
                         if content:
-                            raw_turns.append({
-                                "role": "model",
-                                "parts": [types.Part.from_text(text=content)]
-                            })
+                            raw_turns.append(
+                                {
+                                    "role": "model",
+                                    "parts": [types.Part.from_text(text=content)],
+                                }
+                            )
                     else:
                         content = msg.clean_content.strip()
                         if content:
-                            raw_turns.append({
-                                "role": "user",
-                                "parts": [types.Part.from_text(text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}")]
-                            })
+                            raw_turns.append(
+                                {
+                                    "role": "user",
+                                    "parts": [
+                                        types.Part.from_text(
+                                            text=f"[{getattr(msg.author, 'display_name', 'Bot')} (Bot)]: {content}"
+                                        )
+                                    ],
+                                }
+                            )
                 else:
-                    user_parts = await self._extract_message_parts(msg, is_prefix=True, attachments_out=None, force_stage=True)
+                    user_parts = await self._extract_message_parts(
+                        msg, is_prefix=True, attachments_out=None, force_stage=True
+                    )
                     if user_parts:
                         author_name = getattr(msg.author, "display_name", "User")
                         author_handle = getattr(msg.author, "name", "")
@@ -841,7 +977,11 @@ class AIChat(commands.Cog):
                         formatted_parts = []
                         for p in user_parts:
                             if hasattr(p, "text") and p.text is not None:
-                                formatted_parts.append(types.Part.from_text(text=f"[{author_name}{handle_info}]: {p.text}"))
+                                formatted_parts.append(
+                                    types.Part.from_text(
+                                        text=f"[{author_name}{handle_info}]: {p.text}"
+                                    )
+                                )
                             else:
                                 formatted_parts.append(p)
                         raw_turns.append({"role": "user", "parts": formatted_parts})
@@ -852,15 +992,14 @@ class AIChat(commands.Cog):
             if isinstance(additional_parts, str):
                 clean_add = additional_parts.strip()
                 if clean_add:
-                    raw_turns.append({
-                        "role": "user",
-                        "parts": [types.Part.from_text(text=clean_add)]
-                    })
+                    raw_turns.append(
+                        {
+                            "role": "user",
+                            "parts": [types.Part.from_text(text=clean_add)],
+                        }
+                    )
             elif isinstance(additional_parts, list) and additional_parts:
-                raw_turns.append({
-                    "role": "user",
-                    "parts": list(additional_parts)
-                })
+                raw_turns.append({"role": "user", "parts": list(additional_parts)})
 
         return self._consolidate_turns(raw_turns)
 
@@ -868,7 +1007,9 @@ class AIChat(commands.Cog):
     _build_thread_contents = _build_channel_contents
 
     async def _is_ai_chat_thread(self, thread: discord.Thread) -> bool:
-        if thread.name.startswith("Recommend: ") or thread.name.startswith("Recommendations: "):
+        if thread.name.startswith("Recommend: ") or thread.name.startswith(
+            "Recommendations: "
+        ):
             return False
 
         if thread.id in self.active_threads:
@@ -879,7 +1020,11 @@ class AIChat(commands.Cog):
             return True
 
         starter_msg = thread.starter_message
-        if not starter_msg and thread.parent and hasattr(thread.parent, "fetch_message"):
+        if (
+            not starter_msg
+            and thread.parent
+            and hasattr(thread.parent, "fetch_message")
+        ):
             try:
                 starter_msg = await thread.parent.fetch_message(thread.id)
             except Exception:
@@ -964,7 +1109,9 @@ class AIChat(commands.Cog):
             edit_succeeded = False
             try:
                 if files_to_send:
-                    edited = await ack_msg.edit(content=chunks[0], attachments=files_to_send)
+                    edited = await ack_msg.edit(
+                        content=chunks[0], attachments=files_to_send
+                    )
                 else:
                     edited = await ack_msg.edit(content=chunks[0])
                 sent_messages.append(edited)
@@ -1046,9 +1193,7 @@ class AIChat(commands.Cog):
 
         if isinstance(contents, str):
             contents_list = [
-                types.Content(
-                    role="user", parts=[types.Part.from_text(text=contents)]
-                )
+                types.Content(role="user", parts=[types.Part.from_text(text=contents)])
             ]
         else:
             contents_list = list(contents)
@@ -1060,7 +1205,7 @@ class AIChat(commands.Cog):
         )
 
         model_name = get_gemini_model()
-        max_tool_turns = 5
+        max_tool_turns = 20
         response_text = ""
         last_response = None
         for _ in range(max_tool_turns):
@@ -1126,9 +1271,7 @@ class AIChat(commands.Cog):
                 )
 
             # Append the tool response turn (Gemini API requires role='user' for function responses)
-            contents_list.append(
-                types.Content(role="user", parts=tool_response_parts)
-            )
+            contents_list.append(types.Content(role="user", parts=tool_response_parts))
 
         if not response_text and last_response is not None:
             response_text = format_for_discord(last_response.text or "")
@@ -1143,22 +1286,31 @@ class AIChat(commands.Cog):
 
         return response_text
 
-    @commands.command(name="ask", help="Ask Gemini a question or send an image, audio, or document.")
+    @commands.command(
+        name="ask", help="Ask Gemini a question or send an image, audio, or document."
+    )
     async def ask_prefix(self, ctx: commands.Context, *, prompt: str = ""):
         if not self.is_user_authorized(ctx.author.id):
             return
 
         if not self.client:
-            await ctx.send("Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
+            await ctx.send(
+                "Gemini API key is not configured. Please set GEMINI_API_KEY in the environment."
+            )
             return
 
         is_in_thread = isinstance(ctx.channel, discord.Thread)
         attachments_out: list[dict] = []
         parts = await self._extract_message_parts(
-            ctx.message, is_prefix=True, attachments_out=attachments_out, force_stage=is_in_thread
+            ctx.message,
+            is_prefix=True,
+            attachments_out=attachments_out,
+            force_stage=is_in_thread,
         )
         if not parts:
-            await ctx.send("Please provide a question, prompt, image, audio, or file attachment.")
+            await ctx.send(
+                "Please provide a question, prompt, image, audio, or file attachment."
+            )
             return
 
         # Post immediate acknowledgment
@@ -1196,14 +1348,18 @@ class AIChat(commands.Cog):
                 self.active_threads.add(ctx.channel.id)
                 async with ctx.typing():
                     try:
-                        contents = await self._build_thread_contents(ctx.channel, attachments_out=None)
+                        contents = await self._build_thread_contents(
+                            ctx.channel, attachments_out=None
+                        )
                         if not contents:
                             contents = [types.Content(role="user", parts=parts)]
                         text = await self._generate_ai_response(
                             contents, user_id=user_id_str, context=exec_context
                         )
                         discord_files = [
-                            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                            discord.File(
+                                fp=io.BytesIO(f["bytes"]), filename=f["filename"]
+                            )
                             for f in exec_context.get("out_files", [])
                         ]
                         await self._deliver_response(
@@ -1287,11 +1443,23 @@ class AIChat(commands.Cog):
             thread = None
             if hasattr(ctx.message, "create_thread"):
                 try:
-                    has_img = any(self._get_image_mime(a.filename, a.content_type) for a in ctx.message.attachments)
-                    has_doc = any(self._get_document_mime(a.filename, a.content_type) for a in ctx.message.attachments)
-                    thread_prompt = prompt.strip() or ("Image Memo" if has_img else ("Document Memo" if has_doc else "Audio Memo"))
+                    has_img = any(
+                        self._get_image_mime(a.filename, a.content_type)
+                        for a in ctx.message.attachments
+                    )
+                    has_doc = any(
+                        self._get_document_mime(a.filename, a.content_type)
+                        for a in ctx.message.attachments
+                    )
+                    thread_prompt = prompt.strip() or (
+                        "Image Memo"
+                        if has_img
+                        else ("Document Memo" if has_doc else "Audio Memo")
+                    )
                     thread_name = self._generate_thread_name(thread_prompt)
-                    thread = await ctx.message.create_thread(name=thread_name, auto_archive_duration=1440)
+                    thread = await ctx.message.create_thread(
+                        name=thread_name, auto_archive_duration=1440
+                    )
                     self.active_threads.add(thread.id)
                 except Exception as e:
                     print(f"Failed to create thread for ask prefix command: {e}")
@@ -1320,12 +1488,15 @@ class AIChat(commands.Cog):
                     telemetry=exec_context.get("telemetry"),
                 )
 
-    @app_commands.command(name="ask", description="Send a prompt, image, audio, or document to the Gemini API")
+    @app_commands.command(
+        name="ask",
+        description="Send a prompt, image, audio, or document to the Gemini API",
+    )
     @app_commands.describe(
         prompt="The prompt to send to Gemini",
         image="Optional image attachment",
         audio="Optional audio or voice recording",
-        file="Optional document or file attachment (PDF, TXT, MD, etc.)"
+        file="Optional document or file attachment (PDF, TXT, MD, etc.)",
     )
     async def ask_slash(
         self,
@@ -1336,7 +1507,9 @@ class AIChat(commands.Cog):
         file: discord.Attachment = None,
     ):
         if not self.client:
-            await interaction.response.send_message("Gemini API key is not configured.", ephemeral=True)
+            await interaction.response.send_message(
+                "Gemini API key is not configured.", ephemeral=True
+            )
             return
 
         force_stage = isinstance(interaction.channel, discord.Thread)
@@ -1349,11 +1522,13 @@ class AIChat(commands.Cog):
                 try:
                     img_bytes = await image.read()
                     if img_bytes:
-                        attachments_out.append({
-                            "filename": image.filename,
-                            "bytes": img_bytes,
-                            "content_type": mime,
-                        })
+                        attachments_out.append(
+                            {
+                                "filename": image.filename,
+                                "bytes": img_bytes,
+                                "content_type": mime,
+                            }
+                        )
                         part = await stage_or_inline_part(
                             self.client,
                             filename=image.filename,
@@ -1373,11 +1548,13 @@ class AIChat(commands.Cog):
                 try:
                     audio_bytes = await audio.read()
                     if audio_bytes:
-                        attachments_out.append({
-                            "filename": audio.filename,
-                            "bytes": audio_bytes,
-                            "content_type": mime,
-                        })
+                        attachments_out.append(
+                            {
+                                "filename": audio.filename,
+                                "bytes": audio_bytes,
+                                "content_type": mime,
+                            }
+                        )
                         part = await stage_or_inline_part(
                             self.client,
                             filename=audio.filename,
@@ -1392,15 +1569,22 @@ class AIChat(commands.Cog):
                     sentry_sdk.capture_exception(e)
 
         if file:
-            doc_mime = self._get_document_mime(file.filename, file.content_type) or self._get_image_mime(file.filename, file.content_type) or self._get_audio_mime(file.filename, file.content_type) or "application/octet-stream"
+            doc_mime = (
+                self._get_document_mime(file.filename, file.content_type)
+                or self._get_image_mime(file.filename, file.content_type)
+                or self._get_audio_mime(file.filename, file.content_type)
+                or "application/octet-stream"
+            )
             try:
                 file_bytes = await file.read()
                 if file_bytes:
-                    attachments_out.append({
-                        "filename": file.filename,
-                        "bytes": file_bytes,
-                        "content_type": doc_mime,
-                    })
+                    attachments_out.append(
+                        {
+                            "filename": file.filename,
+                            "bytes": file_bytes,
+                            "content_type": doc_mime,
+                        }
+                    )
                     if doc_mime != "application/octet-stream":
                         part = await stage_or_inline_part(
                             self.client,
@@ -1420,7 +1604,10 @@ class AIChat(commands.Cog):
             parts.append(types.Part.from_text(text=clean_prompt))
 
         if not parts:
-            await interaction.response.send_message("Please provide a prompt, image, audio, or document file.", ephemeral=True)
+            await interaction.response.send_message(
+                "Please provide a prompt, image, audio, or document file.",
+                ephemeral=True,
+            )
             return
 
         user_id_str = str(interaction.user.id)
@@ -1449,7 +1636,9 @@ class AIChat(commands.Cog):
                 self.active_threads.add(interaction.channel.id)
                 try:
                     contents = await self._build_thread_contents(
-                        interaction.channel, additional_parts=parts, attachments_out=None
+                        interaction.channel,
+                        additional_parts=parts,
+                        attachments_out=None,
                     )
                     if not contents:
                         contents = [types.Content(role="user", parts=parts)]
@@ -1457,7 +1646,9 @@ class AIChat(commands.Cog):
                         contents, user_id=user_id_str, context=exec_context
                     )
                     if not text:
-                        await interaction.followup.send("Received empty response from Gemini.")
+                        await interaction.followup.send(
+                            "Received empty response from Gemini."
+                        )
                         return
                     telemetry = exec_context.get("telemetry")
                     if telemetry:
@@ -1479,7 +1670,9 @@ class AIChat(commands.Cog):
                         else:
                             await interaction.followup.send(chunk)
                 except Exception as e:
-                    await interaction.followup.send(format_gemini_error(e, include_details=True))
+                    await interaction.followup.send(
+                        format_gemini_error(e, include_details=True)
+                    )
             return
 
         # Case 2: DM Channel (no threads)
@@ -1490,7 +1683,9 @@ class AIChat(commands.Cog):
                     contents, user_id=user_id_str, context=exec_context
                 )
                 if not text:
-                    await interaction.followup.send("Received empty response from Gemini.")
+                    await interaction.followup.send(
+                        "Received empty response from Gemini."
+                    )
                     return
                 telemetry = exec_context.get("telemetry")
                 if telemetry:
@@ -1512,7 +1707,9 @@ class AIChat(commands.Cog):
                     else:
                         await interaction.followup.send(chunk)
             except Exception as e:
-                await interaction.followup.send(format_gemini_error(e, include_details=True))
+                await interaction.followup.send(
+                    format_gemini_error(e, include_details=True)
+                )
             return
 
         # Case 3: Guild Text Channel (Create a thread)
@@ -1525,7 +1722,9 @@ class AIChat(commands.Cog):
                 await interaction.followup.send("Received empty response from Gemini.")
                 return
         except Exception as e:
-            await interaction.followup.send(format_gemini_error(e, include_details=True))
+            await interaction.followup.send(
+                format_gemini_error(e, include_details=True)
+            )
             return
 
         telemetry = exec_context.get("telemetry")
@@ -1544,12 +1743,26 @@ class AIChat(commands.Cog):
         ]
         thread = None
         try:
-            starter_label = f"💬 **Question:** {clean_prompt}" if clean_prompt else ("🖼️ **Image Prompt**" if image else ("📄 **Document Prompt**" if file else "🎙️ **Audio Prompt**"))
+            starter_label = (
+                f"💬 **Question:** {clean_prompt}"
+                if clean_prompt
+                else (
+                    "🖼️ **Image Prompt**"
+                    if image
+                    else ("📄 **Document Prompt**" if file else "🎙️ **Audio Prompt**")
+                )
+            )
             msg = await interaction.followup.send(starter_label, wait=True)
             if msg and hasattr(msg, "create_thread"):
-                thread_title = clean_prompt or ("Image Memo" if image else ("Document Memo" if file else "Audio Memo"))
+                thread_title = clean_prompt or (
+                    "Image Memo"
+                    if image
+                    else ("Document Memo" if file else "Audio Memo")
+                )
                 thread_name = self._generate_thread_name(thread_title)
-                thread = await msg.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await msg.create_thread(
+                    name=thread_name, auto_archive_duration=1440
+                )
                 self.active_threads.add(thread.id)
         except Exception as e:
             print(f"Failed to create thread for slash ask command: {e}")
@@ -1577,17 +1790,25 @@ class AIChat(commands.Cog):
         if message.content.startswith("!"):
             return
 
-        is_bot_mentioned = bool(self.bot.user and any(m.id == self.bot.user.id for m in message.mentions))
+        is_bot_mentioned = bool(
+            self.bot.user and any(m.id == self.bot.user.id for m in message.mentions)
+        )
         is_in_thread = isinstance(message.channel, discord.Thread)
-        is_dm = getattr(message, "guild", None) is None or isinstance(message.channel, (discord.DMChannel, discord.abc.PrivateChannel))
+        is_dm = getattr(message, "guild", None) is None or isinstance(
+            message.channel, (discord.DMChannel, discord.abc.PrivateChannel)
+        )
 
-        is_reply = message.reference is not None and message.reference.message_id is not None
+        is_reply = (
+            message.reference is not None and message.reference.message_id is not None
+        )
         is_reply_to_bot = False
         referenced_msg = None
         if is_reply:
             if isinstance(message.reference.resolved, discord.Message) or (
                 hasattr(message.reference.resolved, "clean_content")
-                and not isinstance(message.reference.resolved, discord.DeletedReferencedMessage)
+                and not isinstance(
+                    message.reference.resolved, discord.DeletedReferencedMessage
+                )
             ):
                 referenced_msg = message.reference.resolved
             elif message.reference.message_id:
@@ -1601,7 +1822,9 @@ class AIChat(commands.Cog):
                             message.reference.channel_id
                         ) or await self.bot.fetch_channel(message.reference.channel_id)
                     if ref_channel and hasattr(ref_channel, "fetch_message"):
-                        referenced_msg = await ref_channel.fetch_message(message.reference.message_id)
+                        referenced_msg = await ref_channel.fetch_message(
+                            message.reference.message_id
+                        )
                 except Exception:
                     referenced_msg = None
             if (
@@ -1634,9 +1857,13 @@ class AIChat(commands.Cog):
         # Verify user authorization
         if not self.is_user_authorized(message.author.id):
             if is_dm or is_bot_mentioned or is_reply_to_bot:
-                print(f"[AIChat] Unauthorized access attempt from user {message.author} (ID: {message.author.id})")
+                print(
+                    f"[AIChat] Unauthorized access attempt from user {message.author} (ID: {message.author.id})"
+                )
                 try:
-                    await message.channel.send("❌ You are not authorized to use Shisho AI chat.")
+                    await message.channel.send(
+                        "❌ You are not authorized to use Shisho AI chat."
+                    )
                 except Exception:
                     pass
             return
@@ -1645,7 +1872,9 @@ class AIChat(commands.Cog):
             if is_dm or is_bot_mentioned or is_reply_to_bot:
                 print("[AIChat] GEMINI_API_KEY is not configured.")
                 try:
-                    await message.channel.send("❌ Gemini API key is not configured. Please set GEMINI_API_KEY in the environment.")
+                    await message.channel.send(
+                        "❌ Gemini API key is not configured. Please set GEMINI_API_KEY in the environment."
+                    )
                 except Exception:
                     pass
             return
@@ -1669,19 +1898,38 @@ class AIChat(commands.Cog):
         if self.bot.user:
             bot_name = getattr(self.bot.user, "name", "")
             if isinstance(bot_name, str) and bot_name:
-                clean_text = re.sub(rf"@{re.escape(bot_name)}(?:\b|\s+|$)", "", clean_text, flags=re.IGNORECASE).strip()
+                clean_text = re.sub(
+                    rf"@{re.escape(bot_name)}(?:\b|\s+|$)",
+                    "",
+                    clean_text,
+                    flags=re.IGNORECASE,
+                ).strip()
             guild = getattr(message, "guild", None)
             me = getattr(guild, "me", None) if guild else None
             nick = getattr(me, "nick", None) if me else None
             if isinstance(nick, str) and nick:
-                clean_text = re.sub(rf"@{re.escape(nick)}(?:\b|\s+|$)", "", clean_text, flags=re.IGNORECASE).strip()
+                clean_text = re.sub(
+                    rf"@{re.escape(nick)}(?:\b|\s+|$)",
+                    "",
+                    clean_text,
+                    flags=re.IGNORECASE,
+                ).strip()
             bot_id = getattr(self.bot.user, "id", None)
             if bot_id:
                 clean_text = re.sub(rf"<@!?{bot_id}>", "", clean_text).strip()
 
-        if not clean_text and not has_audio and not has_image and not has_document and not has_any_att and not is_reply:
+        if (
+            not clean_text
+            and not has_audio
+            and not has_image
+            and not has_document
+            and not has_any_att
+            and not is_reply
+        ):
             if is_dm:
-                print(f"[AIChat] Received DM with empty text from {message.author} (ID: {message.author.id}). Ensure 'Message Content Intent' is enabled in the Discord Developer Portal.")
+                print(
+                    f"[AIChat] Received DM with empty text from {message.author} (ID: {message.author.id}). Ensure 'Message Content Intent' is enabled in the Discord Developer Portal."
+                )
             return
 
         user_id_str = str(message.author.id)
@@ -1728,7 +1976,10 @@ class AIChat(commands.Cog):
                             )
                         if not contents:
                             parts = await self._extract_message_parts(
-                                message, is_prefix=False, attachments_out=None, force_stage=True
+                                message,
+                                is_prefix=False,
+                                attachments_out=None,
+                                force_stage=True,
                             )
                             if parts:
                                 contents = [types.Content(role="user", parts=parts)]
@@ -1743,7 +1994,9 @@ class AIChat(commands.Cog):
                             contents, user_id=user_id_str, context=exec_context
                         )
                         discord_files = [
-                            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+                            discord.File(
+                                fp=io.BytesIO(f["bytes"]), filename=f["filename"]
+                            )
                             for f in exec_context.get("out_files", [])
                         ]
                         await self._deliver_response(
@@ -1877,9 +2130,15 @@ class AIChat(commands.Cog):
             thread = None
             if should_create_thread and hasattr(message, "create_thread"):
                 try:
-                    thread_title = clean_text or ("Image Chat" if has_image else ("Document Chat" if has_document else "AI Chat"))
+                    thread_title = clean_text or (
+                        "Image Chat"
+                        if has_image
+                        else ("Document Chat" if has_document else "AI Chat")
+                    )
                     thread_name = self._generate_thread_name(thread_title)
-                    thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                    thread = await message.create_thread(
+                        name=thread_name, auto_archive_duration=1440
+                    )
                     self.active_threads.add(thread.id)
                 except Exception as e:
                     print(f"Failed to create thread for mention: {e}")
