@@ -82,9 +82,9 @@ Set custom reminders using natural language times. The bot will send you a Direc
 
 ### AI Assistant & Smart Reply (Gemini)
 
-- `/ask [prompt] [image] [audio]`: Ask Shisho questions, upload images (book covers, assignments, schedules), or share audio memos.
+- `/ask [prompt] [image] [audio]`: Ask Shisho questions, upload images (book covers, assignments, schedules), or share audio memos. Features live **Google Search Grounding** with source links for real-time information, current events, and fact-checking.
 - **Smart Reply & Mention Action**: Reply to any message in a channel or thread and tag `@Shisho` (e.g. `@Shisho add this book`, `@Shisho remind me tomorrow at 5pm`, `@Shisho save this note`, or simply `@Shisho`). Shisho will inspect the referenced message and conversation history, determine the best course of action, and execute the corresponding database tools automatically.
-- `/recommend [query]`: Access the AI Book Concierge for tailored book recommendations.
+- `/recommend [query]`: Access the AI Book Concierge with Google Search Grounding for tailored book recommendations.
 
 ### Anki Flashcards & Study Decks (.apkg)
 
