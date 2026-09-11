@@ -1315,13 +1315,20 @@ class AIChat(commands.Cog):
 
         # Post immediate acknowledgment
         ack_msg = None
-        try:
-            ack_msg = await ctx.reply("Working on it...")
-        except Exception:
+        is_dm = isinstance(ctx.channel, (discord.DMChannel, discord.GroupChannel)) or getattr(ctx, "guild", None) is None
+        if is_dm or is_in_thread:
             try:
                 ack_msg = await ctx.send("Working on it...")
             except Exception:
                 ack_msg = None
+        else:
+            try:
+                ack_msg = await ctx.reply("Working on it...")
+            except Exception:
+                try:
+                    ack_msg = await ctx.send("Working on it...")
+                except Exception:
+                    ack_msg = None
 
         att_context = await self._gather_context_attachments(
             current_message=ctx.message,
@@ -1367,7 +1374,7 @@ class AIChat(commands.Cog):
                             text=text,
                             ack_msg=ack_msg,
                             discord_files=discord_files,
-                            reply_to=ctx.message,
+                            reply_to=None,
                             telemetry=exec_context.get("telemetry"),
                         )
                     except Exception as e:
@@ -1398,7 +1405,7 @@ class AIChat(commands.Cog):
                         text=text,
                         ack_msg=ack_msg,
                         discord_files=discord_files,
-                        reply_to=ctx.message,
+                        reply_to=None,
                         telemetry=exec_context.get("telemetry"),
                     )
                 except Exception as e:
@@ -1936,13 +1943,19 @@ class AIChat(commands.Cog):
 
         # Post immediate acknowledgment before downloading attachments or invoking AI
         ack_msg = None
-        try:
-            ack_msg = await message.reply("Working on it...")
-        except Exception:
+        if is_dm or is_in_thread:
             try:
                 ack_msg = await message.channel.send("Working on it...")
             except Exception:
                 ack_msg = None
+        else:
+            try:
+                ack_msg = await message.reply("Working on it...")
+            except Exception:
+                try:
+                    ack_msg = await message.channel.send("Working on it...")
+                except Exception:
+                    ack_msg = None
 
         att_context = await self._gather_context_attachments(
             current_message=message,
@@ -2004,7 +2017,7 @@ class AIChat(commands.Cog):
                             text=text,
                             ack_msg=ack_msg,
                             discord_files=discord_files,
-                            reply_to=message,
+                            reply_to=None,
                             telemetry=exec_context.get("telemetry"),
                         )
                     except Exception as e:
@@ -2056,7 +2069,7 @@ class AIChat(commands.Cog):
                         text=text,
                         ack_msg=ack_msg,
                         discord_files=discord_files,
-                        reply_to=message,
+                        reply_to=None,
                         telemetry=exec_context.get("telemetry"),
                     )
                 except Exception as e:

@@ -348,13 +348,23 @@ class Flashcards(commands.Cog):
 
         # Post immediate acknowledgment
         ack_msg = None
-        try:
-            ack_msg = await ctx.reply("Working on it...")
-        except Exception:
+        is_isolated = (
+            isinstance(ctx.channel, (discord.DMChannel, discord.GroupChannel, discord.Thread))
+            or getattr(ctx, "guild", None) is None
+        )
+        if is_isolated:
             try:
                 ack_msg = await ctx.send("Working on it...")
             except Exception:
                 ack_msg = None
+        else:
+            try:
+                ack_msg = await ctx.reply("Working on it...")
+            except Exception:
+                try:
+                    ack_msg = await ctx.send("Working on it...")
+                except Exception:
+                    ack_msg = None
 
         clean_prompt = prompt.strip() or "Generate study flashcards"
         parts.append(
