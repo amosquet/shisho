@@ -21,9 +21,7 @@ from utils.discord_helpers import (
 )
 from utils.gemini_files import get_gemini_file_cache, stage_or_inline_part
 from utils.llm import (
-    extract_grounding_sources,
     format_gemini_error,
-    format_grounding_sources,
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
@@ -79,11 +77,10 @@ class AIChat(commands.Cog):
             "- Obsidian / Markdown Vault: Call `vault_read_note` to read a markdown note (including parsed YAML frontmatter and body). Call `vault_write_note` to create or overwrite a note with markdown formatting, YAML frontmatter, and wikilinks. Call `vault_patch_note` to surgically replace a specific text snippet or block within an existing note. Call `vault_append_note` to append text, logs, or quotes to a note (optionally under a markdown heading). Call `vault_search` to search across the vault by note body, filenames, tags (`#tag`), or frontmatter. Call `vault_list_files` to explore the vault directory structure and notes. Call `vault_delete_note` to delete or safely move notes to the vault trash (`.trash/`). Call `vault_move_note` to rename or relocate notes. Call `vault_get_backlinks` to find notes linking to a target note via `[[wikilinks]]`.\n"
             "  * Note: Vault operations are available to the bot owner and whitelisted users.\n"
             "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
-            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n"
-            "- Google Search Grounding: You have live Google Search grounding enabled to browse and search the web in real-time. When asked about current events, recent news, release dates, live documentation, weather, or real-time facts, use Google Search to provide accurate, up-to-date answers.\n\n"
+            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
-            "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, current events, or technical question (e.g. 'distance between NJ and IN?', 'latest news on X', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge and Google Search grounding. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
-            "2. NEVER claim you cannot access the internet or are only designed/limited to managing reading lists, notes, or reminders. You have full general AI capabilities, live Google Search grounding, and reasoning.\n"
+            "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
+            "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
             "3. ONLY call database tools when the user explicitly or clearly asks to interact with their personal records:\n"
             "   - When asked about the reading list (e.g. 'what\\'s on my reading list'), call ONLY `get_reading_list` and respond ONLY about the user\\'s books. When asked to update a book (e.g. 'mark as read', 'update reading status'), call `update_book`.\n"
             "   - When asked about recommendations / recommended list / suggestions (e.g. 'what books are on my recommended list', 'show my recommendations', 'what did friends suggest'), call ONLY `get_recommendations` (filter='for_me' or 'all') and respond with the books from the recommendations list. DO NOT say you don't have a recommended list.\n"
@@ -1211,7 +1208,6 @@ class AIChat(commands.Cog):
         max_tool_turns = 20
         response_text = ""
         last_response = None
-        all_responses: list[Any] = []
         for _ in range(max_tool_turns):
             response = await generate_content_with_retry(
                 self.client,
@@ -1220,7 +1216,6 @@ class AIChat(commands.Cog):
                 config=config,
             )
             last_response = response
-            all_responses.append(response)
 
             # Accumulate token usage if available
             if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -1280,12 +1275,6 @@ class AIChat(commands.Cog):
 
         if not response_text and last_response is not None:
             response_text = format_for_discord(last_response.text or "")
-
-        # Format web search citations from Google Search grounding if present
-        if response_text and response_text.strip() != "[NO_ACTION]":
-            grounding_sources = extract_grounding_sources(all_responses)
-            if grounding_sources:
-                response_text += format_grounding_sources(grounding_sources, max_sources=5)
 
         duration_s = time.monotonic() - start_time
         if context is not None:

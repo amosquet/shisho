@@ -34,9 +34,7 @@ from utils.gemini_files import (
 )
 from utils.llm import (
     DEFAULT_GEMINI_MODEL,
-    extract_grounding_sources,
     format_gemini_error,
-    format_grounding_sources,
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
@@ -52,8 +50,6 @@ __all__ = [
     "compile_text_to_pdf",
     "DEFAULT_GEMINI_MODEL",
     "DEFAULT_STAGING_THRESHOLD_BYTES",
-    "extract_grounding_sources",
-    "format_grounding_sources",
     "GeminiFileCache",
     "MultiFileUpload",
     "add_user_to_whitelist",
