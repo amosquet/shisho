@@ -1315,17 +1315,8 @@ class AIChat(commands.Cog):
             valid_function_calls = [
                 fc for fc in function_calls if fc.name in TOOL_HANDLERS
             ]
-            if not valid_function_calls:
-                raw_text = response.text or ""
-                cited_text = format_grounding_citations(
-                    raw_text, grounding_metadata, include_sources=wants_sources
-                )
-                response_text = format_for_discord(cited_text)
-                break
-
-            tool_calls_count += len(valid_function_calls)
-
-            # Append the model turn that requested tool calls
+            
+            # Append the model turn that requested tool calls (both server-side and client-side)
             candidate_parts = []
             if response.candidates and response.candidates[0].content:
                 candidate_parts = response.candidates[0].content.parts
@@ -1334,6 +1325,14 @@ class AIChat(commands.Cog):
                     types.Part(function_call=fc) for fc in valid_function_calls
                 ]
             contents_list.append(types.Content(role="model", parts=candidate_parts))
+
+            if not valid_function_calls:
+                # The model only invoked server-side tools (like google_search).
+                # Their responses are already included in the candidate_parts.
+                # We continue the loop to let the model synthesize the final text.
+                continue
+
+            tool_calls_count += len(valid_function_calls)
 
             # Execute tool calls and collect responses
             tool_response_parts = []
