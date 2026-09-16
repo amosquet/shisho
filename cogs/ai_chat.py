@@ -1576,7 +1576,7 @@ class AIChat(commands.Cog):
             if thread:
                 if ack_msg:
                     try:
-                        await ack_msg.edit(content=f"Created thread: {thread.mention}")
+                        await ack_msg.delete()
                     except Exception:
                         pass
                 await self._deliver_response(
@@ -2261,7 +2261,7 @@ class AIChat(commands.Cog):
             if thread:
                 if ack_msg:
                     try:
-                        await ack_msg.edit(content=f"Created thread: {thread.mention}")
+                        await ack_msg.delete()
                     except Exception:
                         pass
                 await self._deliver_response(
