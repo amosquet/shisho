@@ -156,8 +156,15 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     GENERATE_READING_PLAN_TOOL,
 ]
 
+GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
+
 AI_CHAT_TOOLS: list[types.Tool] = [
     types.Tool(function_declarations=ALL_FUNCTION_DECLARATIONS)
+]
+
+GENERAL_AI_CHAT_TOOLS: list[types.Tool] = [
+    types.Tool(function_declarations=ALL_FUNCTION_DECLARATIONS),
+    GOOGLE_SEARCH_TOOL,
 ]
 
 # Dispatch Table mapping tool names to async execution handlers

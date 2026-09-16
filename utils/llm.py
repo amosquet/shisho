@@ -297,3 +297,106 @@ async def generate_content_with_retry(
 
     if last_error:
         raise last_error
+
+
+SOURCE_REQUEST_PATTERN = re.compile(
+    r"\b(sources?|citations?|references?)\b|"
+    r"\b(cite\s+(your|the)?\s*sources?|cite\s+(this|it))\b|"
+    r"\b(include|with|show|provide|give|list|send)\s+(?:(?:me|us|the)\s+)?(links?|sources?|citations?|references?)\b|"
+    r"\bwhere\s+did\s+you\s+(get|find)\s+this\b",
+    re.IGNORECASE,
+)
+
+
+
+def user_requested_sources(text: str) -> bool:
+    """
+    Check whether a user prompt or text explicitly requests sources, citations, references, or links.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    return bool(SOURCE_REQUEST_PATTERN.search(text))
+
+
+def format_grounding_citations(
+    text: str, grounding_metadata: Any, include_sources: bool = False
+) -> str:
+    """
+    Process Google Search grounding metadata on a Gemini response.
+
+    If include_sources is False, returns text as-is without appending sources or citations.
+    If include_sources is True, inserts inline citations and appends a Sources list with
+    <URL> embed suppression for Discord.
+    """
+    if not text or not grounding_metadata or not include_sources:
+        return text
+
+    chunks = getattr(grounding_metadata, "grounding_chunks", None) or []
+    supports = getattr(grounding_metadata, "grounding_supports", None) or []
+
+    if not chunks:
+        return text
+
+    valid_sources = []
+    for i, chunk in enumerate(chunks):
+        web = getattr(chunk, "web", None)
+        if web and getattr(web, "uri", None):
+            title = (
+                getattr(web, "title", None)
+                or getattr(web, "domain", None)
+                or f"Source {i+1}"
+            )
+            valid_sources.append(
+                {"index": i + 1, "title": title.strip(), "uri": web.uri.strip()}
+            )
+
+    if not valid_sources:
+        return text
+
+    # Insert inline citations if supports are provided
+    sorted_supports = sorted(
+        [
+            s
+            for s in supports
+            if getattr(s, "segment", None)
+            and getattr(s.segment, "end_index", None) is not None
+        ],
+        key=lambda s: s.segment.end_index,
+        reverse=True,
+    )
+
+    cited_indices = set()
+    for support in sorted_supports:
+        end_index = support.segment.end_index
+        indices = getattr(support, "grounding_chunk_indices", None) or []
+        if not indices or end_index is None or end_index > len(text) or end_index < 0:
+            continue
+
+        citation_links = []
+        for idx in indices:
+            if 0 <= idx < len(chunks):
+                web = getattr(chunks[idx], "web", None)
+                if web and getattr(web, "uri", None):
+                    src_num = idx + 1
+                    cited_indices.add(src_num)
+                    citation_links.append(f"[[{src_num}]](<{web.uri}>)")
+
+        if citation_links:
+            cite_str = " " + " ".join(citation_links)
+            text = text[:end_index] + cite_str + text[end_index:]
+
+    # Append Sources block at the end
+    if cited_indices:
+        sources_to_show = [s for s in valid_sources if s["index"] in cited_indices]
+    else:
+        sources_to_show = valid_sources[:5]
+
+    if sources_to_show:
+        source_lines = [
+            f"{s['index']}. [{s['title']}](<{s['uri']}>)"
+            for s in sources_to_show[:8]
+        ]
+        text = text.rstrip() + "\n\n**Sources:**\n" + "\n".join(source_lines)
+
+    return text
+

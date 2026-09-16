@@ -35,11 +35,14 @@ from utils.gemini_files import (
 from utils.llm import (
     DEFAULT_GEMINI_MODEL,
     format_gemini_error,
+    format_grounding_citations,
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
     is_transient_error,
+    user_requested_sources,
 )
+
 from utils.pdf import (
     compile_text_to_pdf,
     is_pdf,
@@ -58,8 +61,10 @@ __all__ = [
     "async_remove_user_from_whitelist",
     "format_for_discord",
     "format_gemini_error",
+    "format_grounding_citations",
     "generate_content_with_retry",
     "get_cog_whitelist",
+
     "get_discord_user_id",
     "get_gemini_client",
     "get_gemini_file_cache",
@@ -76,5 +81,6 @@ __all__ = [
     "run_in_executor",
     "split_message",
     "stage_or_inline_part",
+    "user_requested_sources",
     "validate_pb_token",
 ]

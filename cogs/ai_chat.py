@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 from google.genai import errors, types
 
-from tools import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+from tools import AI_CHAT_TOOLS, GENERAL_AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
 from utils.discord_helpers import (
     format_for_discord,
     is_user_authorized,
@@ -22,10 +22,13 @@ from utils.discord_helpers import (
 from utils.gemini_files import get_gemini_file_cache, stage_or_inline_part
 from utils.llm import (
     format_gemini_error,
+    format_grounding_citations,
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    user_requested_sources,
 )
+
 
 
 class AIChat(commands.Cog):
@@ -79,7 +82,7 @@ class AIChat(commands.Cog):
             "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
             "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
-            "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, or technical question (e.g. 'distance between NJ and IN?', 'how far is New York from Chicago?', 'what is the speed of light?', 'write a python function', 'help me fix this code'), answer DIRECTLY and succinctly using your general knowledge. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
+            "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, technical question, or recent events/news, answer DIRECTLY and succinctly. You have real-time Google Search grounding enabled to verify facts, schedules, breaking news, or information beyond your training cutoff. DO NOT include raw source URLs, citation links, or references in your response text unless the user explicitly asks for sources or links. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
             "3. ONLY call database tools when the user explicitly or clearly asks to interact with their personal records:\n"
             "   - When asked about the reading list (e.g. 'what\\'s on my reading list'), call ONLY `get_reading_list` and respond ONLY about the user\\'s books. When asked to update a book (e.g. 'mark as read', 'update reading status'), call `update_book`.\n"
@@ -1198,16 +1201,37 @@ class AIChat(commands.Cog):
         else:
             contents_list = list(contents)
 
+        # Check if user explicitly requested sources/citations
+        user_prompt_text = ""
+        if isinstance(contents, str):
+            user_prompt_text = contents
+        elif isinstance(contents, list):
+            for c in reversed(contents):
+                if isinstance(c, types.Content) and c.role == "user" and c.parts:
+                    for p in c.parts:
+                        if getattr(p, "text", None):
+                            user_prompt_text = p.text
+                            break
+                    if user_prompt_text:
+                        break
+        wants_sources = user_requested_sources(user_prompt_text)
+
+        enable_grounding = (
+            os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
+        )
+        active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+
         sys_prompt = self.get_system_instruction()
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt if sys_prompt else None,
-            tools=AI_CHAT_TOOLS,
+            tools=active_tools,
         )
 
         model_name = get_gemini_model()
         max_tool_turns = 20
         response_text = ""
         last_response = None
+        grounding_metadata = None
         for _ in range(max_tool_turns):
             response = await generate_content_with_retry(
                 self.client,
@@ -1216,6 +1240,9 @@ class AIChat(commands.Cog):
                 config=config,
             )
             last_response = response
+
+            if response.candidates and response.candidates[0].grounding_metadata:
+                grounding_metadata = response.candidates[0].grounding_metadata
 
             # Accumulate token usage if available
             if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -1234,14 +1261,22 @@ class AIChat(commands.Cog):
             # Check if the model requested any tool calls
             function_calls = response.function_calls
             if not function_calls:
-                response_text = format_for_discord(response.text or "")
+                raw_text = response.text or ""
+                cited_text = format_grounding_citations(
+                    raw_text, grounding_metadata, include_sources=wants_sources
+                )
+                response_text = format_for_discord(cited_text)
                 break
 
             valid_function_calls = [
                 fc for fc in function_calls if fc.name in TOOL_HANDLERS
             ]
             if not valid_function_calls:
-                response_text = format_for_discord(response.text or "")
+                raw_text = response.text or ""
+                cited_text = format_grounding_citations(
+                    raw_text, grounding_metadata, include_sources=wants_sources
+                )
+                response_text = format_for_discord(cited_text)
                 break
 
             tool_calls_count += len(valid_function_calls)
@@ -1274,17 +1309,39 @@ class AIChat(commands.Cog):
             contents_list.append(types.Content(role="user", parts=tool_response_parts))
 
         if not response_text and last_response is not None:
-            response_text = format_for_discord(last_response.text or "")
+            raw_text = last_response.text or ""
+            if (
+                not grounding_metadata
+                and last_response.candidates
+                and last_response.candidates[0].grounding_metadata
+            ):
+                grounding_metadata = last_response.candidates[0].grounding_metadata
+            cited_text = format_grounding_citations(
+                raw_text, grounding_metadata, include_sources=wants_sources
+            )
+            response_text = format_for_discord(cited_text)
 
         duration_s = time.monotonic() - start_time
         if context is not None:
+            search_queries = (
+                list(grounding_metadata.web_search_queries)
+                if grounding_metadata
+                and getattr(grounding_metadata, "web_search_queries", None)
+                else []
+            )
             context["telemetry"] = {
                 "duration_s": duration_s,
                 "total_tokens": total_tokens,
                 "tool_calls": tool_calls_count,
+                "grounded": bool(
+                    grounding_metadata
+                    and getattr(grounding_metadata, "grounding_chunks", None)
+                ),
+                "search_queries": search_queries,
             }
 
         return response_text
+
 
     @commands.command(
         name="ask", help="Ask Gemini a question or send an image, audio, or document."

@@ -17,15 +17,18 @@ import sentry_sdk
 from utils.discord_helpers import is_user_authorized, split_message, render_footer
 from utils.gemini_files import stage_or_inline_part
 from utils.llm import (
+    format_gemini_error,
+    format_grounding_citations,
+    generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
-    format_gemini_error,
-    generate_content_with_retry,
+    user_requested_sources,
 )
 from utils import anki as anki_utils
 from utils import obsidian as vault_utils
 from tools.anki import handle_create_anki_deck, handle_vault_export_anki_deck
-from tools.registry import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+from tools.registry import AI_CHAT_TOOLS, GENERAL_AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+
 
 
 class Flashcards(commands.Cog):
@@ -195,9 +198,17 @@ class Flashcards(commands.Cog):
                 "out_files": [],
             }
 
+            has_source_material = bool(file or vault_note)
+            wants_sources = user_requested_sources(prompt)
+            enable_grounding = (
+                not has_source_material
+                and os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
+            )
+            active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+
             model_name = get_gemini_model()
             config = types.GenerateContentConfig(
-                tools=AI_CHAT_TOOLS,
+                tools=active_tools,
             )
 
             contents_list = [types.Content(role="user", parts=parts)]
@@ -227,7 +238,16 @@ class Flashcards(commands.Cog):
                 )
 
             final_text = tool_output_msg.strip() or (response.text or "Flashcards generated!")
+            grounding_metadata = (
+                response.candidates[0].grounding_metadata
+                if response.candidates and response.candidates[0].grounding_metadata
+                else None
+            )
+            final_text = format_grounding_citations(
+                final_text, grounding_metadata, include_sources=wants_sources
+            )
             chunks = split_message(final_text)
+
 
             for idx, chunk in enumerate(chunks):
                 if idx == 0 and discord_files:
@@ -367,6 +387,14 @@ class Flashcards(commands.Cog):
                     ack_msg = None
 
         clean_prompt = prompt.strip() or "Generate study flashcards"
+        has_source_material = bool(parts)
+        wants_sources = user_requested_sources(prompt)
+        enable_grounding = (
+            not has_source_material
+            and os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
+        )
+        active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+
         parts.append(
             types.Part.from_text(
                 text=f"Generate 10 high-quality Anki flashcards for: {clean_prompt}. Call `create_anki_deck` with `deck_name='{clean_prompt[:30]}'` and the card list."
@@ -385,8 +413,9 @@ class Flashcards(commands.Cog):
 
                 model_name = get_gemini_model()
                 config = types.GenerateContentConfig(
-                    tools=AI_CHAT_TOOLS,
+                    tools=active_tools,
                 )
+
 
                 contents_list = [types.Content(role="user", parts=parts)]
                 response = await generate_content_with_retry(
@@ -435,8 +464,17 @@ class Flashcards(commands.Cog):
                 )
 
                 final_text = tool_output_msg.strip() or (response.text or "Flashcards generated!")
+                grounding_metadata = (
+                    response.candidates[0].grounding_metadata
+                    if response.candidates and response.candidates[0].grounding_metadata
+                    else None
+                )
+                final_text = format_grounding_citations(
+                    final_text, grounding_metadata, include_sources=wants_sources
+                )
                 if footer:
                     final_text = f"{final_text.rstrip()}\n\n{footer}"
+
 
                 chunks = split_message(final_text)
 

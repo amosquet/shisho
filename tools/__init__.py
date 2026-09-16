@@ -5,6 +5,8 @@ tools/__init__.py - AI tools package for Shisho.
 from tools.registry import (
     AI_CHAT_TOOLS,
     ALL_FUNCTION_DECLARATIONS,
+    GENERAL_AI_CHAT_TOOLS,
+    GOOGLE_SEARCH_TOOL,
     TOOL_HANDLERS,
     execute_tool,
 )
@@ -12,6 +14,9 @@ from tools.registry import (
 __all__ = [
     "AI_CHAT_TOOLS",
     "ALL_FUNCTION_DECLARATIONS",
+    "GENERAL_AI_CHAT_TOOLS",
+    "GOOGLE_SEARCH_TOOL",
     "TOOL_HANDLERS",
     "execute_tool",
 ]
+
