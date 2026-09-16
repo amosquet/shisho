@@ -2189,6 +2189,7 @@ class AIChat(commands.Cog):
         async with message.channel.typing():
             try:
                 contents = None
+                parts = None
                 if is_reply:
                     contents = await self._build_reply_chain_contents(
                         message, attachments_out=None
@@ -2197,12 +2198,13 @@ class AIChat(commands.Cog):
                     parts = await self._extract_message_parts(
                         message, is_prefix=False, attachments_out=None
                     )
-                    if parts:
-                        contents = [types.Content(role="user", parts=parts)]
+                    
                 if not contents:
-                    parts = await self._extract_message_parts(
-                        message, is_prefix=False, attachments_out=None
-                    )
+                    if parts is None:
+                        parts = await self._extract_message_parts(
+                            message, is_prefix=False, attachments_out=None
+                        )
+                        
                     if not parts:
                         if ack_msg:
                             try:
@@ -2210,7 +2212,30 @@ class AIChat(commands.Cog):
                             except Exception:
                                 pass
                         return
-                    contents = [types.Content(role="user", parts=parts)]
+                        
+                    author_name = getattr(message.author, "display_name", "User")
+                    author_handle = getattr(message.author, "name", "")
+                    handle_info = f" (@{author_handle})" if author_handle else ""
+                    
+                    new_parts = []
+                    for p in parts:
+                        if hasattr(p, "text") and p.text is not None:
+                            if is_bot_mentioned:
+                                new_parts.append(
+                                    types.Part.from_text(
+                                        text=f"[{author_name}{handle_info} tagged you]: {p.text}"
+                                    )
+                                )
+                            else:
+                                new_parts.append(
+                                    types.Part.from_text(
+                                        text=f"[{author_name}{handle_info}]: {p.text}"
+                                    )
+                                )
+                        else:
+                            new_parts.append(p)
+                            
+                    contents = [types.Content(role="user", parts=new_parts)]
 
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
