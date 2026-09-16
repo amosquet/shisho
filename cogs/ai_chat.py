@@ -12,7 +12,15 @@ from discord import app_commands
 from discord.ext import commands
 from google.genai import errors, types
 
-from tools import AI_CHAT_TOOLS, GENERAL_AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+import sys
+
+from tools import (
+    AI_CHAT_TOOLS,
+    GENERAL_AI_CHAT_TOOLS,
+    GOOGLE_SEARCH_TOOL,
+    TOOL_HANDLERS,
+    execute_tool,
+)
 from utils.discord_helpers import (
     format_for_discord,
     is_user_authorized,
@@ -26,8 +34,11 @@ from utils.llm import (
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    is_tool_combination_error,
+    query_targets_bot_tools,
     user_requested_sources,
 )
+
 
 
 
@@ -1220,11 +1231,17 @@ class AIChat(commands.Cog):
             os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
         )
         active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+        tool_config = (
+            types.ToolConfig(include_server_side_tool_invocations=True)
+            if enable_grounding
+            else None
+        )
 
         sys_prompt = self.get_system_instruction()
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt if sys_prompt else None,
             tools=active_tools,
+            tool_config=tool_config,
         )
 
         model_name = get_gemini_model()
@@ -1233,13 +1250,40 @@ class AIChat(commands.Cog):
         last_response = None
         grounding_metadata = None
         for _ in range(max_tool_turns):
-            response = await generate_content_with_retry(
-                self.client,
-                model=model_name,
-                contents=contents_list,
-                config=config,
-            )
+            try:
+                response = await generate_content_with_retry(
+                    self.client,
+                    model=model_name,
+                    contents=contents_list,
+                    config=config,
+                )
+            except Exception as e:
+                if enable_grounding and is_tool_combination_error(e):
+                    print(
+                        f"[AIChat] Tool combination unsupported for model '{model_name}': {e}. Falling back to single-tool mode.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    enable_grounding = False
+                    if query_targets_bot_tools(user_prompt_text):
+                        active_tools = AI_CHAT_TOOLS
+                    else:
+                        active_tools = [GOOGLE_SEARCH_TOOL]
+
+                    config = types.GenerateContentConfig(
+                        system_instruction=sys_prompt if sys_prompt else None,
+                        tools=active_tools,
+                    )
+                    response = await generate_content_with_retry(
+                        self.client,
+                        model=model_name,
+                        contents=contents_list,
+                        config=config,
+                    )
+                else:
+                    raise
             last_response = response
+
 
             if response.candidates and response.candidates[0].grounding_metadata:
                 grounding_metadata = response.candidates[0].grounding_metadata

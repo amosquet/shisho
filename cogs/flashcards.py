@@ -22,8 +22,10 @@ from utils.llm import (
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    is_tool_combination_error,
     user_requested_sources,
 )
+
 from utils import anki as anki_utils
 from utils import obsidian as vault_utils
 from tools.anki import handle_create_anki_deck, handle_vault_export_anki_deck
@@ -205,19 +207,39 @@ class Flashcards(commands.Cog):
                 and os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
             )
             active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+            tool_config = (
+                types.ToolConfig(include_server_side_tool_invocations=True)
+                if enable_grounding
+                else None
+            )
 
             model_name = get_gemini_model()
             config = types.GenerateContentConfig(
                 tools=active_tools,
+                tool_config=tool_config,
             )
 
             contents_list = [types.Content(role="user", parts=parts)]
-            response = await generate_content_with_retry(
-                self.client,
-                model=model_name,
-                contents=contents_list,
-                config=config,
-            )
+            try:
+                response = await generate_content_with_retry(
+                    self.client,
+                    model=model_name,
+                    contents=contents_list,
+                    config=config,
+                )
+            except Exception as e:
+                if enable_grounding and is_tool_combination_error(e):
+                    active_tools = AI_CHAT_TOOLS
+                    config = types.GenerateContentConfig(tools=active_tools)
+                    response = await generate_content_with_retry(
+                        self.client,
+                        model=model_name,
+                        contents=contents_list,
+                        config=config,
+                    )
+                else:
+                    raise
+
 
             # Check tool calls
             function_calls = response.function_calls or []
@@ -411,19 +433,39 @@ class Flashcards(commands.Cog):
                     "out_files": [],
                 }
 
+                tool_config = (
+                    types.ToolConfig(include_server_side_tool_invocations=True)
+                    if enable_grounding
+                    else None
+                )
+
                 model_name = get_gemini_model()
                 config = types.GenerateContentConfig(
                     tools=active_tools,
+                    tool_config=tool_config,
                 )
-
 
                 contents_list = [types.Content(role="user", parts=parts)]
-                response = await generate_content_with_retry(
-                    self.client,
-                    model=model_name,
-                    contents=contents_list,
-                    config=config,
-                )
+                try:
+                    response = await generate_content_with_retry(
+                        self.client,
+                        model=model_name,
+                        contents=contents_list,
+                        config=config,
+                    )
+                except Exception as e:
+                    if enable_grounding and is_tool_combination_error(e):
+                        active_tools = AI_CHAT_TOOLS
+                        config = types.GenerateContentConfig(tools=active_tools)
+                        response = await generate_content_with_retry(
+                            self.client,
+                            model=model_name,
+                            contents=contents_list,
+                            config=config,
+                        )
+                    else:
+                        raise
+
 
                 total_tokens = 0
                 if hasattr(response, "usage_metadata") and response.usage_metadata:

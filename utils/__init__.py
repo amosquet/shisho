@@ -39,9 +39,12 @@ from utils.llm import (
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    is_tool_combination_error,
     is_transient_error,
+    query_targets_bot_tools,
     user_requested_sources,
 )
+
 
 from utils.pdf import (
     compile_text_to_pdf,
@@ -73,10 +76,13 @@ __all__ = [
     "get_pb_url",
     "get_pb_user_discord_id",
     "is_pdf",
+    "is_tool_combination_error",
     "is_transient_error",
     "is_user_authorized",
     "prepare_file_upload_payload",
+    "query_targets_bot_tools",
     "remove_user_from_whitelist",
+
     "render_footer",
     "run_in_executor",
     "split_message",

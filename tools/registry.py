@@ -163,9 +163,12 @@ AI_CHAT_TOOLS: list[types.Tool] = [
 ]
 
 GENERAL_AI_CHAT_TOOLS: list[types.Tool] = [
-    types.Tool(function_declarations=ALL_FUNCTION_DECLARATIONS),
-    GOOGLE_SEARCH_TOOL,
+    types.Tool(
+        function_declarations=ALL_FUNCTION_DECLARATIONS,
+        google_search=types.GoogleSearch(),
+    )
 ]
+
 
 # Dispatch Table mapping tool names to async execution handlers
 TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] = {

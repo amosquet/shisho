@@ -8,7 +8,9 @@ import asyncio
 import json
 import os
 import re
+import sys
 from typing import Any, Optional
+
 
 from google import genai
 from google.genai import errors, types
@@ -227,7 +229,7 @@ def is_transient_error(error: Exception) -> bool:
 
 def format_gemini_error(error: Exception, include_details: bool = False) -> str:
     """
-    Capture exception to Sentry and return a user-friendly error message.
+    Capture exception to Sentry, log to stderr, and return a user-friendly error message.
 
     Args:
         error: The caught exception.
@@ -236,6 +238,7 @@ def format_gemini_error(error: Exception, include_details: bool = False) -> str:
     Returns:
         User-facing error message string.
     """
+    print(f"[Gemini API Error] {type(error).__name__}: {error}", file=sys.stderr, flush=True)
     try:
         sentry_sdk.capture_exception(error)
     except Exception:
@@ -254,6 +257,70 @@ def format_gemini_error(error: Exception, include_details: bool = False) -> str:
         if include_details
         else MSG_UNEXPECTED_ERROR
     )
+
+
+def is_tool_combination_error(error: Exception) -> bool:
+    """
+    Check if an exception indicates that the model or API does not support
+    combining built-in tools (like google_search) with custom function declarations.
+    """
+    msg = str(error).lower()
+    return (
+        "tool" in msg
+        and (
+            "combination" in msg
+            or "cannot be used with function_declarations" in msg
+            or "cannot be used with" in msg
+            or "unsupported" in msg
+            or "not supported" in msg
+            or "google_search" in msg
+            or "multiple tool" in msg
+            or "configuration" in msg
+            or "invalid argument" in msg
+            or "invalid_argument" in msg
+        )
+    ) or (
+        isinstance(error, errors.APIError)
+        and getattr(error, "code", None) == 400
+        and ("tool" in msg or "invalid_argument" in msg or "invalid argument" in msg)
+    )
+
+
+
+def query_targets_bot_tools(text: str) -> bool:
+    """
+    Determine if a prompt explicitly targets Shisho's bot tools (reading list,
+    reminders, notes, vault, printing, channels, anki).
+    """
+    if not text or not isinstance(text, str):
+        return False
+    t = text.lower()
+    tool_keywords = [
+        "reading list",
+        "read book",
+        "add book",
+        "books list",
+        "recommendation",
+        "reminder",
+        "remind me",
+        "alarm",
+        "schedule",
+        "note",
+        "notes",
+        "vault",
+        "obsidian",
+        "print",
+        "printer",
+        "anki",
+        "flashcard",
+        "channel",
+        "discord channel",
+        "ai model",
+        "switch model",
+        "change model",
+    ]
+    return any(k in t for k in tool_keywords)
+
 
 
 async def generate_content_with_retry(
