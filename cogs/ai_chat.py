@@ -110,7 +110,7 @@ class AIChat(commands.Cog):
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
             "5. For general conversation or greetings (like 'hello'), chat naturally in your sarcastic, intelligent Shisho persona without giving unsolicited status updates or asking what to update.\n"
-            "6. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help (e.g. 'shisho is so funny lol'), reply ONLY with '[NO_ACTION]'. However, if a user replies to a message and tags you, or issues any direct command or question (like 'research...', 'can you print...', 'add this...', 'what is...'), NEVER reply with '[NO_ACTION]'; inspect the conversation and execute the requested action directly.\n"
+            "6. When @mentioned in a server channel, if the mention is merely ambient chatter talking about you to someone else without asking for help (e.g. 'shisho is so funny lol'), reply ONLY with '[NO_ACTION]'. However, if a user replies to a message and tags you, or asks for help/actions (like 'can you print...', 'add this...', 'remind me...'), NEVER reply with '[NO_ACTION]'; inspect the conversation and execute the requested action directly.\n"
             "7. If given an audio recording or voice memo without explicit instructions, transcribe/summarize it and save it with `add_note`.\n"
             "8. When a user replies to someone's message (or references a previous message) and tags/pings you, or asks for follow-up actions like 'add this to my reading list', 'remind me about this', 'save this note', 'print this', or simply tags you:\n"
             "   - Carefully inspect the referenced message, any attachments/images/audio/documents, and the surrounding conversation history to determine the intent and correct course of action:\n"
@@ -1315,8 +1315,17 @@ class AIChat(commands.Cog):
             valid_function_calls = [
                 fc for fc in function_calls if fc.name in TOOL_HANDLERS
             ]
-            
-            # Append the model turn that requested tool calls (both server-side and client-side)
+            if not valid_function_calls:
+                raw_text = response.text or ""
+                cited_text = format_grounding_citations(
+                    raw_text, grounding_metadata, include_sources=wants_sources
+                )
+                response_text = format_for_discord(cited_text)
+                break
+
+            tool_calls_count += len(valid_function_calls)
+
+            # Append the model turn that requested tool calls
             candidate_parts = []
             if response.candidates and response.candidates[0].content:
                 candidate_parts = response.candidates[0].content.parts
@@ -1325,14 +1334,6 @@ class AIChat(commands.Cog):
                     types.Part(function_call=fc) for fc in valid_function_calls
                 ]
             contents_list.append(types.Content(role="model", parts=candidate_parts))
-
-            if not valid_function_calls:
-                # The model only invoked server-side tools (like google_search).
-                # Their responses are already included in the candidate_parts.
-                # We continue the loop to let the model synthesize the final text.
-                continue
-
-            tool_calls_count += len(valid_function_calls)
 
             # Execute tool calls and collect responses
             tool_response_parts = []
@@ -2188,7 +2189,6 @@ class AIChat(commands.Cog):
         async with message.channel.typing():
             try:
                 contents = None
-                parts = None
                 if is_reply:
                     contents = await self._build_reply_chain_contents(
                         message, attachments_out=None
@@ -2197,13 +2197,12 @@ class AIChat(commands.Cog):
                     parts = await self._extract_message_parts(
                         message, is_prefix=False, attachments_out=None
                     )
-                    
+                    if parts:
+                        contents = [types.Content(role="user", parts=parts)]
                 if not contents:
-                    if parts is None:
-                        parts = await self._extract_message_parts(
-                            message, is_prefix=False, attachments_out=None
-                        )
-                        
+                    parts = await self._extract_message_parts(
+                        message, is_prefix=False, attachments_out=None
+                    )
                     if not parts:
                         if ack_msg:
                             try:
@@ -2211,31 +2210,7 @@ class AIChat(commands.Cog):
                             except Exception:
                                 pass
                         return
-                        
-                    author_name = getattr(message.author, "display_name", "User")
-                    author_handle = getattr(message.author, "name", "")
-                    handle_info = f" (@{author_handle})" if author_handle else ""
-                    bot_display_name = getattr(self.bot.user, "display_name", "Shisho") if self.bot.user else "Shisho"
-                    
-                    new_parts = []
-                    for p in parts:
-                        if hasattr(p, "text") and p.text is not None:
-                            if is_bot_mentioned:
-                                new_parts.append(
-                                    types.Part.from_text(
-                                        text=f"[{author_name}{handle_info}]: @{bot_display_name}, {p.text}"
-                                    )
-                                )
-                            else:
-                                new_parts.append(
-                                    types.Part.from_text(
-                                        text=f"[{author_name}{handle_info}]: {p.text}"
-                                    )
-                                )
-                        else:
-                            new_parts.append(p)
-                            
-                    contents = [types.Content(role="user", parts=new_parts)]
+                    contents = [types.Content(role="user", parts=parts)]
 
                 text = await self._generate_ai_response(
                     contents, user_id=user_id_str, context=exec_context
