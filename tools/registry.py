@@ -110,6 +110,10 @@ from tools.reading_pacer import (
     GENERATE_READING_PLAN_TOOL,
     handle_generate_reading_plan,
 )
+from tools.exporting import (
+    EXPORT_PDF_TOOL,
+    handle_export_pdf,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -154,6 +158,7 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     CREATE_ICAL_TODO_TOOL,
     EXPORT_REMINDERS_ICAL_TOOL,
     GENERATE_READING_PLAN_TOOL,
+    EXPORT_PDF_TOOL,
 ]
 
 GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
@@ -213,6 +218,7 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "create_ical_todo": handle_create_ical_todo,
     "export_reminders_ical": handle_export_reminders_ical,
     "generate_reading_plan": handle_generate_reading_plan,
+    "export_pdf": handle_export_pdf,
 }
 
 

@@ -190,11 +190,17 @@ def select_best_attachment(
     return None
 
 
-async def handle_print_document(bot, args: dict, user_id: str, context: dict | None = None) -> str:
-    """Handler for the print_document AI tool."""
-    print_cog = bot.get_cog("Print")
-    if not print_cog:
-        return "Error: Print cog is unavailable."
+async def _resolve_printable_content(
+    bot, args: dict, user_id: str, context: dict | None = None
+) -> tuple[bytes, str, str | None]:
+    """
+    Resolves printable or exportable content from any reasonable source:
+    1. Chat attachment (from message, reply, or channel history)
+    2. Saved PocketBase note (by ID or query)
+    3. Obsidian vault note (by path or query)
+    4. Explicit content text/markdown
+    5. Fallback Obsidian vault search
+    """
     content = str(args.get("content") or "").strip()
     filename = str(args.get("filename") or "").strip()
     note_id = str(args.get("note_id") or "").strip()
@@ -240,6 +246,7 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                                     fallback_name = "note_attachment.pdf" if is_pdf(file_bytes) else "note_attachment.txt"
                                     filename = att_name or fallback_name
                     except Exception as e:
+                        import sentry_sdk
                         sentry_sdk.capture_exception(e)
 
                 if not file_bytes:
@@ -257,10 +264,10 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
         from utils import obsidian as vault_utils
 
         if not await _is_vault_authorized(bot, user_id):
-            return "Permission Denied: You are not authorized to access or print notes from the Obsidian vault."
+            return b"", "", "Permission Denied: You are not authorized to access or print notes from the Obsidian vault."
 
         if not vault_utils.get_vault_path():
-            return "Error: Obsidian vault path is not configured on the bot."
+            return b"", "", "Error: Obsidian vault path is not configured on the bot."
 
         note_data = None
         try:
@@ -272,6 +279,7 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                 if results:
                     note_data = await run_in_executor(vault_utils.read_note, rel_path=results[0]["path"])
             except Exception as e:
+                import sentry_sdk
                 sentry_sdk.capture_exception(e)
 
         if note_data and note_data.get("content"):
@@ -318,10 +326,11 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                         file_bytes = note_data["content"].encode("utf-8")
                         filename = note_data.get("filename") or f"{search_target}.md"
             except Exception as e:
+                import sentry_sdk
                 sentry_sdk.capture_exception(e)
 
     if not file_bytes:
-        return "Error: No printable content, note, or attachment found to print."
+        return b"", "", "Error: No printable content, note, or attachment found."
 
     if not filename:
         filename = "document.txt"
@@ -337,9 +346,26 @@ async def handle_print_document(bot, args: dict, user_id: str, context: dict | N
                     text_content, title=doc_title, paper_size=paper_size
                 )
             except Exception as pdf_err:
+                import sentry_sdk
                 sentry_sdk.capture_exception(pdf_err)
                 # If compilation fails or content cannot be decoded as UTF-8, sanitize extension to .txt
                 filename = os.path.splitext(filename)[0] + ".txt"
+
+    return file_bytes, filename, None
+
+
+async def handle_print_document(bot, args: dict, user_id: str, context: dict | None = None) -> str:
+    """Handler for the print_document AI tool."""
+    print_cog = bot.get_cog("Print")
+    if not print_cog:
+        return "Error: Print cog is unavailable."
+
+    file_bytes, filename, error_msg = await _resolve_printable_content(bot, args, user_id, context)
+    if error_msg:
+        return error_msg
+
+    raw_paper_size = str(args.get("paper_size") or "letter").strip().lower()
+    paper_size = "legal" if raw_paper_size == "legal" else "letter"
 
     try:
         success, res_id = await run_in_executor(

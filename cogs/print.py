@@ -552,6 +552,89 @@ class PrintCog(commands.Cog, name="Print"):
     ) -> list[app_commands.Choice[str]]:
         return await self.print_job_autocomplete(interaction, current)
 
+    @app_commands.command(
+        name="export_pdf",
+        description="Compile text, a note, an Obsidian vault note, or a file into a styled PDF attachment.",
+    )
+    @app_commands.describe(
+        text="Optional: Direct text or markdown snippet to convert to PDF",
+        file="Optional: File attachment to convert or export to PDF",
+        note_id="Optional: Saved note ID or keyword to export as PDF",
+        vault_path="Optional: Obsidian vault note relative path or title to export as PDF",
+        filename="Optional: Custom filename (e.g. 'summary.pdf')",
+        paper_size="Paper size (Letter or Legal, default: Letter)",
+    )
+    @app_commands.choices(
+        paper_size=[
+            app_commands.Choice(name="Letter", value="letter"),
+            app_commands.Choice(name="Legal", value="legal"),
+        ]
+    )
+    async def slash_export_pdf(
+        self,
+        interaction: discord.Interaction,
+        text: str | None = None,
+        file: discord.Attachment | None = None,
+        note_id: str | None = None,
+        vault_path: str | None = None,
+        filename: str | None = None,
+        paper_size: app_commands.Choice[str] = None,
+    ):
+        await interaction.response.defer(ephemeral=False)
+
+        if not text and not file and not note_id and not vault_path:
+            await interaction.followup.send(
+                "Please provide text, a file attachment, a note ID, or an Obsidian vault note path to export as PDF.",
+                ephemeral=True,
+            )
+            return
+
+        from tools.exporting import handle_export_pdf
+
+        paper_size_val = (
+            paper_size.value
+            if isinstance(paper_size, app_commands.Choice)
+            else (paper_size or "letter")
+        )
+
+        args = {
+            "content": text or "",
+            "filename": filename or "",
+            "note_id": note_id or "",
+            "vault_path": vault_path or "",
+            "paper_size": paper_size_val,
+        }
+
+        attachments = []
+        if file:
+            try:
+                raw_bytes = await file.read()
+                attachments.append({"filename": file.filename, "bytes": raw_bytes})
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                await interaction.followup.send(f"Failed to read attached file: `{e}`", ephemeral=True)
+                return
+
+        context = {
+            "attachments": attachments,
+            "out_files": [],
+            "channel": interaction.channel,
+        }
+
+        result = await handle_export_pdf(
+            self.bot, args, str(interaction.user.id), context=context
+        )
+
+        out_files = [
+            discord.File(fp=io.BytesIO(f["bytes"]), filename=f["filename"])
+            for f in context.get("out_files", [])
+        ]
+
+        if out_files:
+            await interaction.followup.send(content=result, files=out_files)
+        else:
+            await interaction.followup.send(content=result, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PrintCog(bot))
