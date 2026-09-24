@@ -75,3 +75,14 @@
   - **Reading Schedule Integration:** Follow up on any generated reading plan by saying *"Schedule reminders for this reading plan in the database"*, and Shisho persists each session into PocketBase with one call.
   - **Atomic In-Memory Scheduling:** Resolves user timezone, computes UTC timestamps, validates against past dates, persists records to PocketBase, and arms in-memory timer tasks immediately.
   - **Multi-Task Support:** Schedules up to 100 reminders at once for study routines, chore lists, or project milestones.
+
+## Persistent User Feedback & AI Memory
+- **Commands:** `/reset_ai_preferences`, `!reset_ai_preferences`
+- **AI Tools:** `update_user_preference`
+- **Description:** Allows users to provide natural language feedback, formatting instructions, and behavioral preferences that persist across conversations and bot restarts.
+- **Features:**
+  - **Structured JSON Array Storage:** Rules are stored in the PocketBase `shisho_users` table (`bot_instructions` field) as a structured array `[{"id": 1, "rule": "..."}]`.
+  - **Memory Manager Subroutine:** Uses Gemini structured JSON output (`temperature=0.0`) to handle deterministic rule appending, auto-compaction (keeping rules concise and under 10), and intelligent contradiction resolution (overwriting opposing rules).
+  - **Zero-Latency In-Memory TTL Cache:** 10-minute cache with negative caching for unregistered users, plus instant invalidation when preferences are updated.
+  - **Prompt Placement Weight:** Custom instructions are injected at the absolute bottom of the system prompt to maximize LLM attention and prevent the "Lost in the Middle" phenomenon.
+  - **Emergency Reset Command:** Instant `/reset_ai_preferences` slash and prefix command to completely wipe custom rules and reset AI behavior without needing to go through the LLM.

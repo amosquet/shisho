@@ -114,6 +114,10 @@ from tools.exporting import (
     EXPORT_PDF_TOOL,
     handle_export_pdf,
 )
+from tools.preferences import (
+    UPDATE_USER_PREFERENCE_TOOL,
+    handle_update_user_preference,
+)
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -159,6 +163,7 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     EXPORT_REMINDERS_ICAL_TOOL,
     GENERATE_READING_PLAN_TOOL,
     EXPORT_PDF_TOOL,
+    UPDATE_USER_PREFERENCE_TOOL,
 ]
 
 GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
@@ -219,6 +224,7 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "export_reminders_ical": handle_export_reminders_ical,
     "generate_reading_plan": handle_generate_reading_plan,
     "export_pdf": handle_export_pdf,
+    "update_user_preference": handle_update_user_preference,
 }
 
 

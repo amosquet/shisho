@@ -6,6 +6,7 @@ user identity mapping, multipart file upload helpers, and async wrappers.
 
 import asyncio
 import functools
+import json
 import os
 from typing import Any, Callable, TypeVar, Union
 
@@ -143,6 +144,126 @@ def get_pb_user_discord_id(
         return getattr(user_record, "discord_id", None)
     except Exception:
         return None
+
+
+def get_user_instructions(
+    user_id: Union[str, int],
+    pb: Any = None,
+) -> list[dict]:
+    """
+    Retrieve stored persistent bot instructions/rules for a user from PocketBase.
+    Returns a list of dicts, e.g.:
+    [{"id": 1, "rule": "Reply in lowercase"}, {"id": 2, "rule": "Address me as boss"}]
+    Returns [] if the user is unregistered, has no instructions, or on error.
+    """
+    if not user_id:
+        return []
+
+    clean_did = "".join(c for c in str(user_id) if c.isdigit())
+    if not clean_did:
+        return []
+
+    try:
+        client = pb if pb is not None else get_pb_client()
+        pb_user_id = get_discord_user_id(client, clean_did)
+        if not pb_user_id:
+            return []
+
+        user_record = client.collection("shisho_users").get_one(pb_user_id)
+        raw = getattr(user_record, "bot_instructions", None)
+        if raw is None and isinstance(user_record, dict):
+            raw = user_record.get("bot_instructions")
+
+        if not raw:
+            return []
+
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if not raw:
+                return []
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return []
+        elif isinstance(raw, list):
+            parsed = raw
+        else:
+            return []
+
+        if isinstance(parsed, list):
+            valid_rules = []
+            for item in parsed:
+                if isinstance(item, dict) and "rule" in item:
+                    valid_rules.append(
+                        {
+                            "id": item.get("id", len(valid_rules) + 1),
+                            "rule": str(item["rule"]),
+                        }
+                    )
+            return valid_rules
+        return []
+    except Exception:
+        return []
+
+
+def update_user_instructions(
+    user_id: Union[str, int],
+    instructions: list[dict],
+    pb: Any = None,
+) -> bool:
+    """
+    Update stored persistent bot instructions for a user in PocketBase.
+    Accepts a list of rule dicts (e.g. [{"id": 1, "rule": "..."}]).
+    Saves to the 'bot_instructions' field in PocketBase.
+    Returns True if successfully updated, False otherwise.
+    """
+    if not user_id:
+        return False
+
+    clean_did = "".join(c for c in str(user_id) if c.isdigit())
+    if not clean_did:
+        return False
+
+    try:
+        client = pb if pb is not None else get_pb_client()
+        pb_user_id = get_discord_user_id(client, clean_did)
+        if not pb_user_id:
+            return False
+
+        clean_instructions = []
+        if isinstance(instructions, list):
+            for idx, item in enumerate(instructions, start=1):
+                if isinstance(item, dict) and "rule" in item:
+                    clean_instructions.append(
+                        {
+                            "id": item.get("id", idx),
+                            "rule": str(item["rule"]),
+                        }
+                    )
+
+        try:
+            client.collection("shisho_users").update(
+                pb_user_id, {"bot_instructions": clean_instructions}
+            )
+            return True
+        except Exception:
+            client.collection("shisho_users").update(
+                pb_user_id, {"bot_instructions": json.dumps(clean_instructions)}
+            )
+            return True
+    except Exception:
+        return False
+
+
+def clear_user_instructions(
+    user_id: Union[str, int],
+    pb: Any = None,
+) -> bool:
+    """
+    Clears all custom bot instructions for a user in PocketBase (resets to []).
+    Returns True on success, False otherwise.
+    """
+    return update_user_instructions(user_id, [], pb=pb)
 
 
 class MultiFileUpload(FileUpload):

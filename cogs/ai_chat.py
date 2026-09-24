@@ -21,6 +21,12 @@ from tools import (
     TOOL_HANDLERS,
     execute_tool,
 )
+from utils.db import (
+    clear_user_instructions,
+    get_discord_user_id,
+    get_user_instructions,
+    run_in_executor,
+)
 from utils.discord_helpers import (
     format_for_discord,
     is_user_authorized,
@@ -45,12 +51,15 @@ from utils.llm import (
 class AIChat(commands.Cog):
     """General AI Chat command with threaded conversations and multimodal image/audio support."""
 
+    USER_INSTRUCTIONS_CACHE_TTL = 600.0  # 10 minutes
+
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.client = get_gemini_client(self.api_key)
         self.active_threads: set[int] = set()
         self._thread_locks: dict[int, asyncio.Lock] = {}
+        self._user_instructions_cache: dict[str, tuple[list[dict], float]] = {}
 
     def _get_thread_lock(self, thread_id: int) -> asyncio.Lock:
         if thread_id not in self._thread_locks:
@@ -60,7 +69,43 @@ class AIChat(commands.Cog):
     def is_user_authorized(self, user_id: int) -> bool:
         return is_user_authorized(user_id, "AIChat")
 
-    def get_system_instruction(self) -> str | None:
+    def get_cached_user_instructions(self, user_id: str | int) -> list[dict]:
+        """
+        Retrieves user instructions using an in-memory TTL cache with negative caching.
+        Returns empty list for unregistered users or users with no custom rules.
+        """
+        if not user_id:
+            return []
+        clean_id = "".join(c for c in str(user_id) if c.isdigit())
+        if not clean_id:
+            return []
+
+        now = time.time()
+        if clean_id in self._user_instructions_cache:
+            rules, cached_at = self._user_instructions_cache[clean_id]
+            if now - cached_at < self.USER_INSTRUCTIONS_CACHE_TTL:
+                return rules
+
+        # Fetch from DB (returns [] if unregistered or empty, enabling negative caching)
+        rules = get_user_instructions(clean_id)
+        self._user_instructions_cache[clean_id] = (rules, now)
+        return rules
+
+    def set_cached_user_instructions(
+        self, user_id: str | int, instructions: list[dict]
+    ) -> None:
+        """Instantly overwrites the local cache list, bypassing the TTL wait."""
+        clean_id = "".join(c for c in str(user_id) if c.isdigit())
+        if clean_id:
+            self._user_instructions_cache[clean_id] = (instructions, time.time())
+
+    def invalidate_user_instructions_cache(self, user_id: str | int) -> None:
+        """Removes a user's instructions from the cache."""
+        clean_id = "".join(c for c in str(user_id) if c.isdigit())
+        if clean_id:
+            self._user_instructions_cache.pop(clean_id, None)
+
+    def get_system_instruction(self, user_id: str | int | None = None) -> str | None:
         if not hasattr(self, "_cached_prompt") or self._cached_prompt is None:
             prompt_file = "gemini_prompt.txt"
             base_prompt = ""
@@ -85,6 +130,7 @@ class AIChat(commands.Cog):
             "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
             "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see reminders (can filter by status='active', 'sent', or 'all'). Call `update_reminder` to edit or reschedule existing reminders. Call `delete_reminder` to cancel/delete reminders.\n"
             "- Notes: Call `add_note` to save notes (supporting plain text, rich text editor content, and file attachments). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, rich text editor content, or archived status.\n"
+            "- User Preferences & AI Memory: Call `update_user_preference` whenever the user specifies how they want Shisho to behave, reply, speak, or address them (e.g. 'always talk in lowercase', 'call me boss', 'don't use emojis', 'be more formal', 'change your tone'). This permanently updates and remembers their preferences in your database.\n"
             "- Printing & PDF Exporting: Call `print_document` to send a document, note, text summary, attached file, or Obsidian vault note to the physical printer via PocketBase Realtime queue or email fallback. Call `export_pdf` to generate a styled PDF from any reasonable source (a note, Obsidian vault note, document, attached image or file, or ANY dynamically generated text like a chat summary, explanation, or study guide) and send it directly back to the user in the Discord chat. When the user asks to export a note, export a chat conversation, or generate/send a PDF of anything (e.g. 'export this chat to PDF', 'export this explanation to PDF', 'send me a PDF of my biology notes', 'make a PDF of this image/document'), call `export_pdf`. For chat or dynamic exports, compile the requested text and pass it via the `content` parameter, and it will be compiled into a styled PDF and attached to the chat. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file. When asked to print a note from the Obsidian vault (e.g. 'print my biology lecture note from today', 'print note X from vault'), call `print_document` with `vault_path` set to the note's relative path or title (or search/read it with `vault_read_note`/`vault_search` and print it).\n"
             "- Channel Messaging: Call `send_channel_message` to post or send a message directly to a specific Discord text channel or thread (e.g. when asked 'introduce yourself in #checkpoints', 'send a message to #general', 'post an announcement in #channel', 'say hello in #dev'). Call `list_channels` to view available text channels in the server.\n"
             "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n"
@@ -100,6 +146,7 @@ class AIChat(commands.Cog):
             "   - When asked about recommendations / recommended list / suggestions (e.g. 'what books are on my recommended list', 'show my recommendations', 'what did friends suggest'), call ONLY `get_recommendations` (filter='for_me' or 'all') and respond with the books from the recommendations list. DO NOT say you don't have a recommended list.\n"
             "   - When asked about notes (e.g. 'search my notes', 'show archived notes', 'delete all the archived notes'), call the appropriate notes tool (`get_notes`, `delete_archived_notes`, `archive_note`, `update_note`, etc.) and respond ONLY about notes. DO NOT mention reading list or reminders.\n"
             "   - When asked about reminders (e.g. 'what reminders do I have'), call ONLY `list_reminders` and respond ONLY about reminders. When asked to reschedule or update a reminder, call `update_reminder`.\n"
+            "   - When asked to update, change, remember, or follow a behavioral preference or instruction (e.g. 'from now on speak in lowercase', 'call me boss', 'remember to never use emojis', 'change your persona to be nice'): call `update_user_preference` directly with their instruction.\n"
             "   - When asked to print something (e.g. 'print this document', 'print this note', 'print my reading list', 'print this PDF', 'print my biology lecture note from today', 'print note X from vault'): call `print_document` directly. When asked to export, generate, or send a PDF of a note, document, conversation, or chat summary in chat, call `export_pdf`. If exporting a chat or generated text, provide the markdown text in the `content` parameter of the tool call. If it refers to an Obsidian vault note, provide `vault_path`. When asked to check print jobs or queue status, or verify what was printed/sent (e.g. 'are you sure you sent the right file?', 'check the print queue', 'query the database', 'what file did you print?'), call `list_print_jobs`. DO NOT call `print_document` when the user is merely asking to verify, check, or confirm what was already sent or printed. When asked to cancel a print job, call `cancel_print_job`.\n"
             "   - When asked to post, send, announce, or introduce yourself in a specific channel (e.g. 'can you introduce yourself in #checkpoints', 'post this in #channel', 'send message to #general'), call `send_channel_message` with the target channel and the formatted message content. Once sent, provide a brief confirmation in the current conversation (e.g. 'Done, posted to #checkpoints!'). DO NOT print the entire announcement or intro into the current channel when the user requested it to be sent to another channel.\n"
             "   - When asked what model you are using or running (e.g. 'what AI model are you on?', 'what model is this?'), call `get_ai_model`.\n"
@@ -127,13 +174,23 @@ class AIChat(commands.Cog):
             "10. When the user attaches or shares a document, PDF, image, or text file with a request to print (e.g. 'print this document', 'print this', 'print this PDF'), or asks to print a note or reading list, call `print_document` directly. If they ask to export it or send a PDF back in chat (e.g. 'export as PDF', 'make a PDF of this', 'convert this to PDF', 'send me a PDF'), call `export_pdf`. Specify the exact filename of the attachment if known.\n"
             "11. Discord Threads: When the user asks to create or start a thread (e.g. 'make a thread with my note...', 'create a thread about...'), Shisho automatically creates the Discord thread in the channel and posts your response into it. NEVER claim that you cannot create threads or ask the user to copy/paste into a thread. When a user asks to make/start a thread with a note, document, book list, or topic, retrieve the required content (e.g. via `get_notes`) and output the full response directly.\n"
             "12. DISCORD MARKDOWN & NO LATEX: You are outputting directly into Discord chat. Discord does NOT support LaTeX or MathJax equations. NEVER use LaTeX tags or delimiters (do NOT use `$$...$$`, `$...$`, `\\text{}`, `\\mathbf{}`, `\\times`, `\\approx`, `\\frac{}{}`). Format all calculations, math, formulas, and balance breakdowns using standard plain text, clean Unicode (×, ÷, ≈, ±, ≤, ≥, °), and Discord markdown (**bold**, `inline code`, code blocks). Write currency amounts normally (e.g. $1,484.63) without LaTeX syntax.\n"
-            "13. DISCORD SLASH COMMANDS & ACCOUNT MANAGEMENT: When a user asks about account management, account details/profile, registration, PIN resets, or actions for which Shisho has a dedicated slash command without a natural language AI tool, inform and guide them to the appropriate slash command directly (e.g. `/account` to view their linked account details/email/registration, `/register` to link/create a Shisho account, `/resetpin` to regenerate their companion app PIN, `/check_authors` to check for author releases, `/force_sync` to sync book metadata, or `/ping` for latency). Do not search notes or claim account info does not exist when the user is simply looking for their Shisho profile.\n"
+            "13. DISCORD SLASH COMMANDS & ACCOUNT MANAGEMENT: When a user asks about account management, account details/profile, registration, PIN resets, or actions for which Shisho has a dedicated slash command without a natural language AI tool, inform and guide them to the appropriate slash command directly (e.g. `/account` to view their linked account details/email/registration, `/register` to link/create a Shisho account, `/reset_ai_preferences` to reset and clear custom AI behavioral preferences and rules, `/resetpin` to regenerate their companion app PIN, `/check_authors` to check for author releases, `/force_sync` to sync book metadata, or `/ping` for latency). Do not search notes or claim account info does not exist when the user is simply looking for their Shisho profile.\n"
             "14. ACTION & TOOL CONFIRMATIONS: When the user commands you to perform an action or tool operation (such as transcribing and saving documents into the Obsidian vault, updating notes/reading lists, setting reminders, adding books, or printing): once the task is completed, respond with a concise confirmation—either 'Done' or a brief 1-2 sentence summary of what was accomplished (such as the created note title and vault path). Avoid conversational filler or unnecessary preamble."
         )
 
         if base_prompt:
-            return f"{base_prompt}\n\n{behavior_instruction}"
-        return behavior_instruction
+            final_prompt = f"{base_prompt}\n\n{behavior_instruction}"
+        else:
+            final_prompt = behavior_instruction
+
+        if user_id:
+            rules = self.get_cached_user_instructions(user_id)
+            if rules:
+                bullet_lines = "\n".join(f"- {r['rule']}" for r in rules if "rule" in r)
+                if bullet_lines:
+                    final_prompt += f"\n\n--- USER CUSTOM INSTRUCTIONS ---\n{bullet_lines}"
+
+        return final_prompt
 
     def _should_create_thread(self, prompt: str, text: str, chunks: list[str]) -> bool:
         prompt_lower = (prompt or "").lower()
@@ -1237,7 +1294,7 @@ class AIChat(commands.Cog):
             else None
         )
 
-        sys_prompt = self.get_system_instruction()
+        sys_prompt = self.get_system_instruction(user_id=user_id)
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt if sys_prompt else None,
             tools=active_tools,
@@ -1887,6 +1944,65 @@ class AIChat(commands.Cog):
                     await interaction.followup.send(chunk, files=discord_files)
                 else:
                     await interaction.followup.send(chunk)
+
+    @app_commands.command(
+        name="reset_ai_preferences",
+        description="Emergency reset to clear all your saved AI preferences and custom instructions.",
+    )
+    async def reset_ai_preferences_slash(self, interaction: discord.Interaction):
+        """Instantly wipes custom PocketBase instructions and clears the local cache."""
+        await interaction.response.defer(ephemeral=True)
+        user_id = str(interaction.user.id)
+        clean_did = "".join(c for c in user_id if c.isdigit())
+
+        pb_user_id = await run_in_executor(get_discord_user_id, clean_did)
+        if not pb_user_id:
+            self.set_cached_user_instructions(clean_did, [])
+            await interaction.followup.send(
+                "You don't have a linked Shisho account. No custom preferences were found to reset.",
+                ephemeral=True,
+            )
+            return
+
+        success = await run_in_executor(clear_user_instructions, clean_did)
+        self.set_cached_user_instructions(clean_did, [])
+
+        if success:
+            await interaction.followup.send(
+                "🧹 Your AI preferences and custom instructions have been completely reset.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "⚠️ An error occurred while resetting your preferences. Please try again later.",
+                ephemeral=True,
+            )
+
+    @commands.command(name="reset_ai_preferences")
+    async def reset_ai_preferences_cmd(self, ctx: commands.Context):
+        """Emergency reset to clear all your saved AI preferences and custom instructions."""
+        user_id = str(ctx.author.id)
+        clean_did = "".join(c for c in user_id if c.isdigit())
+
+        pb_user_id = await run_in_executor(get_discord_user_id, clean_did)
+        if not pb_user_id:
+            self.set_cached_user_instructions(clean_did, [])
+            await ctx.send(
+                "You don't have a linked Shisho account. No custom preferences were found to reset."
+            )
+            return
+
+        success = await run_in_executor(clear_user_instructions, clean_did)
+        self.set_cached_user_instructions(clean_did, [])
+
+        if success:
+            await ctx.send(
+                "🧹 Your AI preferences and custom instructions have been completely reset."
+            )
+        else:
+            await ctx.send(
+                "⚠️ An error occurred while resetting your preferences. Please try again later."
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
