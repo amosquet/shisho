@@ -3,6 +3,7 @@ import io
 import mimetypes
 import os
 import re
+import sys
 import time
 from datetime import datetime
 
@@ -11,8 +12,6 @@ import sentry_sdk
 from discord import app_commands
 from discord.ext import commands
 from google.genai import errors, types
-
-import sys
 
 from tools import (
     AI_CHAT_TOOLS,
@@ -44,8 +43,6 @@ from utils.llm import (
     query_targets_bot_tools,
     user_requested_sources,
 )
-
-
 
 
 class AIChat(commands.Cog):
@@ -188,7 +185,9 @@ class AIChat(commands.Cog):
             if rules:
                 bullet_lines = "\n".join(f"- {r['rule']}" for r in rules if "rule" in r)
                 if bullet_lines:
-                    final_prompt += f"\n\n--- USER CUSTOM INSTRUCTIONS ---\n{bullet_lines}"
+                    final_prompt += (
+                        f"\n\n--- USER CUSTOM INSTRUCTIONS ---\n{bullet_lines}"
+                    )
 
         return final_prompt
 
@@ -1302,7 +1301,7 @@ class AIChat(commands.Cog):
         )
 
         model_name = get_gemini_model()
-        max_tool_turns = 20
+        max_tool_turns = 50
         response_text = ""
         last_response = None
         grounding_metadata = None
@@ -1340,7 +1339,6 @@ class AIChat(commands.Cog):
                 else:
                     raise
             last_response = response
-
 
             if response.candidates and response.candidates[0].grounding_metadata:
                 grounding_metadata = response.candidates[0].grounding_metadata
@@ -1442,7 +1440,6 @@ class AIChat(commands.Cog):
 
         return response_text
 
-
     @commands.command(
         name="ask", help="Ask Gemini a question or send an image, audio, or document."
     )
@@ -1472,7 +1469,10 @@ class AIChat(commands.Cog):
 
         # Post immediate acknowledgment
         ack_msg = None
-        is_dm = isinstance(ctx.channel, (discord.DMChannel, discord.GroupChannel)) or getattr(ctx, "guild", None) is None
+        is_dm = (
+            isinstance(ctx.channel, (discord.DMChannel, discord.GroupChannel))
+            or getattr(ctx, "guild", None) is None
+        )
         if is_dm or is_in_thread:
             try:
                 ack_msg = await ctx.send("Working on it...")
