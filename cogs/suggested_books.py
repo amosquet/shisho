@@ -143,7 +143,7 @@ class SuggestedBooks(commands.Cog):
         if cover_image:
             max_size = 5 * 1024 * 1024  # 5 MB
             allowed_exts = (".png", ".jpg", ".jpeg", ".webp")
-            if cover_image.size and cover_image.size > max_size:
+            if cover_image.size and isinstance(cover_image.size, (int, float)) and cover_image.size > max_size:
                 await interaction.followup.send(
                     "❌ Cover image file is too large (maximum size is 5 MB).", ephemeral=True
                 )
@@ -547,8 +547,9 @@ class SuggestedBooks(commands.Cog):
                 return True
             s_did = getattr(r, "sender_discord_id", "") or (r.get("sender_discord_id", "") if hasattr(r, "get") else "")
             r_did = getattr(r, "recipient_discord_id", "") or (r.get("recipient_discord_id", "") if hasattr(r, "get") else "")
+            s_by = getattr(r, "suggestedBy", "") or (r.get("suggestedBy", "") if hasattr(r, "get") else "")
             clean_uid = str(uid).strip()
-            if clean_uid and clean_uid.isdigit() and (str(s_did) == clean_uid or str(r_did) == clean_uid):
+            if clean_uid and (str(s_did) == clean_uid or str(r_did) == clean_uid):
                 return True
             if user_name and str(s_by) == str(user_name):
                 return True

@@ -118,6 +118,21 @@ from tools.preferences import (
     UPDATE_USER_PREFERENCE_TOOL,
     handle_update_user_preference,
 )
+from tools.excel import (
+    EXCEL_CREATE_WORKBOOK_TOOL,
+    EXCEL_READ_RANGE_TOOL,
+    EXCEL_UPDATE_CELLS_TOOL,
+    EXCEL_MANAGE_SHEET_TOOL,
+    EXCEL_EXPORT_WORKBOOK_TOOL,
+    EXCEL_LIST_WORKBOOKS_TOOL,
+    handle_excel_create_workbook,
+    handle_excel_read_range,
+    handle_excel_update_cells,
+    handle_excel_manage_sheet,
+    handle_excel_export_workbook,
+    handle_excel_list_workbooks,
+)
+
 
 # Unified List of all Function Declarations for Gemini
 ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
@@ -164,6 +179,12 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     GENERATE_READING_PLAN_TOOL,
     EXPORT_PDF_TOOL,
     UPDATE_USER_PREFERENCE_TOOL,
+    EXCEL_CREATE_WORKBOOK_TOOL,
+    EXCEL_READ_RANGE_TOOL,
+    EXCEL_UPDATE_CELLS_TOOL,
+    EXCEL_MANAGE_SHEET_TOOL,
+    EXCEL_EXPORT_WORKBOOK_TOOL,
+    EXCEL_LIST_WORKBOOKS_TOOL,
 ]
 
 GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
@@ -225,6 +246,12 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "generate_reading_plan": handle_generate_reading_plan,
     "export_pdf": handle_export_pdf,
     "update_user_preference": handle_update_user_preference,
+    "excel_create_workbook": handle_excel_create_workbook,
+    "excel_read_range": handle_excel_read_range,
+    "excel_update_cells": handle_excel_update_cells,
+    "excel_manage_sheet": handle_excel_manage_sheet,
+    "excel_export_workbook": handle_excel_export_workbook,
+    "excel_list_workbooks": handle_excel_list_workbooks,
 }
 
 

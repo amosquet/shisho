@@ -32,6 +32,7 @@ from utils.discord_helpers import (
     render_footer,
     split_message,
 )
+from utils.excel_manager import get_excel_dir, get_workbook_summary
 from utils.gemini_files import get_gemini_file_cache, stage_or_inline_part
 from utils.llm import (
     format_gemini_error,
@@ -134,7 +135,8 @@ class AIChat(commands.Cog):
             "- Obsidian / Markdown Vault: Call `vault_read_note` to read a markdown note (including parsed YAML frontmatter and body). Call `vault_write_note` to create or overwrite a note with markdown formatting, YAML frontmatter, and wikilinks. Call `vault_patch_note` to surgically replace a specific text snippet or block within an existing note. Call `vault_append_note` to append text, logs, or quotes to a note (optionally under a markdown heading). Call `vault_search` to search across the vault by note body, filenames, tags (`#tag`), or frontmatter. Call `vault_list_files` to explore the vault directory structure and notes. Call `vault_delete_note` to delete or safely move notes to the vault trash (`.trash/`). Call `vault_move_note` to rename or relocate notes. Call `vault_get_backlinks` to find notes linking to a target note via `[[wikilinks]]`.\n"
             "  * Note: Vault operations are available to the bot owner and whitelisted users.\n"
             "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
-            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n\n"
+            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n"
+            "- Spreadsheets: Call Excel tools to create, view, edit, and export spreadsheets (.xlsx) stored in data/excel/. Call `excel_create_workbook` to create workbooks (blank, templated, or with data). Call `excel_read_range` to inspect cell ranges or sheets formatted as Markdown tables. Call `excel_update_cells` to update cells or formulas (starting with '='). Call `excel_manage_sheet` to add, rename, delete, or list sheets. Call `excel_list_workbooks` to list stored workbooks. Call `excel_export_workbook` to attach and send a workbook to the user in Discord chat. When a user uploads a spreadsheet, its structure and metadata are provided in context—use spreadsheet tools to inspect or edit it.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, technical question, or recent events/news, answer DIRECTLY and succinctly. You have real-time Google Search grounding enabled to verify facts, schedules, breaking news, or information beyond your training cutoff. DO NOT include raw source URLs, citation links, or references in your response text unless the user explicitly asks for sources or links. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
@@ -150,6 +152,7 @@ class AIChat(commands.Cog):
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - When asked about Obsidian vault, markdown files, or local vault notes (e.g. 'search my vault', 'format note in vault', 'create a note in Projects/Y', 'summarize my vault notes on Z', 'show backlinks to A', 'fix frontmatter'): call the appropriate vault tool (`vault_read_note`, `vault_write_note`, `vault_patch_note`, `vault_search`, `vault_list_files`, `vault_append_note`, `vault_get_backlinks`, etc.) and respond concisely with the outcome or requested content.\n"
             "   - When asked to create or export Anki flashcards (e.g. 'create flashcards for this PDF', 'generate an anki deck', 'turn my note into flashcards', 'make flashcards on X'): call `create_anki_deck` or `vault_export_anki_deck` and respond with the deck summary and preview.\n"
+            "   - When asked to create, read, view, edit, update, or export an Excel spreadsheet (e.g. 'read this spreadsheet', 'what is in cell B2', 'update cell A1', 'add a new sheet', 'export this sheet', 'send me the spreadsheet', 'create a budget spreadsheet'): call the appropriate Excel tool (`excel_read_range`, `excel_update_cells`, `excel_create_workbook`, `excel_manage_sheet`, `excel_list_workbooks`, `excel_export_workbook`) and respond concisely with the outcome or requested data. When asked to export, send, or download a spreadsheet, call `excel_export_workbook` with the filename.\n"
             "   - When asked if pictures/images/files are uploaded or saved to the database: confirm that image and file attachments are indeed uploaded and attached directly to the note record in PocketBase.\n"
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
@@ -318,6 +321,31 @@ class AIChat(commands.Cog):
                 return mime
         return None
 
+    def _get_excel_mime(
+        self, filename: str, content_type: str | None = None
+    ) -> str | None:
+        if content_type:
+            ct = content_type.lower().split(";")[0].strip()
+            if ct in (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/wps-office.xlsx",
+            ):
+                return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        ext = os.path.splitext(filename.lower())[1]
+        if ext == ".xlsx":
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        mime, _ = mimetypes.guess_type(filename)
+        if mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            return mime
+        return None
+
+    def _is_excel_attachment(
+        self, filename: str, content_type: str | None = None
+    ) -> bool:
+        return self._get_excel_mime(filename, content_type) is not None
+
     async def _extract_message_parts(
         self,
         message: discord.Message,
@@ -352,9 +380,87 @@ class AIChat(commands.Cog):
             if bot_id:
                 content = re.sub(rf"<@!?{bot_id}>", "", content).strip()
 
-        # Check for audio, image, and document attachments
+        # Check for audio, image, document, and excel attachments
         for att in getattr(message, "attachments", []):
             att_id = getattr(att, "id", None)
+
+            # Check excel (.xlsx)
+            excel_mime = self._get_excel_mime(
+                att.filename, getattr(att, "content_type", None)
+            )
+            if excel_mime:
+                att_size = getattr(att, "size", None)
+                if att_size is not None and att_size > 25 * 1024 * 1024:
+                    print(
+                        f"Excel attachment '{att.filename}' exceeds 25 MB limit ({att_size} bytes). Skipping."
+                    )
+                    continue
+
+                try:
+                    raw_bytes = await att.read()
+                except Exception as e:
+                    print(f"Failed to read excel attachment {att.filename}: {e}")
+                    sentry_sdk.capture_exception(e)
+                    continue
+
+                if not raw_bytes:
+                    print(f"Excel attachment '{att.filename}' is empty. Skipping.")
+                    continue
+
+                if len(raw_bytes) > 25 * 1024 * 1024:
+                    print(
+                        f"Excel attachment '{att.filename}' exceeds 25 MB limit ({len(raw_bytes)} bytes). Skipping."
+                    )
+                    continue
+
+                # Validate OpenXML ZIP header
+                if not raw_bytes.startswith(b"PK\x03\x04"):
+                    print(
+                        f"Attachment '{att.filename}' is not a valid OpenXML archive (missing PK zip header). Skipping."
+                    )
+                    continue
+
+                # Sanitize filename (prevent path traversal)
+                safe_name = os.path.basename(att.filename or "").strip() or "spreadsheet.xlsx"
+                safe_name = (
+                    safe_name.replace("/", "").replace("\\", "").replace("\0", "").strip()
+                )
+                if not safe_name.lower().endswith(".xlsx"):
+                    safe_name += ".xlsx"
+
+                # Save bytes safely into data/excel/<filename>
+                excel_dir = get_excel_dir()
+                save_path = excel_dir / safe_name
+                try:
+                    save_path.write_bytes(raw_bytes)
+                except Exception as e:
+                    print(f"Failed to save excel attachment {safe_name}: {e}")
+                    sentry_sdk.capture_exception(e)
+                    continue
+
+                # Ensure attachments_out records the attachment entry
+                if attachments_out is not None:
+                    attachments_out.append(
+                        {
+                            "filename": safe_name,
+                            "bytes": raw_bytes,
+                            "content_type": excel_mime,
+                        }
+                    )
+
+                # Generate structured workbook metadata summary
+                try:
+                    summary = await asyncio.to_thread(get_workbook_summary, save_path)
+                    parts.append(types.Part.from_text(text=summary))
+                except Exception as e:
+                    print(f"Failed to generate summary for {safe_name}: {e}")
+                    sentry_sdk.capture_exception(e)
+                    parts.append(
+                        types.Part.from_text(
+                            text=f"[Attached Excel spreadsheet: `{safe_name}` (stored in data/excel/{safe_name})]\n*Note: Could not parse workbook metadata: {e}*"
+                        )
+                    )
+                continue
 
             # Optimization: If force_stage is True and attachments_out is None,
             # check if we already have a cached URI before downloading bytes from Discord CDN
@@ -533,6 +639,7 @@ class AIChat(commands.Cog):
                     continue
                 ctype = (
                     att.content_type
+                    or self._get_excel_mime(att.filename, None)
                     or self._get_document_mime(att.filename, None)
                     or self._get_image_mime(att.filename, None)
                     or self._get_audio_mime(att.filename, None)
@@ -1141,6 +1248,7 @@ class AIChat(commands.Cog):
         discord_files: list[discord.File] | None = None,
         reply_to: discord.Message | None = None,
         telemetry: dict | None = None,
+        out_files: list[dict] | None = None,
     ) -> list[discord.Message]:
         """
         Delivers an AI response to a Discord channel or thread.
@@ -1173,6 +1281,21 @@ class AIChat(commands.Cog):
 
         sent_messages: list[discord.Message] = []
         files_to_send = list(discord_files) if discord_files else []
+        if out_files:
+            for f in out_files:
+                if isinstance(f, dict) and "bytes" in f and "filename" in f:
+                    if not any(
+                        getattr(df, "filename", None) == f["filename"]
+                        for df in files_to_send
+                    ):
+                        files_to_send.append(
+                            discord.File(
+                                fp=io.BytesIO(f["bytes"]), filename=f["filename"]
+                            )
+                        )
+                elif isinstance(f, discord.File):
+                    if f not in files_to_send:
+                        files_to_send.append(f)
 
         # Deliver the first chunk
         if ack_msg:
@@ -2102,7 +2225,7 @@ class AIChat(commands.Cog):
                     pass
             return
 
-        # Check if there is text, audio attachments, image attachments, or document attachments
+        # Check if there is text, audio attachments, image attachments, document attachments, or excel attachments
         has_audio = any(
             self._get_audio_mime(att.filename, att.content_type)
             for att in message.attachments
@@ -2113,6 +2236,10 @@ class AIChat(commands.Cog):
         )
         has_document = any(
             self._get_document_mime(att.filename, att.content_type)
+            for att in message.attachments
+        )
+        has_excel = any(
+            self._get_excel_mime(att.filename, att.content_type)
             for att in message.attachments
         )
         has_any_att = bool(message.attachments)
@@ -2146,6 +2273,7 @@ class AIChat(commands.Cog):
             and not has_audio
             and not has_image
             and not has_document
+            and not has_excel
             and not has_any_att
             and not is_reply
         ):
@@ -2360,9 +2488,13 @@ class AIChat(commands.Cog):
             if should_create_thread and hasattr(message, "create_thread"):
                 try:
                     thread_title = clean_text or (
-                        "Image Chat"
-                        if has_image
-                        else ("Document Chat" if has_document else "AI Chat")
+                        "Spreadsheet Chat"
+                        if has_excel
+                        else (
+                            "Image Chat"
+                            if has_image
+                            else ("Document Chat" if has_document else "AI Chat")
+                        )
                     )
                     thread_name = self._generate_thread_name(thread_title)
                     thread = await message.create_thread(
