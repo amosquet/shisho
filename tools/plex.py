@@ -27,22 +27,67 @@ GET_PLEX_STATUS_TOOL = types.FunctionDeclaration(
 
 GET_MUSIC_SUGGESTIONS_TOOL = types.FunctionDeclaration(
     name="get_music_suggestions",
-    description="Retrieves community song and album recommendations submitted via the website.",
+    description=(
+        "Retrieves community song and album recommendations from the "
+        "shisho_music_recommendations database collection."
+    ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={},
     ),
 )
 
+ADD_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
+    name="add_music_suggestion",
+    description=(
+        "Adds a song or album recommendation to the shisho_music_recommendations "
+        "collection in PocketBase."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "title": types.Schema(
+                type=types.Type.STRING,
+                description="The song or album title.",
+            ),
+            "artist": types.Schema(
+                type=types.Type.STRING,
+                description="The artist name.",
+            ),
+            "kind": types.Schema(
+                type=types.Type.STRING,
+                description="Either 'song' or 'album'. Defaults to 'song'.",
+                enum=["song", "album"],
+            ),
+            "url": types.Schema(
+                type=types.Type.STRING,
+                description="Optional link (Spotify, Apple Music, Bandcamp, YouTube, etc.).",
+            ),
+            "message": types.Schema(
+                type=types.Type.STRING,
+                description="Optional personal note or reason for recommending.",
+            ),
+            "submitter": types.Schema(
+                type=types.Type.STRING,
+                description="Name of the person recommending the music.",
+            ),
+        },
+        required=["title", "artist"],
+    ),
+)
+
 DELETE_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
     name="delete_music_suggestion",
-    description="Deletes a community music suggestion by its ID or song/album title.",
+    description=(
+        "Deletes a music recommendation from shisho_music_recommendations by its ID, "
+        "song/album title, or artist."
+    ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
             "query": types.Schema(
                 type=types.Type.STRING,
-                description="The ID or title of the music suggestion to delete.",
+                description="The ID, title, or artist of the music suggestion to delete.",
             ),
         },
         required=["query"],
@@ -162,6 +207,51 @@ async def handle_get_music_suggestions(bot, args: dict, user_id: str) -> str:
     return "\n".join(lines)
 
 
+async def handle_add_music_suggestion(bot, args: dict, user_id: str) -> str:
+    """Handler for the add_music_suggestion AI tool."""
+    raw = args or {}
+    title = str(raw.get("title", "")).strip()
+    artist = str(raw.get("artist", "")).strip()
+    if not title or not artist:
+        return "Error: Both 'title' and 'artist' are required."
+
+    kind = str(raw.get("kind", "song")).strip().lower()
+    if kind not in ("song", "album"):
+        kind = "song"
+    url = str(raw.get("url", "")).strip()
+    message = str(raw.get("message", "") or raw.get("reason", "")).strip()
+    submitter = str(raw.get("submitter", "")).strip()
+
+    if not submitter and user_id and hasattr(bot, "get_user"):
+        try:
+            u = bot.get_user(int(user_id))
+            if u:
+                submitter = getattr(u, "display_name", "") or getattr(u, "name", "")
+        except Exception:
+            pass
+
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        entry = await monitor.add_music_suggestion(
+            title=title,
+            artist=artist,
+            kind=kind,
+            url=url,
+            reason=message,
+            submitter=submitter or "Discord User",
+            suggested_from="Discord AI",
+            is_public=True,
+        )
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+    return (
+        f"Added {entry.get('kind', kind)} recommendation: "
+        f"\"{entry.get('title')}\" by {entry.get('artist')} (ID: {entry.get('id')})."
+    )
+
+
 async def handle_delete_music_suggestion(bot, args: dict, user_id: str) -> str:
     """Handler for the delete_music_suggestion AI tool."""
     query = str((args or {}).get("query", "")).strip()
@@ -178,3 +268,4 @@ async def handle_delete_music_suggestion(bot, args: dict, user_id: str) -> str:
     if not removed:
         return f"No music suggestion found matching '{query}'."
     return f"Deleted music suggestion: \"{removed.get('title')}\" by {removed.get('artist')} (ID: {removed.get('id')})."
+

@@ -135,9 +135,11 @@ from tools.excel import (
 from tools.plex import (
     GET_PLEX_STATUS_TOOL,
     GET_MUSIC_SUGGESTIONS_TOOL,
+    ADD_MUSIC_SUGGESTION_TOOL,
     DELETE_MUSIC_SUGGESTION_TOOL,
     handle_get_plex_status,
     handle_get_music_suggestions,
+    handle_add_music_suggestion,
     handle_delete_music_suggestion,
 )
 
@@ -195,6 +197,7 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     EXCEL_LIST_WORKBOOKS_TOOL,
     GET_PLEX_STATUS_TOOL,
     GET_MUSIC_SUGGESTIONS_TOOL,
+    ADD_MUSIC_SUGGESTION_TOOL,
     DELETE_MUSIC_SUGGESTION_TOOL,
 ]
 
@@ -265,6 +268,7 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "excel_list_workbooks": handle_excel_list_workbooks,
     "get_plex_status": handle_get_plex_status,
     "get_music_suggestions": handle_get_music_suggestions,
+    "add_music_suggestion": handle_add_music_suggestion,
     "delete_music_suggestion": handle_delete_music_suggestion,
 }
 

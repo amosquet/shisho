@@ -12,6 +12,15 @@ from typing import Any
 
 import aiohttp
 
+from utils.db import (
+    get_pb_client,
+    get_pb_url,
+    prepare_file_upload_payload,
+    run_in_executor,
+)
+
+MUSIC_RECOMMENDATIONS_COLLECTION = "shisho_music_recommendations"
+
 
 class PlexMusicMonitor:
     """Monitors a Plex Media Server for active music sessions, history, top rotation, and cover art."""
@@ -852,7 +861,7 @@ class PlexMusicMonitor:
         return None
 
     # -------------------------------------------------------------------------
-    # Community Music Suggestions (stored in data/music_suggestions.json)
+    # Community Music Suggestions (PocketBase `shisho_music_recommendations` + local fallback)
     # -------------------------------------------------------------------------
     def _read_suggestions_sync(self) -> list[dict[str, Any]]:
         try:
@@ -873,7 +882,7 @@ class PlexMusicMonitor:
             json.dump(items, f, ensure_ascii=False, indent=2)
 
     async def _lookup_itunes_cover(self, title: str, artist: str, kind: str = "song") -> str:
-        """Fetch public album art from iTunes Search API for community music recommendations."""
+        """Fetch public album art URL from iTunes Search API for community music recommendations."""
         query = f"{title} {artist}".strip()
         if not query:
             return ""
@@ -894,6 +903,82 @@ class PlexMusicMonitor:
         except Exception:
             pass
         return ""
+
+    async def _download_cover_image(self, image_url: str) -> tuple[str, bytes] | None:
+        """Download cover image bytes from a remote URL for PocketBase file upload."""
+        if not image_url:
+            return None
+        session = await self._get_http_session()
+        try:
+            async with session.get(image_url) as resp:
+                if resp.status == 200:
+                    body = await resp.read()
+                    if body and len(body) <= 5 * 1024 * 1024:
+                        ct = (resp.headers.get("Content-Type") or "").lower()
+                        ext = "png" if "png" in ct else ("webp" if "webp" in ct else "jpg")
+                        return (f"cover.{ext}", body)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _record_field(record: Any, key: str, default: Any = "") -> Any:
+        val = getattr(record, key, None)
+        if val is None and hasattr(record, "get"):
+            try:
+                val = record.get(key)
+            except Exception:
+                val = None
+        return default if val is None else val
+
+    @classmethod
+    def _record_to_suggestion_dict(cls, record: Any, pb_url: str = "") -> dict[str, Any]:
+        rec_id = str(cls._record_field(record, "id", "") or "")
+        coll_id = str(
+            cls._record_field(record, "collection_id", "")
+            or cls._record_field(record, "collectionId", "")
+            or MUSIC_RECOMMENDATIONS_COLLECTION
+        )
+        raw_cover = cls._record_field(record, "cover", "")
+        if isinstance(raw_cover, list):
+            cover_name = str(raw_cover[0]) if raw_cover else ""
+        else:
+            cover_name = str(raw_cover or "")
+
+        cover_url = str(cls._record_field(record, "cover_url", "") or "")
+        if cover_name and pb_url and rec_id:
+            cover_url = f"{pb_url.rstrip('/')}/api/files/{coll_id}/{rec_id}/{cover_name}"
+
+        title = str(cls._record_field(record, "title", "") or "")
+        artist = str(cls._record_field(record, "artist", "") or "")
+        kind = str(cls._record_field(record, "kind", "song") or "song").lower()
+        if kind not in ("song", "album"):
+            kind = "song"
+        url = str(cls._record_field(record, "url", "") or "")
+        message = str(cls._record_field(record, "message", "") or "")
+        submitter = str(cls._record_field(record, "submitter", "") or "Anonymous")
+        suggested_from = str(cls._record_field(record, "suggested_from", "Web Form") or "Web Form")
+        date_suggested = str(
+            cls._record_field(record, "date_suggested", "")
+            or cls._record_field(record, "created", "")
+            or ""
+        )
+        raw_public = cls._record_field(record, "is_public", True)
+        is_public = bool(raw_public) if raw_public is not None else True
+
+        return {
+            "id": rec_id,
+            "title": title,
+            "artist": artist,
+            "kind": kind,
+            "url": url,
+            "message": message,
+            "submitter": submitter,
+            "suggested_from": suggested_from,
+            "date_suggested": date_suggested,
+            "cover_url": cover_url,
+            "is_public": is_public,
+        }
 
     @staticmethod
     def validate_music_suggestion_payload(data: dict[str, Any]) -> dict[str, str]:
@@ -943,51 +1028,168 @@ class PlexMusicMonitor:
         reason: str = "",
         submitter: str = "Anonymous",
         suggested_from: str = "Web Form",
+        is_public: bool = True,
+        date_suggested: str = "",
     ) -> dict[str, Any]:
-        cover_url = await self._lookup_itunes_cover(title, artist, kind=kind)
-        now_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        entry = {
-            "id": uuid.uuid4().hex[:10],
-            "title": title,
-            "artist": artist,
-            "kind": kind if kind in ("song", "album") else "song",
-            "url": url,
-            "message": reason,
-            "submitter": submitter or "Anonymous",
-            "suggested_from": suggested_from,
-            "date_suggested": now_iso,
-            "cover_url": cover_url,
-            "is_public": True,
-        }
-        async with self._suggestions_lock:
-            items = self._read_suggestions_sync()
-            items.insert(0, entry)
-            self._write_suggestions_sync(items[:200])
-        return entry
+        clean_kind = kind if kind in ("song", "album") else "song"
+        cover_url = await self._lookup_itunes_cover(title, artist, kind=clean_kind)
+        cover_file = await self._download_cover_image(cover_url) if cover_url else None
+        date_str = date_suggested or time.strftime("%Y-%m-%d", time.gmtime())
+
+        def _add_to_pb() -> dict[str, Any]:
+            pb = get_pb_client()
+            pb_url = get_pb_url()
+
+            pb_entry: dict[str, Any] = {
+                "title": title,
+                "artist": artist,
+                "kind": clean_kind,
+                "url": url,
+                "message": reason,
+                "submitter": submitter or "Anonymous",
+                "suggested_from": suggested_from,
+                "date_suggested": date_str,
+                "cover_url": cover_url,
+                "is_public": bool(is_public),
+            }
+
+            files = {"cover": cover_file} if cover_file else None
+            if files:
+                try:
+                    final_payload = prepare_file_upload_payload(pb_entry, files)
+                    rec = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).create(final_payload)
+                except Exception:
+                    rec = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).create(pb_entry)
+            else:
+                rec = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).create(pb_entry)
+
+            formatted = self._record_to_suggestion_dict(rec, pb_url=pb_url)
+            if not formatted.get("cover_url") and cover_url:
+                formatted["cover_url"] = cover_url
+            return formatted
+
+        try:
+            return await run_in_executor(_add_to_pb)
+        except Exception:
+            # Fallback to local JSON file if PocketBase is not configured or unreachable
+            entry = {
+                "id": uuid.uuid4().hex[:10],
+                "title": title,
+                "artist": artist,
+                "kind": clean_kind,
+                "url": url,
+                "message": reason,
+                "submitter": submitter or "Anonymous",
+                "suggested_from": suggested_from,
+                "date_suggested": date_str,
+                "cover_url": cover_url,
+                "is_public": bool(is_public),
+            }
+            async with self._suggestions_lock:
+                items = self._read_suggestions_sync()
+                items.insert(0, entry)
+                self._write_suggestions_sync(items[:200])
+            return entry
 
     async def get_music_suggestions(self, limit: int = 50) -> list[dict[str, Any]]:
-        async with self._suggestions_lock:
-            items = self._read_suggestions_sync()
-        public_items = [i for i in items if i.get("is_public", True)]
-        return public_items[:limit]
+        def _fetch_from_pb() -> list[dict[str, Any]]:
+            pb = get_pb_client()
+            pb_url = get_pb_url()
+
+            try:
+                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_list(
+                    1,
+                    limit,
+                    query_params={
+                        "sort": "-date_suggested,-created",
+                        "filter": "is_public = true",
+                    },
+                )
+            except Exception:
+                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_list(
+                    1,
+                    limit,
+                    query_params={"sort": "-created"},
+                )
+
+            items = getattr(records, "items", None) or []
+            return [self._record_to_suggestion_dict(r, pb_url=pb_url) for r in items]
+
+        try:
+            return await run_in_executor(_fetch_from_pb)
+        except Exception:
+            async with self._suggestions_lock:
+                items = self._read_suggestions_sync()
+            public_items = [i for i in items if i.get("is_public", True)]
+            return public_items[:limit]
 
     async def delete_music_suggestion(self, query: str) -> dict[str, Any] | None:
-        q = (query or "").strip().lower()
-        if not q:
+        clean_target = (query or "").strip()
+        if not clean_target:
             return None
-        async with self._suggestions_lock:
-            items = self._read_suggestions_sync()
-            removed = None
-            remaining = []
-            for item in items:
-                if removed is None and (
-                    str(item.get("id", "")).lower() == q
-                    or str(item.get("title", "")).lower() == q
-                    or q in str(item.get("title", "")).lower()
-                ):
-                    removed = item
-                else:
-                    remaining.append(item)
-            if removed is not None:
-                self._write_suggestions_sync(remaining)
-            return removed
+
+        def _delete_from_pb() -> dict[str, Any] | None:
+            pb = get_pb_client()
+            pb_url = get_pb_url()
+
+            # 1. Try exact record ID
+            try:
+                rec = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_one(clean_target)
+                if rec:
+                    dto = self._record_to_suggestion_dict(rec, pb_url=pb_url)
+                    pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).delete(rec.id)
+                    return dto
+            except Exception:
+                pass
+
+            # 2. Search by title or artist
+            safe_q = clean_target.replace("\\", "\\\\").replace("'", "\\'")
+            try:
+                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_full_list(
+                    query_params={"filter": f"title ~ '{safe_q}' || artist ~ '{safe_q}'"}
+                )
+            except Exception:
+                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_full_list()
+
+            matched_list = [
+                r for r in (records or [])
+                if (
+                    clean_target.lower() in str(self._record_field(r, "title", "")).lower()
+                    or clean_target.lower() in str(self._record_field(r, "artist", "")).lower()
+                    or clean_target.lower() == str(self._record_field(r, "id", "")).lower()
+                )
+            ]
+            if not matched_list:
+                return None
+
+            matched = matched_list[0]
+            for r in matched_list:
+                if str(self._record_field(r, "title", "")).lower() == clean_target.lower():
+                    matched = r
+                    break
+
+            dto = self._record_to_suggestion_dict(matched, pb_url=pb_url)
+            pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).delete(matched.id)
+            return dto
+
+        try:
+            return await run_in_executor(_delete_from_pb)
+        except Exception:
+            q = clean_target.lower()
+            async with self._suggestions_lock:
+                items = self._read_suggestions_sync()
+                removed = None
+                remaining = []
+                for item in items:
+                    if removed is None and (
+                        str(item.get("id", "")).lower() == q
+                        or str(item.get("title", "")).lower() == q
+                        or q in str(item.get("title", "")).lower()
+                    ):
+                        removed = item
+                    else:
+                        remaining.append(item)
+                if removed is not None:
+                    self._write_suggestions_sync(remaining)
+                return removed
+
