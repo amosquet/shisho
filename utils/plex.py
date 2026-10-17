@@ -1044,6 +1044,136 @@ class PlexMusicMonitor:
             "is_public": is_public,
         }
 
+    async def _resolve_metadata_from_url(self, url: str) -> tuple[str, str, str, str]:
+        """
+        Extract (title, artist, kind, thumbnail_url) from a streaming music URL
+        using oEmbed and OpenGraph metadata.
+        """
+        title = ""
+        artist = ""
+        kind = "song"
+        thumb = ""
+        lower = (url or "").lower()
+        if not lower:
+            return title, artist, kind, thumb
+
+        session = await self._get_http_session()
+
+        # 1. YouTube oEmbed
+        if "youtube.com/" in lower or "youtu.be/" in lower:
+            try:
+                oe_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
+                async with session.get(oe_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        raw_title = str(data.get("title") or "").strip()
+                        raw_author = str(data.get("author_name") or "").strip()
+                        thumb = str(data.get("thumbnail_url") or "")
+                        if " - " in raw_title:
+                            parts = raw_title.split(" - ", 1)
+                            artist = parts[0].strip()
+                            title = parts[1].strip()
+                        else:
+                            title = raw_title
+                            artist = raw_author
+                        if "album" in raw_title.lower() or "full album" in raw_title.lower():
+                            kind = "album"
+                        return title, artist, kind, thumb
+            except Exception:
+                pass
+
+        # 2. Spotify oEmbed & OpenGraph
+        if "open.spotify.com/" in lower:
+            if "/album/" in lower:
+                kind = "album"
+            try:
+                oe_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(url)}"
+                async with session.get(oe_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        title = str(data.get("title") or "").strip()
+                        thumb = str(data.get("thumbnail_url") or "")
+            except Exception:
+                pass
+
+        # 3. Generic OpenGraph Scraping
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; ShishoBot/1.0; +https://shisho.amcloud.dev)"}
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+
+                    og_title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+                    if not og_title_m:
+                        og_title_m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html, re.I)
+                    og_title = og_title_m.group(1).strip() if og_title_m else ""
+
+                    og_desc_m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+                    if not og_desc_m:
+                        og_desc_m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:description["\']', html, re.I)
+                    og_desc = og_desc_m.group(1).strip() if og_desc_m else ""
+
+                    og_img_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+                    if not og_img_m:
+                        og_img_m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.I)
+                    if og_img_m and not thumb:
+                        thumb = og_img_m.group(1).strip()
+
+                    og_type_m = re.search(r'<meta[^>]+property=["\']og:type["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+                    if og_type_m and "album" in og_type_m.group(1).lower():
+                        kind = "album"
+
+                    if "spotify.com" in lower and og_desc:
+                        parts = [p.strip() for p in og_desc.split("·")]
+                        if parts and not artist:
+                            artist = parts[0]
+                        if not title and og_title:
+                            title = og_title
+                    elif "music.apple.com" in lower and og_title:
+                        clean = re.sub(r"\s+on Apple\s+Music.*$", "", og_title, flags=re.I).strip()
+                        if " by " in clean:
+                            t_part, a_part = clean.split(" by ", 1)
+                            if not title:
+                                title = t_part.strip()
+                            if not artist:
+                                artist = a_part.strip()
+                    elif "qobuz.com" in lower and og_title:
+                        clean = re.sub(r"\s*-\s*Qobuz.*$", "", og_title, flags=re.I).strip()
+                        if ", " in clean:
+                            t_part, a_part = clean.split(", ", 1)
+                            if not title:
+                                title = t_part.strip()
+                            if not artist:
+                                artist = a_part.strip()
+                    elif "bandcamp.com" in lower and og_title:
+                        if ", by " in og_title:
+                            t_part, a_part = og_title.split(", by ", 1)
+                            if not title:
+                                title = t_part.strip()
+                            if not artist:
+                                artist = a_part.strip()
+
+                    if not title and og_title:
+                        if " - " in og_title:
+                            parts = og_title.split(" - ", 1)
+                            artist = artist or parts[0].strip()
+                            title = parts[1].strip()
+                        elif " by " in og_title:
+                            parts = og_title.split(" by ", 1)
+                            title = parts[0].strip()
+                            artist = artist or parts[1].strip()
+                        else:
+                            title = og_title
+
+                    if not artist and og_desc and "by " in og_desc:
+                        m_by = re.search(r"by\s+([^,.\n]+)", og_desc, re.I)
+                        if m_by:
+                            artist = m_by.group(1).strip()
+        except Exception:
+            pass
+
+        return title, artist, kind, thumb
+
     @staticmethod
     def validate_music_suggestion_payload(data: dict[str, Any]) -> dict[str, str]:
         if not isinstance(data, dict):
@@ -1066,13 +1196,13 @@ class PlexMusicMonitor:
         reason = clean_str(data.get("reason", ""), max_len=1000, allow_newlines=True)
         submitter = clean_str(data.get("submitter", ""), max_len=100) or "Anonymous"
 
-        if not title or not artist:
-            raise ValueError("Please provide both a Song/Album Title and an Artist.")
-
         if url:
             parsed = urllib.parse.urlparse(url)
             if parsed.scheme not in ("http", "https") or not parsed.netloc:
                 raise ValueError("Please provide a valid http:// or https:// link.")
+
+        if not url and (not title or not artist):
+            raise ValueError("Please provide either a music link, or both a Song/Album Title and an Artist.")
 
         return {
             "title": title,
@@ -1085,8 +1215,8 @@ class PlexMusicMonitor:
 
     async def add_music_suggestion(
         self,
-        title: str,
-        artist: str,
+        title: str = "",
+        artist: str = "",
         kind: str = "song",
         url: str = "",
         reason: str = "",
@@ -1095,11 +1225,36 @@ class PlexMusicMonitor:
         is_public: bool = True,
     ) -> dict[str, Any]:
         clean_kind = kind if kind in ("song", "album") else "song"
+        resolved_thumb = ""
+
+        # Auto-extract title and artist from URL if either was omitted
+        if url and (not title or not artist):
+            res_t, res_a, res_k, res_thumb = await self._resolve_metadata_from_url(url)
+            if not title and res_t:
+                title = res_t
+            if not artist and res_a:
+                artist = res_a
+            if clean_kind == "song" and res_k == "album":
+                clean_kind = "album"
+            if res_thumb:
+                resolved_thumb = res_thumb
+
+        # Fallback defaults if URL scraping couldn't resolve title/artist
+        if not title:
+            parsed = urllib.parse.urlparse(url) if url else None
+            domain = parsed.netloc.replace("www.", "") if parsed and parsed.netloc else "Music Link"
+            title = f"Shared on {domain}" if url else "Untitled Track"
+        if not artist:
+            artist = "Unknown Artist"
+
         cover_url, youtube_url, qobuz_url = await asyncio.gather(
             self._lookup_itunes_cover(title, artist, kind=clean_kind),
             self._lookup_youtube_url(title, artist, kind=clean_kind, original_url=url),
             self._lookup_qobuz_url(title, artist, kind=clean_kind, original_url=url),
         )
+        if not cover_url and resolved_thumb:
+            cover_url = resolved_thumb
+
         cover_file = await self._download_cover_image(cover_url) if cover_url else None
 
         def _add_to_pb() -> dict[str, Any]:

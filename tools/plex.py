@@ -41,18 +41,19 @@ ADD_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
     name="add_music_suggestion",
     description=(
         "Adds a song or album recommendation to the shisho_music_recommendations "
-        "collection in PocketBase."
+        "collection in PocketBase. If a link (url) is provided, the song/album title "
+        "and artist are optional and will be automatically extracted."
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
             "title": types.Schema(
                 type=types.Type.STRING,
-                description="The song or album title.",
+                description="The song or album title (optional if url is provided).",
             ),
             "artist": types.Schema(
                 type=types.Type.STRING,
-                description="The artist name.",
+                description="The artist name (optional if url is provided).",
             ),
             "kind": types.Schema(
                 type=types.Type.STRING,
@@ -61,7 +62,7 @@ ADD_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
             ),
             "url": types.Schema(
                 type=types.Type.STRING,
-                description="Optional link (Spotify, Apple Music, Bandcamp, YouTube, etc.).",
+                description="Link to the track/album (Spotify, Apple Music, YouTube, Bandcamp, Qobuz, etc.).",
             ),
             "message": types.Schema(
                 type=types.Type.STRING,
@@ -72,7 +73,6 @@ ADD_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
                 description="Name of the person recommending the music.",
             ),
         },
-        required=["title", "artist"],
     ),
 )
 
@@ -220,13 +220,10 @@ async def handle_add_music_suggestion(bot, args: dict, user_id: str) -> str:
     raw = args or {}
     title = str(raw.get("title", "")).strip()
     artist = str(raw.get("artist", "")).strip()
-    if not title or not artist:
-        return "Error: Both 'title' and 'artist' are required."
-
-    kind = str(raw.get("kind", "song")).strip().lower()
-    if kind not in ("song", "album"):
-        kind = "song"
     url = str(raw.get("url", "")).strip()
+
+    if not url and (not title or not artist):
+        return "Error: Please provide either a link (url), or both 'title' and 'artist'."
     message = str(raw.get("message", "") or raw.get("reason", "")).strip()
     submitter = str(raw.get("submitter", "")).strip()
 
