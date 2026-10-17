@@ -21,6 +21,7 @@ data/notified_books.json
 data/permissions.json
 data/config.json
 data/gemini_files_cache.json
+data/plex_last_played.json
 book_cache.json
 notified_books.json
 tests/
