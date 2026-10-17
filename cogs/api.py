@@ -501,7 +501,7 @@ class API(commands.Cog):
 
             return aiohttp.web.json_response(
                 data,
-                headers={"Cache-Control": "public, max-age=60"},
+                headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=1800"},
             )
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -532,7 +532,7 @@ class API(commands.Cog):
 
             return aiohttp.web.json_response(
                 data,
-                headers={"Cache-Control": "public, max-age=60"},
+                headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=1800"},
             )
         except Exception as e:
             sentry_sdk.capture_exception(e)

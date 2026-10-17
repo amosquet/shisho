@@ -566,7 +566,7 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
         req_ok.scheme = "https"
         resp_ok = await api_cog.handle_plex_album(req_ok)
         self.assertEqual(resp_ok.status, 200)
-        self.assertEqual(resp_ok.headers.get("Cache-Control"), "public, max-age=60")
+        self.assertEqual(resp_ok.headers.get("Cache-Control"), "public, max-age=300, stale-while-revalidate=1800")
         body = json.loads(resp_ok.text)
         self.assertEqual(body["title"], "Random Access Memories")
 
@@ -686,7 +686,7 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
         req_ok.scheme = "https"
         resp_ok = await api_cog.handle_plex_artist(req_ok)
         self.assertEqual(resp_ok.status, 200)
-        self.assertEqual(resp_ok.headers.get("Cache-Control"), "public, max-age=60")
+        self.assertEqual(resp_ok.headers.get("Cache-Control"), "public, max-age=300, stale-while-revalidate=1800")
         body = json.loads(resp_ok.text)
         self.assertEqual(body["name"], "Daft Punk")
 
@@ -724,6 +724,54 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(data)
         self.assertEqual(data["rating_key"], "400")
         self.assertEqual(data["name"], "Daft Punk")
+
+        await monitor.close()
+
+    async def test_get_album_and_artist_cache_hits(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        album_payload = [{
+            "ratingKey": "100",
+            "type": "album",
+            "title": "Discovery",
+        }]
+        track_payload = [{
+            "ratingKey": "101",
+            "title": "One More Time",
+            "duration": 320000,
+        }]
+
+        fetch_count = 0
+
+        async def fake_fetch(endpoint):
+            nonlocal fetch_count
+            fetch_count += 1
+            if endpoint == "/library/metadata/100":
+                return album_payload
+            if endpoint == "/library/metadata/100/children":
+                return track_payload
+            return []
+
+        monitor._fetch_plex_items = fake_fetch
+        monitor._lookup_youtube_music_url = AsyncMock(return_value="https://music.youtube.com/test")
+        monitor._lookup_qobuz_url = AsyncMock(return_value="https://qobuz.com/test")
+
+        # First call: populates cache
+        res1 = await monitor.get_album_details("100")
+        self.assertIsNotNone(res1)
+        self.assertEqual(fetch_count, 2)
+        self.assertEqual(monitor._lookup_youtube_music_url.call_count, 1)
+
+        # Second call: must hit cache without fetching from Plex or lookup
+        res2 = await monitor.get_album_details("100")
+        self.assertIsNotNone(res2)
+        self.assertEqual(fetch_count, 2)
+        self.assertEqual(monitor._lookup_youtube_music_url.call_count, 1)
+        self.assertEqual(res2["title"], "Discovery")
 
         await monitor.close()
 

@@ -72,6 +72,15 @@ class PlexMusicMonitor:
         # Keep legacy single tuple attribute for backwards compatibility
         self._cover_cache: tuple[str, bytes, str] | None = None
 
+        # Album & Artist details in-memory LRU caches
+        self._album_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._artist_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._external_url_cache: OrderedDict[str, str] = OrderedDict()
+        self.album_cache_ttl: float = 1800.0  # 30 minutes
+        self.artist_cache_ttl: float = 1800.0  # 30 minutes
+        self._album_lock = asyncio.Lock()
+        self._artist_lock = asyncio.Lock()
+
         # Last played track persisted across restarts
         self._last_played: dict[str, Any] | None = None
         self._last_persisted_key: str = ""
@@ -810,6 +819,18 @@ class PlexMusicMonitor:
         if not clean_key or not clean_key.isdigit() or not self.is_configured:
             return None
 
+        now = time.time()
+        if clean_key in self._album_cache:
+            cached_at, cached_data = self._album_cache[clean_key]
+            if (now - cached_at) < self.album_cache_ttl:
+                self._album_cache.move_to_end(clean_key)
+                data_copy = dict(cached_data)
+                cover_ver = data_copy.get("_cover_version")
+                if cover_ver:
+                    prefix = base_url.rstrip("/") if base_url else ""
+                    data_copy["cover_url"] = f"{prefix}/api/plex/cover?v={cover_ver}"
+                return data_copy
+
         album_items, track_items = await asyncio.gather(
             self._fetch_plex_items(f"/library/metadata/{clean_key}"),
             self._fetch_plex_items(f"/library/metadata/{clean_key}/children"),
@@ -911,7 +932,7 @@ class PlexMusicMonitor:
             or ""
         )
 
-        return {
+        result = {
             "rating_key": clean_key,
             "artist_rating_key": artist_rating_key,
             "title": title,
@@ -923,6 +944,7 @@ class PlexMusicMonitor:
             "view_count": view_count,
             "last_played_at": last_played_at,
             "cover_url": cover_url,
+            "_cover_version": cover_version,
             "track_count": len(tracks),
             "total_duration_ms": total_duration_ms,
             "audio_quality": best_quality,
@@ -932,11 +954,42 @@ class PlexMusicMonitor:
             "tracks": tracks,
         }
 
+        self._album_cache[clean_key] = (time.time(), result)
+        self._album_cache.move_to_end(clean_key)
+        while len(self._album_cache) > 500:
+            self._album_cache.popitem(last=False)
+
+        return result
+
     async def get_artist_details(self, rating_key: str, base_url: str = "") -> dict[str, Any] | None:
         """Fetch artist profile, albums (discography), and top tracks from Plex."""
         clean_key = str(rating_key or "").strip()
         if not clean_key or not clean_key.isdigit() or not self.is_configured:
             return None
+
+        now = time.time()
+        if clean_key in self._artist_cache:
+            cached_at, cached_data = self._artist_cache[clean_key]
+            if (now - cached_at) < self.artist_cache_ttl:
+                self._artist_cache.move_to_end(clean_key)
+                data_copy = dict(cached_data)
+                prefix = base_url.rstrip("/") if base_url else ""
+                avatar_ver = data_copy.get("_avatar_version")
+                backdrop_ver = data_copy.get("_backdrop_version")
+                if avatar_ver:
+                    data_copy["avatar_url"] = f"{prefix}/api/plex/cover?v={avatar_ver}"
+                if backdrop_ver:
+                    data_copy["backdrop_url"] = f"{prefix}/api/plex/cover?v={backdrop_ver}"
+                if "albums" in data_copy:
+                    formatted_albums = []
+                    for a in data_copy["albums"]:
+                        ac = dict(a)
+                        aver = ac.get("_cover_version")
+                        if aver:
+                            ac["cover_url"] = f"{prefix}/api/plex/cover?v={aver}"
+                        formatted_albums.append(ac)
+                    data_copy["albums"] = formatted_albums
+                return data_copy
 
         artist_items, album_items, track_items = await asyncio.gather(
             self._fetch_plex_items(f"/library/metadata/{clean_key}"),
@@ -1012,6 +1065,7 @@ class PlexMusicMonitor:
                 "view_count": int(alb.get("viewCount") or 0),
                 "track_count": int(alb.get("leafCount") or 0),
                 "cover_url": a_cover,
+                "_cover_version": a_ver,
             })
 
         albums.sort(key=lambda a: (a.get("year") or 0, a.get("view_count") or 0), reverse=True)
@@ -1053,7 +1107,7 @@ class PlexMusicMonitor:
             self._lookup_qobuz_url(name, name, kind="artist"),
         )
 
-        return {
+        result = {
             "rating_key": clean_key,
             "name": name,
             "summary": summary,
@@ -1061,6 +1115,8 @@ class PlexMusicMonitor:
             "countries": countries,
             "avatar_url": avatar_url,
             "backdrop_url": backdrop_url,
+            "_avatar_version": avatar_version,
+            "_backdrop_version": art_version,
             "total_albums": len(albums),
             "total_tracks": len(all_tracks),
             "total_duration_ms": total_duration_ms,
@@ -1070,6 +1126,13 @@ class PlexMusicMonitor:
             "top_tracks": top_tracks,
             "albums": albums,
         }
+
+        self._artist_cache[clean_key] = (time.time(), result)
+        self._artist_cache.move_to_end(clean_key)
+        while len(self._artist_cache) > 300:
+            self._artist_cache.popitem(last=False)
+
+        return result
 
     async def get_cover_image(self, version_key: str = "") -> tuple[bytes, str] | None:
         """Fetch and cache the cover art bytes for a known version_key or the current track."""
@@ -1212,6 +1275,20 @@ class PlexMusicMonitor:
             pass
         return search_url
 
+    def _get_cached_url(self, key: str) -> str | None:
+        if key in self._external_url_cache:
+            self._external_url_cache.move_to_end(key)
+            return self._external_url_cache[key]
+        return None
+
+    def _set_cached_url(self, key: str, url: str) -> str:
+        if key and url:
+            self._external_url_cache[key] = url
+            self._external_url_cache.move_to_end(key)
+            while len(self._external_url_cache) > 2000:
+                self._external_url_cache.popitem(last=False)
+        return url
+
     async def _lookup_youtube_music_url(
         self, title: str, artist: str, kind: str = "album", original_url: str = ""
     ) -> str:
@@ -1229,6 +1306,11 @@ class PlexMusicMonitor:
         query = f"{clean_title} {clean_artist}".strip()
         if not query:
             return ""
+
+        cache_key = f"ytm:{kind}:{clean_title.lower()}:{clean_artist.lower()}"
+        cached = self._get_cached_url(cache_key)
+        if cached:
+            return cached
 
         encoded_music_query = urllib.parse.quote(query)
         music_search_fallback = f"https://music.youtube.com/search?q={encoded_music_query}"
@@ -1264,10 +1346,10 @@ class PlexMusicMonitor:
                     # Official album releases on YouTube Music are identified by OLAK5uy_...
                     match = re.search(r'"(OLAK5uy_[a-zA-Z0-9_-]+)"', dump)
                     if match:
-                        return f"https://music.youtube.com/playlist?list={match.group(1)}"
+                        return self._set_cached_url(cache_key, f"https://music.youtube.com/playlist?list={match.group(1)}")
                     browse_match = re.search(r'"browseId":"(MPREb_[a-zA-Z0-9_-]+)"', dump)
                     if browse_match:
-                        return f"https://music.youtube.com/browse/{browse_match.group(1)}"
+                        return self._set_cached_url(cache_key, f"https://music.youtube.com/browse/{browse_match.group(1)}")
         except Exception:
             pass
 
@@ -1282,17 +1364,22 @@ class PlexMusicMonitor:
                     html = await resp.text()
                     match = re.search(r'"playlistId":"(OLAK5uy_[a-zA-Z0-9_-]+)"', html)
                     if match:
-                        return f"https://music.youtube.com/playlist?list={match.group(1)}"
+                        return self._set_cached_url(cache_key, f"https://music.youtube.com/playlist?list={match.group(1)}")
         except Exception:
             pass
 
-        return music_search_fallback
+        return self._set_cached_url(cache_key, music_search_fallback)
 
     async def _lookup_youtube_music_artist_url(self, artist: str) -> str:
         """Resolve an official YouTube Music artist channel link (or search fallback)."""
         clean_artist = (artist or "").strip()
         if not clean_artist:
             return ""
+
+        cache_key = f"ytm:artist:{clean_artist.lower()}"
+        cached = self._get_cached_url(cache_key)
+        if cached:
+            return cached
 
         encoded = urllib.parse.quote(clean_artist)
         fallback = f"https://music.youtube.com/search?q={encoded}"
@@ -1331,11 +1418,11 @@ class PlexMusicMonitor:
                                     ep = runs[0].get("navigationEndpoint", {}).get("browseEndpoint", {})
                                     cid = ep.get("browseId", "")
                                     if cid.startswith("UC"):
-                                        return f"https://music.youtube.com/channel/{cid}"
+                                        return self._set_cached_url(cache_key, f"https://music.youtube.com/channel/{cid}")
         except Exception:
             pass
 
-        return fallback
+        return self._set_cached_url(cache_key, fallback)
 
     async def _lookup_qobuz_url(
         self, title: str, artist: str, kind: str = "song", original_url: str = ""
@@ -1348,6 +1435,12 @@ class PlexMusicMonitor:
         query = f"{title} {artist}".strip()
         if not query:
             return ""
+
+        cache_key = f"qobuz:{kind}:{title.strip().lower()}:{artist.strip().lower()}"
+        cached = self._get_cached_url(cache_key)
+        if cached:
+            return cached
+
         encoded = urllib.parse.quote(query)
         search_url = f"https://www.qobuz.com/us-en/search?q={encoded}"
         session = await self._get_http_session()
@@ -1360,10 +1453,10 @@ class PlexMusicMonitor:
                     html = await resp.text()
                     match = re.search(r'href="(/us-en/album/[^"#?]+)"', html)
                     if match:
-                        return f"https://www.qobuz.com{match.group(1)}"
+                        return self._set_cached_url(cache_key, f"https://www.qobuz.com{match.group(1)}")
         except Exception:
             pass
-        return search_url
+        return self._set_cached_url(cache_key, search_url)
 
     async def _download_cover_image(self, image_url: str) -> tuple[str, bytes] | None:
         """Download cover image bytes from a remote URL for PocketBase file upload."""
