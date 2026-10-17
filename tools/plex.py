@@ -1,5 +1,5 @@
 """
-tools/plex.py - AI Tool definition and handler for checking Plex music playback status.
+tools/plex.py - AI Tool definitions and handlers for Plex music status, crate history, and music suggestions.
 """
 
 from google.genai import types
@@ -12,11 +12,40 @@ GET_PLEX_STATUS_TOOL = types.FunctionDeclaration(
     description=(
         "Checks the current Plex music playback status (Now Playing), including whether music "
         "is actively streaming, paused, or idle, along with the song title, artist, album, "
-        "player device, and current playback progress."
+        "audio quality (e.g. FLAC 24-bit/96kHz), player device, and current playback progress."
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
+        properties={
+            "include_history": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, also includes recently played tracks and top rotation albums.",
+            ),
+        },
+    ),
+)
+
+GET_MUSIC_SUGGESTIONS_TOOL = types.FunctionDeclaration(
+    name="get_music_suggestions",
+    description="Retrieves community song and album recommendations submitted via the website.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
         properties={},
+    ),
+)
+
+DELETE_MUSIC_SUGGESTION_TOOL = types.FunctionDeclaration(
+    name="delete_music_suggestion",
+    description="Deletes a community music suggestion by its ID or song/album title.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query": types.Schema(
+                type=types.Type.STRING,
+                description="The ID or title of the music suggestion to delete.",
+            ),
+        },
+        required=["query"],
     ),
 )
 
@@ -30,18 +59,22 @@ def format_duration_mmss(ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-async def handle_get_plex_status(bot, args: dict, user_id: str) -> str:
-    """Handler for the get_plex_status AI tool."""
+def _get_monitor(bot) -> tuple[PlexMusicMonitor, bool]:
     api_cog = bot.get_cog("API") if hasattr(bot, "get_cog") else None
     monitor = getattr(api_cog, "plex_monitor", None) if api_cog else None
-    owns_monitor = False
+    if monitor is not None:
+        return monitor, False
+    return PlexMusicMonitor(), True
 
-    if monitor is None:
-        monitor = PlexMusicMonitor()
-        owns_monitor = True
+
+async def handle_get_plex_status(bot, args: dict, user_id: str) -> str:
+    """Handler for the get_plex_status AI tool."""
+    monitor, owns_monitor = _get_monitor(bot)
+    include_history = bool((args or {}).get("include_history", False))
 
     try:
         status = await monitor.get_now_playing()
+        crate = await monitor.get_crate_data() if include_history and status.get("configured") else None
     finally:
         if owns_monitor:
             await monitor.close()
@@ -56,34 +89,92 @@ async def handle_get_plex_status(bot, args: dict, user_id: str) -> str:
     is_playing = bool(status.get("is_playing"))
     track = status.get("track")
 
+    lines: list[str] = []
     if not track:
-        return "Plex is configured and reachable, but nothing is currently playing and no recent track was found."
+        lines.append("Plex is configured and reachable, but nothing is currently playing and no recent track was found.")
+    else:
+        title = track.get("title") or "Untitled Track"
+        artist = track.get("artist") or "Unknown Artist"
+        album = track.get("album") or ""
+        year = track.get("year")
+        player = track.get("player") or "Plex"
+        audio_quality = track.get("audio_quality") or ""
+        progress_ms = int(track.get("progress_ms") or 0)
+        duration_ms = int(track.get("duration_ms") or 0)
+        pct = float(track.get("progress_percent") or 0.0)
 
-    title = track.get("title") or "Untitled Track"
-    artist = track.get("artist") or "Unknown Artist"
-    album = track.get("album") or ""
-    year = track.get("year")
-    player = track.get("player") or "Plex"
-    progress_ms = int(track.get("progress_ms") or 0)
-    duration_ms = int(track.get("duration_ms") or 0)
-    pct = float(track.get("progress_percent") or 0.0)
-
-    album_str = f" — Album: {album}" + (f" ({year})" if year else "") if album else ""
-    prog_str = (
-        f"{format_duration_mmss(progress_ms)} / {format_duration_mmss(duration_ms)} ({pct:.1f}%)"
-        if duration_ms > 0
-        else "Unknown duration"
-    )
-
-    if is_playing or state == "paused":
-        state_label = "Playing" if state == "playing" else state.capitalize()
-        return (
-            f"Plex Status: {state_label} on {player}\n"
-            f"Track: \"{title}\" by {artist}{album_str}\n"
-            f"Progress: {prog_str}"
+        album_str = f" — Album: {album}" + (f" ({year})" if year else "") if album else ""
+        quality_str = f" [{audio_quality}]" if audio_quality else ""
+        prog_str = (
+            f"{format_duration_mmss(progress_ms)} / {format_duration_mmss(duration_ms)} ({pct:.1f}%)"
+            if duration_ms > 0
+            else "Unknown duration"
         )
 
-    return (
-        f"Plex Status: Idle (nothing actively streaming right now)\n"
-        f"Last Played Track: \"{title}\" by {artist}{album_str}"
-    )
+        if is_playing or state == "paused":
+            state_label = "Playing" if state == "playing" else state.capitalize()
+            lines.append(f"Plex Status: {state_label} on {player}{quality_str}")
+            lines.append(f"Track: \"{title}\" by {artist}{album_str}")
+            lines.append(f"Progress: {prog_str}")
+        else:
+            lines.append("Plex Status: Idle (nothing actively streaming right now)")
+            lines.append(f"Last Played Track: \"{title}\" by {artist}{album_str}{quality_str}")
+
+    if crate:
+        top_albums = crate.get("top_albums") or []
+        recent_tracks = crate.get("recent_tracks") or []
+        if top_albums:
+            top_summary = ", ".join(
+                f"\"{a.get('title')}\" by {a.get('artist')} ({a.get('view_count', 0)} plays)"
+                for a in top_albums[:5]
+            )
+            lines.append(f"Top Rotation: {top_summary}")
+        if recent_tracks:
+            recent_summary = ", ".join(
+                f"\"{t.get('title')}\" by {t.get('artist')}"
+                for t in recent_tracks[:5]
+            )
+            lines.append(f"Recently Played: {recent_summary}")
+
+    return "\n".join(lines)
+
+
+async def handle_get_music_suggestions(bot, args: dict, user_id: str) -> str:
+    """Handler for the get_music_suggestions AI tool."""
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        items = await monitor.get_music_suggestions(limit=25)
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+    if not items:
+        return "No community music suggestions have been submitted yet."
+
+    lines = [f"Found {len(items)} music suggestion(s):"]
+    for s in items:
+        kind = (s.get("kind") or "song").capitalize()
+        title = s.get("title") or "Untitled"
+        artist = s.get("artist") or "Unknown Artist"
+        submitter = s.get("submitter") or "Anonymous"
+        msg = f" — \"{s['message']}\"" if s.get("message") else ""
+        lines.append(f"- [{s.get('id')}] ({kind}) **{title}** by {artist} (from {submitter}){msg}")
+    return "\n".join(lines)
+
+
+async def handle_delete_music_suggestion(bot, args: dict, user_id: str) -> str:
+    """Handler for the delete_music_suggestion AI tool."""
+    query = str((args or {}).get("query", "")).strip()
+    if not query:
+        return "Error: 'query' parameter is required."
+
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        removed = await monitor.delete_music_suggestion(query)
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+    if not removed:
+        return f"No music suggestion found matching '{query}'."
+    return f"Deleted music suggestion: \"{removed.get('title')}\" by {removed.get('artist')} (ID: {removed.get('id')})."

@@ -62,6 +62,11 @@ class API(commands.Cog):
             aiohttp.web.get('/api/books/suggestions', self.handle_get_suggestions),
             aiohttp.web.get('/api/plex/now-playing', self.handle_plex_now_playing),
             aiohttp.web.get('/api/plex/cover', self.handle_plex_cover),
+            aiohttp.web.get('/api/plex/crate', self.handle_plex_crate),
+            aiohttp.web.get('/api/plex/recent', self.handle_plex_crate),
+            aiohttp.web.get('/api/plex/top', self.handle_plex_crate),
+            aiohttp.web.post('/api/plex/suggest', self.handle_plex_suggest),
+            aiohttp.web.get('/api/plex/suggestions', self.handle_plex_get_suggestions),
             aiohttp.web.get('/api/now-playing', self.handle_plex_now_playing),
             aiohttp.web.get('/api/now-playing/cover', self.handle_plex_cover),
             aiohttp.web.get('/', self.handle_serve_index),
@@ -439,7 +444,12 @@ class API(commands.Cog):
 
     async def handle_plex_cover(self, request: aiohttp.web.Request):
         try:
-            result = await self.plex_monitor.get_cover_image()
+            version_key = ""
+            if hasattr(request, "query") and isinstance(request.query, dict):
+                version_key = str(request.query.get("v", "") or "")
+            elif hasattr(request, "query") and hasattr(request.query, "get"):
+                version_key = str(request.query.get("v", "") or "")
+            result = await self.plex_monitor.get_cover_image(version_key=version_key)
             if not result:
                 return aiohttp.web.Response(status=404, text="Cover art not found")
             img_bytes, content_type = result
@@ -451,6 +461,114 @@ class API(commands.Cog):
         except Exception as e:
             sentry_sdk.capture_exception(e)
             return aiohttp.web.Response(status=500, text="Failed to fetch cover art")
+
+    async def handle_plex_crate(self, request: aiohttp.web.Request):
+        try:
+            base_url = self._get_public_base_url(request)
+            data = await self.plex_monitor.get_crate_data(base_url=base_url)
+            return aiohttp.web.json_response(
+                data,
+                headers={"Cache-Control": "public, max-age=30"},
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response(
+                {"error": "Failed to fetch Plex crate data"},
+                status=500,
+            )
+
+    async def handle_plex_get_suggestions(self, request: aiohttp.web.Request):
+        try:
+            suggestions = await self.plex_monitor.get_music_suggestions()
+            return aiohttp.web.json_response({"suggestions": suggestions})
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response(
+                {"error": "Failed to fetch music suggestions"},
+                status=500,
+            )
+
+    async def handle_plex_suggest(self, request: aiohttp.web.Request):
+        if not self._check_rate_limit(request, limit=15, window=300):
+            return aiohttp.web.json_response(
+                {"error": "Rate limit exceeded. Please try again later."},
+                status=429,
+            )
+
+        try:
+            data = await request.json()
+        except Exception:
+            return aiohttp.web.json_response({"error": "Invalid JSON body."}, status=400)
+
+        try:
+            validated = self.plex_monitor.validate_music_suggestion_payload(data)
+        except ValueError as ve:
+            return aiohttp.web.json_response({"error": str(ve)}, status=400)
+
+        try:
+            entry = await self.plex_monitor.add_music_suggestion(
+                title=validated["title"],
+                artist=validated["artist"],
+                kind=validated["kind"],
+                url=validated["url"],
+                reason=validated["reason"],
+                submitter=validated["submitter"],
+                suggested_from="Web Form",
+            )
+
+            # Notify bot owner via Discord DM
+            raw_owner_id = os.getenv("OWNER_ID", "").strip()
+            owner_id = int(raw_owner_id) if raw_owner_id.isdigit() else getattr(self.bot, "owner_id", None)
+            if owner_id:
+                try:
+                    owner = await self.bot.fetch_user(int(owner_id))
+                    if owner:
+                        kind_label = "Album" if entry["kind"] == "album" else "Song"
+                        embed = discord.Embed(
+                            title=f"🎵 New {kind_label} Recommendation!",
+                            description=f"**{entry['title']}** — *{entry['artist']}*",
+                            color=discord.Color.amber(),
+                        )
+                        embed.add_field(
+                            name="Suggested By",
+                            value=entry.get("submitter") or "Anonymous",
+                            inline=True,
+                        )
+                        embed.add_field(
+                            name="Type",
+                            value=kind_label,
+                            inline=True,
+                        )
+                        if entry.get("message"):
+                            embed.add_field(
+                                name="Why?",
+                                value=entry["message"][:1024],
+                                inline=False,
+                            )
+                        if entry.get("url"):
+                            embed.add_field(
+                                name="Link",
+                                value=entry["url"],
+                                inline=False,
+                            )
+                        if entry.get("cover_url"):
+                            embed.set_thumbnail(url=entry["cover_url"])
+                        await owner.send(embed=embed)
+                except Exception:
+                    pass
+
+            display_name = f"{entry['title']} — {entry['artist']}"
+            return aiohttp.web.json_response({
+                "success": True,
+                "display_name": display_name,
+                "suggestion": entry,
+            })
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response(
+                {"error": "Failed to save music suggestion. Please try again later."},
+                status=500,
+            )
 
     async def handle_serve_index(self, request: aiohttp.web.Request):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -524,6 +642,7 @@ class API(commands.Cog):
         album = track.get("album") or ""
         year = track.get("year")
         player = track.get("player") or "Plex"
+        audio_quality = track.get("audio_quality") or ""
         progress_ms = int(track.get("progress_ms") or 0)
         duration_ms = int(track.get("duration_ms") or 0)
         pct = float(track.get("progress_percent") or 0.0)
@@ -554,7 +673,10 @@ class API(commands.Cog):
         elif duration_ms > 0:
             embed.add_field(name="Duration", value=f"`{format_duration_mmss(duration_ms)}`", inline=True)
 
-        embed.set_footer(text=f"Player: {player}")
+        footer_parts = [f"Player: {player}"]
+        if audio_quality:
+            footer_parts.append(audio_quality)
+        embed.set_footer(text=" • ".join(footer_parts))
 
         cover_data = await self.plex_monitor.get_cover_image()
         if cover_data:

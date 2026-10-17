@@ -1,9 +1,12 @@
 import asyncio
+from collections import OrderedDict
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.parse
+import uuid
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -11,7 +14,7 @@ import aiohttp
 
 
 class PlexMusicMonitor:
-    """Monitors a Plex Media Server for active music sessions and caches cover art."""
+    """Monitors a Plex Media Server for active music sessions, history, top rotation, and cover art."""
 
     def __init__(
         self,
@@ -20,6 +23,7 @@ class PlexMusicMonitor:
         plex_user: str | None = None,
         cache_ttl: float | None = None,
         state_file: str | None = None,
+        suggestions_file: str | None = None,
     ):
         self.plex_url = (plex_url if plex_url is not None else os.getenv("PLEX_URL", "")).strip().rstrip("/")
         self.plex_token = (plex_token if plex_token is not None else os.getenv("PLEX_TOKEN", "")).strip()
@@ -33,17 +37,30 @@ class PlexMusicMonitor:
 
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         default_state_file = os.path.join(base_dir, "data", "plex_last_played.json")
+        default_suggestions_file = os.path.join(base_dir, "data", "music_suggestions.json")
         self.state_file = state_file or default_state_file
+        self.suggestions_file = suggestions_file or default_suggestions_file
 
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
+        self._crate_lock = asyncio.Lock()
+        self._suggestions_lock = asyncio.Lock()
 
         # Cached session snapshot
         self._cached_payload: dict[str, Any] | None = None
         self._cached_at: float = 0.0
         self._current_thumb_path: str = ""
 
-        # Cover image cache: (thumb_path, bytes, content_type)
+        # Cached crate data (recent tracks + top rotation)
+        self._cached_crate: dict[str, Any] | None = None
+        self._cached_crate_at: float = 0.0
+        self.crate_cache_ttl: float = 60.0
+
+        # Allowlist mapping version_key -> thumb_path (bounded LRU)
+        self._known_thumbs: OrderedDict[str, str] = OrderedDict()
+        # Cover image bytes LRU cache: version_key -> (thumb_path, bytes, content_type)
+        self._cover_cache_map: OrderedDict[str, tuple[str, bytes, str]] = OrderedDict()
+        # Keep legacy single tuple attribute for backwards compatibility
         self._cover_cache: tuple[str, bytes, str] | None = None
 
         # Last played track persisted across restarts
@@ -56,6 +73,14 @@ class PlexMusicMonitor:
     def is_configured(self) -> bool:
         return bool(self.plex_url and self.plex_token)
 
+    def _register_thumb(self, version_key: str, thumb_path: str) -> None:
+        if not version_key or not thumb_path:
+            return
+        self._known_thumbs[version_key] = thumb_path
+        self._known_thumbs.move_to_end(version_key)
+        while len(self._known_thumbs) > 250:
+            self._known_thumbs.popitem(last=False)
+
     def _load_last_played(self) -> None:
         try:
             if self.state_file and os.path.exists(self.state_file):
@@ -64,8 +89,12 @@ class PlexMusicMonitor:
                 if isinstance(data, dict) and data.get("title"):
                     self._last_played = data
                     self._last_persisted_key = str(data.get("rating_key", ""))
-                    if data.get("thumb_path"):
-                        self._current_thumb_path = str(data["thumb_path"])
+                    thumb = str(data.get("thumb_path") or "")
+                    ver = str(data.get("cover_version") or "")
+                    if thumb:
+                        self._current_thumb_path = thumb
+                        if ver:
+                            self._register_thumb(ver, thumb)
         except Exception:
             pass
 
@@ -118,7 +147,6 @@ class PlexMusicMonitor:
         p = (path or "").strip()
         if not p or not p.startswith("/"):
             return ""
-        # Prevent protocol-relative or traversal tricks
         if p.startswith("//") or ".." in p:
             return ""
         return p
@@ -127,6 +155,144 @@ class PlexMusicMonitor:
     def _cover_version_key(rating_key: str, thumb_path: str) -> str:
         raw = f"{rating_key}:{thumb_path}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _format_audio_quality(
+        codec: str,
+        bit_depth: int | None,
+        sampling_rate: int | None,
+        bitrate_kbps: int | None,
+    ) -> str:
+        clean_codec = (codec or "").strip().upper()
+        if clean_codec == "DCA":
+            clean_codec = "DTS"
+        elif clean_codec == "MPEG4":
+            clean_codec = "AAC"
+
+        rate_str = ""
+        if sampling_rate and sampling_rate > 0:
+            khz = sampling_rate / 1000.0
+            rate_str = f"{khz:g}kHz"
+
+        lossless_codecs = {"FLAC", "ALAC", "WAV", "AIFF", "PCM", "DSD"}
+        details: list[str] = []
+        if bit_depth and bit_depth > 0 and rate_str:
+            details.append(f"{bit_depth}-bit/{rate_str}")
+        elif bit_depth and bit_depth > 0:
+            details.append(f"{bit_depth}-bit")
+        elif rate_str and clean_codec in lossless_codecs:
+            details.append(rate_str)
+        elif bitrate_kbps and bitrate_kbps > 0:
+            details.append(f"{bitrate_kbps} kbps")
+        elif rate_str:
+            details.append(rate_str)
+
+        if clean_codec and details:
+            return f"{clean_codec} • {' '.join(details)}"
+        if clean_codec:
+            return clean_codec
+        return " ".join(details)
+
+    def _extract_audio_stream_info_json(self, raw: dict[str, Any]) -> dict[str, Any]:
+        codec = ""
+        bit_depth: int | None = None
+        sampling_rate: int | None = None
+        bitrate_kbps: int | None = None
+
+        media_list = raw.get("Media")
+        if isinstance(media_list, dict):
+            media_list = [media_list]
+        if isinstance(media_list, list) and media_list:
+            m0 = media_list[0] if isinstance(media_list[0], dict) else {}
+            codec = str(m0.get("audioCodec") or "").strip()
+            raw_br = m0.get("bitrate")
+            if raw_br is not None:
+                try:
+                    bitrate_kbps = int(raw_br)
+                except (TypeError, ValueError):
+                    pass
+
+            parts = m0.get("Part")
+            if isinstance(parts, dict):
+                parts = [parts]
+            if isinstance(parts, list) and parts:
+                p0 = parts[0] if isinstance(parts[0], dict) else {}
+                streams = p0.get("Stream")
+                if isinstance(streams, dict):
+                    streams = [streams]
+                if isinstance(streams, list):
+                    for st in streams:
+                        if not isinstance(st, dict):
+                            continue
+                        st_type = str(st.get("streamType", ""))
+                        if st_type in ("2", "") or st.get("audioChannelLayout") or st.get("samplingRate"):
+                            if not codec:
+                                codec = str(st.get("codec") or "").strip()
+                            if st.get("bitDepth") is not None:
+                                try:
+                                    bit_depth = int(st["bitDepth"])
+                                except (TypeError, ValueError):
+                                    pass
+                            if st.get("samplingRate") is not None:
+                                try:
+                                    sampling_rate = int(st["samplingRate"])
+                                except (TypeError, ValueError):
+                                    pass
+                            if bitrate_kbps is None and st.get("bitrate") is not None:
+                                try:
+                                    bitrate_kbps = int(st["bitrate"])
+                                except (TypeError, ValueError):
+                                    pass
+                            break
+
+        quality_label = self._format_audio_quality(codec, bit_depth, sampling_rate, bitrate_kbps)
+        return {
+            "audio_codec": codec.upper() if codec else None,
+            "bit_depth": bit_depth,
+            "sampling_rate": sampling_rate,
+            "bitrate_kbps": bitrate_kbps,
+            "audio_quality": quality_label or None,
+        }
+
+    def _extract_audio_stream_info_xml(self, elem: ET.Element) -> dict[str, Any]:
+        codec = ""
+        bit_depth: int | None = None
+        sampling_rate: int | None = None
+        bitrate_kbps: int | None = None
+
+        media_elem = elem.find("Media")
+        if media_elem is not None:
+            codec = (media_elem.attrib.get("audioCodec") or "").strip()
+            raw_br = media_elem.attrib.get("bitrate")
+            if raw_br:
+                try:
+                    bitrate_kbps = int(raw_br)
+                except (TypeError, ValueError):
+                    pass
+            for st in media_elem.findall(".//Stream"):
+                if st.attrib.get("streamType") in ("2", None) or st.attrib.get("samplingRate"):
+                    if not codec:
+                        codec = (st.attrib.get("codec") or "").strip()
+                    if st.attrib.get("bitDepth"):
+                        try:
+                            bit_depth = int(st.attrib["bitDepth"])
+                        except (TypeError, ValueError):
+                            pass
+                    if st.attrib.get("samplingRate"):
+                        try:
+                            sampling_rate = int(st.attrib["samplingRate"])
+                        except (TypeError, ValueError):
+                            pass
+                    break
+
+        quality_label = self._format_audio_quality(codec, bit_depth, sampling_rate, bitrate_kbps)
+        return {
+            "audio_codec": codec.upper() if codec else None,
+            "bit_depth": bit_depth,
+            "sampling_rate": sampling_rate,
+            "bitrate_kbps": bitrate_kbps,
+            "audio_quality": quality_label or None,
+        }
 
     def _parse_json_sessions(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         container = payload.get("MediaContainer") or {}
@@ -159,7 +325,10 @@ class PlexMusicMonitor:
                 else ""
             )
 
-            tracks.append(self._extract_track_dict(item, state=state, player_name=player_name))
+            audio_info = self._extract_audio_stream_info_json(item)
+            track = self._extract_track_dict(item, state=state, player_name=player_name)
+            track.update(audio_info)
+            tracks.append(track)
         return tracks
 
     def _parse_xml_sessions(self, xml_text: str) -> list[dict[str, Any]]:
@@ -193,7 +362,10 @@ class PlexMusicMonitor:
                 else ""
             )
 
-            tracks.append(self._extract_track_dict(elem.attrib, state=state, player_name=player_name))
+            audio_info = self._extract_audio_stream_info_xml(elem)
+            track = self._extract_track_dict(elem.attrib, state=state, player_name=player_name)
+            track.update(audio_info)
+            tracks.append(track)
         return tracks
 
     def _extract_track_dict(
@@ -242,6 +414,22 @@ class PlexMusicMonitor:
         )
         thumb_path = self._sanitize_thumb_path(str(thumb_raw))
         version_key = self._cover_version_key(rating_key, thumb_path) if thumb_path else ""
+        if version_key and thumb_path:
+            self._register_thumb(version_key, thumb_path)
+
+        view_count = 0
+        if raw.get("viewCount") is not None:
+            try:
+                view_count = int(raw["viewCount"])
+            except (TypeError, ValueError):
+                view_count = 0
+
+        last_viewed_at: int | None = None
+        if raw.get("lastViewedAt") is not None:
+            try:
+                last_viewed_at = int(raw["lastViewedAt"])
+            except (TypeError, ValueError):
+                last_viewed_at = None
 
         return {
             "rating_key": rating_key,
@@ -253,6 +441,8 @@ class PlexMusicMonitor:
             "duration_ms": duration_ms,
             "progress_ms": progress_ms,
             "progress_percent": progress_percent,
+            "view_count": view_count,
+            "last_played_at": last_viewed_at,
             "state": state,
             "player": player_name,
             "thumb_path": thumb_path,
@@ -260,43 +450,120 @@ class PlexMusicMonitor:
             "updated_at": time.time(),
         }
 
-    async def _fetch_recent_track_from_plex(self) -> dict[str, Any] | None:
-        """Fallback to fetch the most recently played track from Plex if no session is active."""
+    def _extract_album_dict(self, raw: dict[str, Any]) -> dict[str, Any]:
+        rating_key = str(raw.get("ratingKey") or raw.get("key") or "")
+        title = str(raw.get("title") or "Untitled Album").strip()
+        artist = str(raw.get("parentTitle") or raw.get("originalTitle") or "Unknown Artist").strip()
+
+        raw_year = raw.get("year") or raw.get("parentYear")
+        year: int | None = None
+        if raw_year is not None:
+            try:
+                year = int(raw_year)
+            except (TypeError, ValueError):
+                year = None
+
+        view_count = 0
+        if raw.get("viewCount") is not None:
+            try:
+                view_count = int(raw["viewCount"])
+            except (TypeError, ValueError):
+                view_count = 0
+
+        last_viewed_at: int | None = None
+        if raw.get("lastViewedAt") is not None:
+            try:
+                last_viewed_at = int(raw["lastViewedAt"])
+            except (TypeError, ValueError):
+                last_viewed_at = None
+
+        thumb_raw = raw.get("thumb") or raw.get("parentThumb") or ""
+        thumb_path = self._sanitize_thumb_path(str(thumb_raw))
+        version_key = self._cover_version_key(rating_key, thumb_path) if thumb_path else ""
+        if version_key and thumb_path:
+            self._register_thumb(version_key, thumb_path)
+
+        return {
+            "rating_key": rating_key,
+            "title": title,
+            "artist": artist,
+            "year": year,
+            "view_count": view_count,
+            "last_played_at": last_viewed_at,
+            "thumb_path": thumb_path,
+            "cover_version": version_key,
+        }
+
+    async def _fetch_plex_items(self, query_path: str) -> list[dict[str, Any]]:
         if not self.is_configured:
-            return None
+            return []
         session = await self._get_http_session()
-        url = (
-            f"{self.plex_url}/library/all"
-            "?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
-            "&X-Plex-Container-Start=0&X-Plex-Container-Size=1"
-        )
+        url = f"{self.plex_url}{query_path}"
         try:
             async with session.get(url, headers=self._plex_headers()) as resp:
                 if resp.status != 200:
-                    return None
+                    return []
                 content_type = resp.headers.get("Content-Type", "").lower()
                 if "json" in content_type:
                     data = await resp.json()
                     container = data.get("MediaContainer") or {}
                     metadata = container.get("Metadata") or []
-                    if isinstance(metadata, list) and metadata:
-                        track = self._extract_track_dict(metadata[0], state="stopped")
-                        last_viewed = metadata[0].get("lastViewedAt")
-                        if last_viewed:
-                            try:
-                                track["last_played_at"] = int(last_viewed)
-                            except (TypeError, ValueError):
-                                pass
-                        return track
+                    if isinstance(metadata, dict):
+                        return [metadata]
+                    if isinstance(metadata, list):
+                        return [m for m in metadata if isinstance(m, dict)]
                 else:
                     text = await resp.text()
-                    tracks = self._parse_xml_sessions(text)
-                    if tracks:
-                        tracks[0]["state"] = "stopped"
-                        return tracks[0]
+                    try:
+                        data = json.loads(text)
+                        container = data.get("MediaContainer") or {}
+                        metadata = container.get("Metadata") or []
+                        if isinstance(metadata, list):
+                            return [m for m in metadata if isinstance(m, dict)]
+                    except Exception:
+                        root = ET.fromstring(text)
+                        return [dict(elem.attrib) for elem in root]
         except Exception:
-            return None
+            return []
+        return []
+
+    async def _fetch_recent_track_from_plex(self) -> dict[str, Any] | None:
+        """Fallback to fetch the most recently played track from Plex if no session is active."""
+        items = await self._fetch_plex_items(
+            "/library/all?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
+            "&X-Plex-Container-Start=0&X-Plex-Container-Size=1"
+        )
+        if items:
+            track = self._extract_track_dict(items[0], state="stopped")
+            track.update(self._extract_audio_stream_info_json(items[0]))
+            return track
         return None
+
+    def _format_public_track(self, raw_track: dict[str, Any], base_url: str = "", elapsed_sec: float = 0.0, state: str = "stopped") -> dict[str, Any]:
+        track = dict(raw_track)
+        thumb_path = track.pop("thumb_path", "")
+        cover_version = track.pop("cover_version", "")
+        if cover_version and thumb_path:
+            self._register_thumb(cover_version, thumb_path)
+
+        duration_ms = int(track.get("duration_ms", 0) or 0)
+        progress_ms = int(track.get("progress_ms", 0) or 0)
+        if state == "playing" and elapsed_sec > 0:
+            progress_ms = progress_ms + int(elapsed_sec * 1000)
+            if duration_ms > 0:
+                progress_ms = min(duration_ms, progress_ms)
+            track["progress_ms"] = progress_ms
+            track["progress_percent"] = (
+                round((progress_ms / duration_ms) * 100, 2) if duration_ms > 0 else 0.0
+            )
+
+        if thumb_path and cover_version:
+            prefix = base_url.rstrip("/") if base_url else ""
+            track["cover_url"] = f"{prefix}/api/plex/cover?v={cover_version}"
+        else:
+            track["cover_url"] = None
+
+        return track
 
     def _format_public_response(
         self,
@@ -316,27 +583,12 @@ class PlexMusicMonitor:
                 "track": None,
             }
 
-        track = dict(raw_track)
-        thumb_path = track.pop("thumb_path", "")
-        cover_version = track.pop("cover_version", "")
-
-        # Interpolate progress if actively playing and served from cache
-        duration_ms = int(track.get("duration_ms", 0) or 0)
-        progress_ms = int(track.get("progress_ms", 0) or 0)
-        if state == "playing" and elapsed_sec > 0:
-            progress_ms = progress_ms + int(elapsed_sec * 1000)
-            if duration_ms > 0:
-                progress_ms = min(duration_ms, progress_ms)
-            track["progress_ms"] = progress_ms
-            track["progress_percent"] = (
-                round((progress_ms / duration_ms) * 100, 2) if duration_ms > 0 else 0.0
-            )
-
-        if thumb_path and cover_version:
-            prefix = base_url.rstrip("/") if base_url else ""
-            track["cover_url"] = f"{prefix}/api/plex/cover?v={cover_version}"
-        else:
-            track["cover_url"] = None
+        track = self._format_public_track(
+            raw_track,
+            base_url=base_url,
+            elapsed_sec=elapsed_sec,
+            state=state,
+        )
 
         return {
             "configured": self.is_configured,
@@ -384,7 +636,6 @@ class PlexMusicMonitor:
                             active_tracks = self._parse_json_sessions(data)
                         else:
                             text = await resp.text()
-                            # Try JSON first in case Content-Type header is generic
                             try:
                                 data = json.loads(text)
                                 active_tracks = self._parse_json_sessions(data)
@@ -405,7 +656,6 @@ class PlexMusicMonitor:
                 if chosen.get("thumb_path"):
                     self._current_thumb_path = chosen["thumb_path"]
 
-                # Snapshot as last_played
                 last_snapshot = dict(chosen)
                 last_snapshot["last_played_at"] = int(time.time())
                 self._last_played = last_snapshot
@@ -419,7 +669,6 @@ class PlexMusicMonitor:
                     "track": chosen,
                 }
             else:
-                # No active session; check fallback history once if we have no last_played
                 if self._last_played is None and not self._history_checked:
                     self._history_checked = True
                     recent = await self._fetch_recent_track_from_plex()
@@ -447,23 +696,130 @@ class PlexMusicMonitor:
             self._cached_at = time.time()
             return self._format_public_response(self._cached_payload, base_url=base_url)
 
-    async def get_cover_image(self) -> tuple[bytes, str] | None:
-        """Fetch and cache the cover art bytes for the current or last played track."""
+    async def get_crate_data(self, base_url: str = "") -> dict[str, Any]:
+        """Fetch Recently Played tracks and Top Rotation albums/tracks from Plex."""
+        if not self.is_configured:
+            return {
+                "configured": False,
+                "recent_tracks": [],
+                "top_albums": [],
+            }
+
+        now = time.time()
+        if self._cached_crate is None or (now - self._cached_crate_at) >= self.crate_cache_ttl:
+            async with self._crate_lock:
+                now = time.time()
+                if self._cached_crate is None or (now - self._cached_crate_at) >= self.crate_cache_ttl:
+                    recent_raw, top_albums_raw = await asyncio.gather(
+                        self._fetch_plex_items(
+                            "/library/all?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
+                            "&X-Plex-Container-Start=0&X-Plex-Container-Size=12"
+                        ),
+                        self._fetch_plex_items(
+                            "/library/all?type=9&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
+                            "&X-Plex-Container-Start=0&X-Plex-Container-Size=8"
+                        ),
+                    )
+
+                    recent_tracks: list[dict[str, Any]] = []
+                    for item in recent_raw:
+                        t = self._extract_track_dict(item, state="stopped")
+                        t.update(self._extract_audio_stream_info_json(item))
+                        recent_tracks.append(t)
+
+                    top_albums: list[dict[str, Any]] = []
+                    for item in top_albums_raw:
+                        top_albums.append(self._extract_album_dict(item))
+
+                    # Fallback: if Plex has no album-level viewCounts, derive top rotation from top tracks
+                    if not top_albums:
+                        top_tracks_raw = await self._fetch_plex_items(
+                            "/library/all?type=10&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
+                            "&X-Plex-Container-Start=0&X-Plex-Container-Size=24"
+                        )
+                        seen_albums: set[str] = set()
+                        for item in top_tracks_raw:
+                            t = self._extract_track_dict(item, state="stopped")
+                            album_key = f"{t.get('album') or t.get('title')}:{t.get('album_artist')}"
+                            if album_key in seen_albums:
+                                continue
+                            seen_albums.add(album_key)
+                            top_albums.append({
+                                "rating_key": t.get("rating_key", ""),
+                                "title": t.get("album") or t.get("title", "Untitled"),
+                                "artist": t.get("album_artist") or t.get("artist", "Unknown Artist"),
+                                "year": t.get("year"),
+                                "view_count": t.get("view_count", 0),
+                                "last_played_at": t.get("last_played_at"),
+                                "thumb_path": t.get("thumb_path", ""),
+                                "cover_version": t.get("cover_version", ""),
+                            })
+                            if len(top_albums) >= 8:
+                                break
+
+                    self._cached_crate = {
+                        "recent_tracks": recent_tracks,
+                        "top_albums": top_albums,
+                    }
+                    self._cached_crate_at = time.time()
+
+        prefix = base_url.rstrip("/") if base_url else ""
+        formatted_recent = [
+            self._format_public_track(t, base_url=base_url, state="stopped")
+            for t in (self._cached_crate or {}).get("recent_tracks", [])
+        ]
+
+        formatted_top = []
+        for alb in (self._cached_crate or {}).get("top_albums", []):
+            a_copy = dict(alb)
+            thumb_path = a_copy.pop("thumb_path", "")
+            cover_version = a_copy.pop("cover_version", "")
+            if cover_version and thumb_path:
+                self._register_thumb(cover_version, thumb_path)
+                a_copy["cover_url"] = f"{prefix}/api/plex/cover?v={cover_version}"
+            else:
+                a_copy["cover_url"] = None
+            formatted_top.append(a_copy)
+
+        return {
+            "configured": True,
+            "recent_tracks": formatted_recent,
+            "top_albums": formatted_top,
+        }
+
+    async def get_cover_image(self, version_key: str = "") -> tuple[bytes, str] | None:
+        """Fetch and cache the cover art bytes for a known version_key or the current track."""
         if not self.is_configured:
             return None
 
-        if not self._current_thumb_path:
-            await self.get_now_playing()
+        target_thumb = ""
+        clean_key = (version_key or "").strip()
 
-        thumb_path = self._sanitize_thumb_path(self._current_thumb_path)
+        if clean_key and clean_key in self._cover_cache_map:
+            cached_thumb, cached_bytes, cached_ct = self._cover_cache_map[clean_key]
+            self._cover_cache_map.move_to_end(clean_key)
+            return cached_bytes, cached_ct
+
+        if clean_key and clean_key in self._known_thumbs:
+            target_thumb = self._known_thumbs[clean_key]
+        else:
+            if not self._current_thumb_path:
+                await self.get_now_playing()
+            target_thumb = self._current_thumb_path
+
+        thumb_path = self._sanitize_thumb_path(target_thumb)
         if not thumb_path:
             return None
 
-        if self._cover_cache and self._cover_cache[0] == thumb_path:
+        if not clean_key and self._cover_cache and self._cover_cache[0] == thumb_path:
             return self._cover_cache[1], self._cover_cache[2]
 
+        for cached_k, (c_thumb, c_bytes, c_ct) in self._cover_cache_map.items():
+            if c_thumb == thumb_path:
+                self._cover_cache_map.move_to_end(cached_k)
+                return c_bytes, c_ct
+
         session = await self._get_http_session()
-        # Use Plex photo transcoder for optimal sizing (300x300), falling back to direct thumb URL
         encoded_thumb = urllib.parse.quote(thumb_path, safe="/")
         transcode_url = (
             f"{self.plex_url}/photo/:/transcode"
@@ -483,9 +839,155 @@ class PlexMusicMonitor:
                             content_type = "image/jpeg"
                         body = await resp.read()
                         if body:
+                            cache_k = clean_key or self._cover_version_key("", thumb_path)
                             self._cover_cache = (thumb_path, body, content_type)
+                            self._cover_cache_map[cache_k] = (thumb_path, body, content_type)
+                            self._cover_cache_map.move_to_end(cache_k)
+                            while len(self._cover_cache_map) > 60:
+                                self._cover_cache_map.popitem(last=False)
                             return body, content_type
             except Exception:
                 continue
 
         return None
+
+    # -------------------------------------------------------------------------
+    # Community Music Suggestions (stored in data/music_suggestions.json)
+    # -------------------------------------------------------------------------
+    def _read_suggestions_sync(self) -> list[dict[str, Any]]:
+        try:
+            if self.suggestions_file and os.path.exists(self.suggestions_file):
+                with open(self.suggestions_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+        return []
+
+    def _write_suggestions_sync(self, items: list[dict[str, Any]]) -> None:
+        if not self.suggestions_file:
+            return
+        os.makedirs(os.path.dirname(self.suggestions_file), exist_ok=True)
+        with open(self.suggestions_file, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+
+    async def _lookup_itunes_cover(self, title: str, artist: str, kind: str = "song") -> str:
+        """Fetch public album art from iTunes Search API for community music recommendations."""
+        query = f"{title} {artist}".strip()
+        if not query:
+            return ""
+        entity = "album" if kind == "album" else "song"
+        encoded = urllib.parse.quote(query)
+        url = f"https://itunes.apple.com/search?term={encoded}&media=music&entity={entity}&limit=1"
+        session = await self._get_http_session()
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    data = json.loads(text)
+                    results = data.get("results") or []
+                    if results and isinstance(results[0], dict):
+                        art = str(results[0].get("artworkUrl100") or "")
+                        if art:
+                            return art.replace("100x100bb", "300x300bb")
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def validate_music_suggestion_payload(data: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(data, dict):
+            raise ValueError("Payload must be a JSON object.")
+
+        def clean_str(val: Any, max_len: int, allow_newlines: bool = False) -> str:
+            s = str(val or "")
+            if allow_newlines:
+                s = "".join(ch for ch in s if ch in "\r\n\t" or not (0 <= ord(ch) < 32 or ord(ch) == 127))
+            else:
+                s = "".join(ch for ch in s if not (0 <= ord(ch) < 32 or ord(ch) == 127))
+            return s.strip()[:max_len].strip()
+
+        title = clean_str(data.get("title", ""), max_len=200)
+        artist = clean_str(data.get("artist", ""), max_len=150)
+        kind = clean_str(data.get("kind", "song"), max_len=20).lower()
+        if kind not in ("song", "album"):
+            kind = "song"
+        url = clean_str(data.get("url", ""), max_len=400)
+        reason = clean_str(data.get("reason", ""), max_len=1000, allow_newlines=True)
+        submitter = clean_str(data.get("submitter", ""), max_len=100) or "Anonymous"
+
+        if not title or not artist:
+            raise ValueError("Please provide both a Song/Album Title and an Artist.")
+
+        if url:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise ValueError("Please provide a valid http:// or https:// link.")
+
+        return {
+            "title": title,
+            "artist": artist,
+            "kind": kind,
+            "url": url,
+            "reason": reason,
+            "submitter": submitter,
+        }
+
+    async def add_music_suggestion(
+        self,
+        title: str,
+        artist: str,
+        kind: str = "song",
+        url: str = "",
+        reason: str = "",
+        submitter: str = "Anonymous",
+        suggested_from: str = "Web Form",
+    ) -> dict[str, Any]:
+        cover_url = await self._lookup_itunes_cover(title, artist, kind=kind)
+        now_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        entry = {
+            "id": uuid.uuid4().hex[:10],
+            "title": title,
+            "artist": artist,
+            "kind": kind if kind in ("song", "album") else "song",
+            "url": url,
+            "message": reason,
+            "submitter": submitter or "Anonymous",
+            "suggested_from": suggested_from,
+            "date_suggested": now_iso,
+            "cover_url": cover_url,
+            "is_public": True,
+        }
+        async with self._suggestions_lock:
+            items = self._read_suggestions_sync()
+            items.insert(0, entry)
+            self._write_suggestions_sync(items[:200])
+        return entry
+
+    async def get_music_suggestions(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._suggestions_lock:
+            items = self._read_suggestions_sync()
+        public_items = [i for i in items if i.get("is_public", True)]
+        return public_items[:limit]
+
+    async def delete_music_suggestion(self, query: str) -> dict[str, Any] | None:
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        async with self._suggestions_lock:
+            items = self._read_suggestions_sync()
+            removed = None
+            remaining = []
+            for item in items:
+                if removed is None and (
+                    str(item.get("id", "")).lower() == q
+                    or str(item.get("title", "")).lower() == q
+                    or q in str(item.get("title", "")).lower()
+                ):
+                    removed = item
+                else:
+                    remaining.append(item)
+            if removed is not None:
+                self._write_suggestions_sync(remaining)
+            return removed
