@@ -796,6 +796,120 @@ class PlexMusicMonitor:
             "top_albums": formatted_top,
         }
 
+    async def get_album_details(self, rating_key: str, base_url: str = "") -> dict[str, Any] | None:
+        """Fetch album metadata and its tracklist from Plex."""
+        clean_key = str(rating_key or "").strip()
+        if not clean_key or not clean_key.isdigit() or not self.is_configured:
+            return None
+
+        album_items, track_items = await asyncio.gather(
+            self._fetch_plex_items(f"/library/metadata/{clean_key}"),
+            self._fetch_plex_items(f"/library/metadata/{clean_key}/children"),
+        )
+
+        if not album_items and not track_items:
+            return None
+
+        album_raw = album_items[0] if album_items else {}
+        title = album_raw.get("title") or "Untitled Album"
+        artist = (
+            album_raw.get("parentTitle")
+            or album_raw.get("grandparentTitle")
+            or album_raw.get("originalTitle")
+            or "Unknown Artist"
+        )
+        year = album_raw.get("year")
+        summary = album_raw.get("summary") or ""
+        view_count = int(album_raw.get("viewCount") or 0)
+        last_played_at = album_raw.get("lastViewedAt")
+        studio = album_raw.get("studio") or ""
+
+        genres: list[str] = []
+        raw_genres = album_raw.get("Genre") or []
+        if isinstance(raw_genres, list):
+            for g in raw_genres:
+                if isinstance(g, dict) and g.get("tag"):
+                    genres.append(str(g["tag"]))
+                elif isinstance(g, str):
+                    genres.append(g)
+
+        thumb_path = self._sanitize_thumb_path(str(album_raw.get("thumb") or ""))
+        cover_version = self._cover_version_key(clean_key, thumb_path) if thumb_path else ""
+        if cover_version and thumb_path:
+            self._register_thumb(cover_version, thumb_path)
+
+        prefix = base_url.rstrip("/") if base_url else ""
+        cover_url = f"{prefix}/api/plex/cover?v={cover_version}" if cover_version else None
+
+        tracks: list[dict[str, Any]] = []
+        total_duration_ms = 0
+        formats_set: set[str] = set()
+
+        for idx, t_raw in enumerate(track_items, start=1):
+            t_num = int(t_raw.get("index") or t_raw.get("trackNumber") or idx)
+            t_title = t_raw.get("title") or f"Track {t_num}"
+            t_artist = (
+                t_raw.get("originalTitle")
+                or t_raw.get("grandparentTitle")
+                or t_raw.get("parentTitle")
+                or artist
+            )
+            dur = int(t_raw.get("duration") or 0)
+            total_duration_ms += dur
+            t_plays = int(t_raw.get("viewCount") or 0)
+
+            audio_info = self._extract_audio_stream_info_json(t_raw)
+            if audio_info.get("audio_quality"):
+                formats_set.add(audio_info["audio_quality"])
+
+            tracks.append({
+                "rating_key": str(t_raw.get("ratingKey") or ""),
+                "index": t_num,
+                "title": t_title,
+                "artist": t_artist,
+                "duration_ms": dur,
+                "view_count": t_plays,
+                "audio_codec": audio_info.get("audio_codec"),
+                "audio_quality": audio_info.get("audio_quality"),
+            })
+
+        tracks.sort(key=lambda t: t.get("index", 0))
+
+        # Best overall audio format label
+        best_quality = ""
+        if formats_set:
+            sorted_formats = sorted(
+                list(formats_set),
+                key=lambda f: (1 if "FLAC" in f else 0, 1 if "24-bit" in f else 0),
+                reverse=True,
+            )
+            best_quality = sorted_formats[0]
+
+        # Resolve YouTube and Qobuz links for the album
+        youtube_url, qobuz_url = await asyncio.gather(
+            self._lookup_youtube_url(title, artist, kind="album"),
+            self._lookup_qobuz_url(title, artist, kind="album"),
+        )
+
+        return {
+            "rating_key": clean_key,
+            "title": title,
+            "artist": artist,
+            "year": year,
+            "summary": summary,
+            "genres": genres,
+            "studio": studio,
+            "view_count": view_count,
+            "last_played_at": last_played_at,
+            "cover_url": cover_url,
+            "track_count": len(tracks),
+            "total_duration_ms": total_duration_ms,
+            "audio_quality": best_quality,
+            "youtube_url": youtube_url,
+            "qobuz_url": qobuz_url,
+            "tracks": tracks,
+        }
+
     async def get_cover_image(self, version_key: str = "") -> tuple[bytes, str] | None:
         """Fetch and cache the cover art bytes for a known version_key or the current track."""
         if not self.is_configured:
