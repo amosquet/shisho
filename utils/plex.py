@@ -904,6 +904,67 @@ class PlexMusicMonitor:
             pass
         return ""
 
+    async def _lookup_youtube_url(
+        self, title: str, artist: str, kind: str = "song", original_url: str = ""
+    ) -> str:
+        """Resolve a direct YouTube video link (or search fallback) for a recommended song/album."""
+        lower_orig = (original_url or "").lower()
+        if "youtube.com/" in lower_orig or "youtu.be/" in lower_orig:
+            return original_url
+
+        query = f"{title} {artist}".strip()
+        if not query:
+            return ""
+        if kind == "album" and "album" not in query.lower():
+            search_term = f"{query} full album"
+        else:
+            search_term = query
+
+        encoded = urllib.parse.quote(search_term)
+        search_url = f"https://www.youtube.com/results?search_query={encoded}"
+        session = await self._get_http_session()
+        try:
+            async with session.get(
+                search_url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ShishoBot/1.0)"},
+            ) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
+                    if match:
+                        return f"https://www.youtube.com/watch?v={match.group(1)}"
+        except Exception:
+            pass
+        return search_url
+
+    async def _lookup_qobuz_url(
+        self, title: str, artist: str, kind: str = "song", original_url: str = ""
+    ) -> str:
+        """Resolve a direct Qobuz store album/release link (or search fallback) for a recommendation."""
+        lower_orig = (original_url or "").lower()
+        if "qobuz.com/" in lower_orig:
+            return original_url
+
+        query = f"{title} {artist}".strip()
+        if not query:
+            return ""
+        encoded = urllib.parse.quote(query)
+        search_url = f"https://www.qobuz.com/us-en/search?q={encoded}"
+        session = await self._get_http_session()
+        try:
+            async with session.get(
+                search_url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ShishoBot/1.0)"},
+            ) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'href="(/us-en/album/[^"#?]+)"', html)
+                    if match:
+                        return f"https://www.qobuz.com{match.group(1)}"
+        except Exception:
+            pass
+        return search_url
+
     async def _download_cover_image(self, image_url: str) -> tuple[str, bytes] | None:
         """Download cover image bytes from a remote URL for PocketBase file upload."""
         if not image_url:
@@ -955,6 +1016,8 @@ class PlexMusicMonitor:
         if kind not in ("song", "album"):
             kind = "song"
         url = str(cls._record_field(record, "url", "") or "")
+        youtube_url = str(cls._record_field(record, "youtube_url", "") or "")
+        qobuz_url = str(cls._record_field(record, "qobuz_url", "") or "")
         message = str(cls._record_field(record, "message", "") or "")
         submitter = str(cls._record_field(record, "submitter", "") or "Anonymous")
         suggested_from = str(cls._record_field(record, "suggested_from", "Web Form") or "Web Form")
@@ -972,6 +1035,8 @@ class PlexMusicMonitor:
             "artist": artist,
             "kind": kind,
             "url": url,
+            "youtube_url": youtube_url,
+            "qobuz_url": qobuz_url,
             "message": message,
             "submitter": submitter,
             "suggested_from": suggested_from,
@@ -1032,7 +1097,11 @@ class PlexMusicMonitor:
         date_suggested: str = "",
     ) -> dict[str, Any]:
         clean_kind = kind if kind in ("song", "album") else "song"
-        cover_url = await self._lookup_itunes_cover(title, artist, kind=clean_kind)
+        cover_url, youtube_url, qobuz_url = await asyncio.gather(
+            self._lookup_itunes_cover(title, artist, kind=clean_kind),
+            self._lookup_youtube_url(title, artist, kind=clean_kind, original_url=url),
+            self._lookup_qobuz_url(title, artist, kind=clean_kind, original_url=url),
+        )
         cover_file = await self._download_cover_image(cover_url) if cover_url else None
         date_str = date_suggested or time.strftime("%Y-%m-%d", time.gmtime())
 
@@ -1045,6 +1114,8 @@ class PlexMusicMonitor:
                 "artist": artist,
                 "kind": clean_kind,
                 "url": url,
+                "youtube_url": youtube_url,
+                "qobuz_url": qobuz_url,
                 "message": reason,
                 "submitter": submitter or "Anonymous",
                 "suggested_from": suggested_from,
@@ -1066,6 +1137,10 @@ class PlexMusicMonitor:
             formatted = self._record_to_suggestion_dict(rec, pb_url=pb_url)
             if not formatted.get("cover_url") and cover_url:
                 formatted["cover_url"] = cover_url
+            if not formatted.get("youtube_url") and youtube_url:
+                formatted["youtube_url"] = youtube_url
+            if not formatted.get("qobuz_url") and qobuz_url:
+                formatted["qobuz_url"] = qobuz_url
             return formatted
 
         try:
@@ -1078,6 +1153,8 @@ class PlexMusicMonitor:
                 "artist": artist,
                 "kind": clean_kind,
                 "url": url,
+                "youtube_url": youtube_url,
+                "qobuz_url": qobuz_url,
                 "message": reason,
                 "submitter": submitter or "Anonymous",
                 "suggested_from": suggested_from,

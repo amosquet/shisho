@@ -203,7 +203,15 @@ async def handle_get_music_suggestions(bot, args: dict, user_id: str) -> str:
         artist = s.get("artist") or "Unknown Artist"
         submitter = s.get("submitter") or "Anonymous"
         msg = f" — \"{s['message']}\"" if s.get("message") else ""
-        lines.append(f"- [{s.get('id')}] ({kind}) **{title}** by {artist} (from {submitter}){msg}")
+        links = []
+        if s.get("url"):
+            links.append(f"Original: {s['url']}")
+        if s.get("youtube_url"):
+            links.append(f"YouTube: {s['youtube_url']}")
+        if s.get("qobuz_url"):
+            links.append(f"Qobuz: {s['qobuz_url']}")
+        links_str = f" ({' | '.join(links)})" if links else ""
+        lines.append(f"- [{s.get('id')}] ({kind}) **{title}** by {artist} (from {submitter}){msg}{links_str}")
     return "\n".join(lines)
 
 
@@ -246,9 +254,16 @@ async def handle_add_music_suggestion(bot, args: dict, user_id: str) -> str:
         if owns_monitor:
             await monitor.close()
 
+    extra_links = []
+    if entry.get("youtube_url"):
+        extra_links.append(f"YouTube: {entry['youtube_url']}")
+    if entry.get("qobuz_url"):
+        extra_links.append(f"Qobuz: {entry['qobuz_url']}")
+    extra_str = f" [{' | '.join(extra_links)}]" if extra_links else ""
+
     return (
         f"Added {entry.get('kind', kind)} recommendation: "
-        f"\"{entry.get('title')}\" by {entry.get('artist')} (ID: {entry.get('id')})."
+        f"\"{entry.get('title')}\" by {entry.get('artist')} (ID: {entry.get('id')}).{extra_str}"
     )
 
 

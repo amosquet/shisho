@@ -545,10 +545,17 @@ class API(commands.Cog):
                                 value=entry["message"][:1024],
                                 inline=False,
                             )
+                        link_parts = []
                         if entry.get("url"):
+                            link_parts.append(f"🔗 [Submitted Link]({entry['url']})")
+                        if entry.get("youtube_url"):
+                            link_parts.append(f"▶️ [Listen on YouTube]({entry['youtube_url']})")
+                        if entry.get("qobuz_url"):
+                            link_parts.append(f"💿 [Buy on Qobuz]({entry['qobuz_url']})")
+                        if link_parts:
                             embed.add_field(
-                                name="Link",
-                                value=entry["url"],
+                                name="Links",
+                                value=" • ".join(link_parts),
                                 inline=False,
                             )
                         if entry.get("cover_url"):
