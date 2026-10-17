@@ -422,6 +422,7 @@ class PlexMusicMonitor:
             or ""
         )
         parent_rating_key = str(raw.get("parentRatingKey") or "")
+        grandparent_rating_key = str(raw.get("grandparentRatingKey") or "")
         thumb_path = self._sanitize_thumb_path(str(thumb_raw))
         version_key = self._cover_version_key(rating_key, thumb_path) if thumb_path else ""
         if version_key and thumb_path:
@@ -444,6 +445,8 @@ class PlexMusicMonitor:
         return {
             "rating_key": rating_key,
             "parent_rating_key": parent_rating_key,
+            "grandparent_rating_key": grandparent_rating_key,
+            "artist_rating_key": grandparent_rating_key,
             "title": title,
             "artist": artist,
             "album_artist": album_artist or artist,
@@ -465,6 +468,7 @@ class PlexMusicMonitor:
         rating_key = str(raw.get("ratingKey") or raw.get("key") or "")
         title = str(raw.get("title") or "Untitled Album").strip()
         artist = str(raw.get("parentTitle") or raw.get("originalTitle") or "Unknown Artist").strip()
+        parent_rating_key = str(raw.get("parentRatingKey") or "")
 
         raw_year = raw.get("year") or raw.get("parentYear")
         year: int | None = None
@@ -496,6 +500,8 @@ class PlexMusicMonitor:
 
         return {
             "rating_key": rating_key,
+            "parent_rating_key": parent_rating_key,
+            "artist_rating_key": parent_rating_key,
             "title": title,
             "artist": artist,
             "year": year,
