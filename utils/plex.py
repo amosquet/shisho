@@ -1057,7 +1057,7 @@ class PlexMusicMonitor:
     async def _lookup_youtube_music_url(
         self, title: str, artist: str, kind: str = "album", original_url: str = ""
     ) -> str:
-        """Resolve a direct YouTube Music album/playlist link (or search fallback)."""
+        """Resolve an official YouTube Music album playlist link (or search fallback)."""
         lower_orig = (original_url or "").lower()
         if "music.youtube.com/" in lower_orig:
             return original_url
@@ -1066,20 +1066,56 @@ class PlexMusicMonitor:
             if match:
                 return f"https://music.youtube.com/playlist?list={match.group(1)}"
 
-        query = f"{title} {artist}".strip()
+        clean_title = (title or "").strip()
+        clean_artist = (artist or "").strip()
+        query = f"{clean_title} {clean_artist}".strip()
         if not query:
             return ""
 
         encoded_music_query = urllib.parse.quote(query)
         music_search_fallback = f"https://music.youtube.com/search?q={encoded_music_query}"
 
-        # Search for official album / playlist on YouTube to find a playlistId
-        search_term = f"{query} album"
-        encoded = urllib.parse.quote(search_term)
-        # sp=EgIQAw%3D%3D filters YouTube search results specifically to Playlists / Albums
-        search_url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAw%3D%3D"
         session = await self._get_http_session()
+
+        # 1. Primary: Direct YouTube Music InnerTube Search filtered to official albums
+        innertube_url = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20240101.01.00",
+                    "hl": "en",
+                    "gl": "US",
+                }
+            },
+            "query": query,
+            # 'EgWKAQIYAWoMEAMQBBAJEA4QChAF' filters YouTube Music search directly to Albums
+            "params": "EgWKAQIYAWoMEAMQBBAJEA4QChAF",
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            "Referer": "https://music.youtube.com/",
+        }
+
         try:
+            async with session.post(innertube_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    dump = json.dumps(data)
+                    # Official album releases on YouTube Music are identified by OLAK5uy_...
+                    match = re.search(r'"(OLAK5uy_[a-zA-Z0-9_-]+)"', dump)
+                    if match:
+                        return f"https://music.youtube.com/playlist?list={match.group(1)}"
+                    browse_match = re.search(r'"browseId":"(MPREb_[a-zA-Z0-9_-]+)"', dump)
+                    if browse_match:
+                        return f"https://music.youtube.com/browse/{browse_match.group(1)}"
+        except Exception:
+            pass
+
+        # 2. Fallback: Search YouTube for official OLAK5uy_ album playlist
+        try:
+            search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' album')}&sp=EgIQAw%3D%3D"
             async with session.get(
                 search_url,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; ShishoBot/1.0)"},
@@ -1087,12 +1123,11 @@ class PlexMusicMonitor:
                 if resp.status == 200:
                     html = await resp.text()
                     match = re.search(r'"playlistId":"(OLAK5uy_[a-zA-Z0-9_-]+)"', html)
-                    if not match:
-                        match = re.search(r'"playlistId":"([a-zA-Z0-9_-]{18,})"', html)
                     if match:
                         return f"https://music.youtube.com/playlist?list={match.group(1)}"
         except Exception:
             pass
+
         return music_search_fallback
 
     async def _lookup_qobuz_url(
