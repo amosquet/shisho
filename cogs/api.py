@@ -1,3 +1,4 @@
+import io
 import ipaddress
 import re
 import aiohttp.web
@@ -8,10 +9,13 @@ import time
 import secrets
 import json
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import sentry_sdk
 
+from tools.plex import format_duration_mmss
 from utils.db import get_pb_client, validate_pb_token, run_in_executor
+from utils.plex import PlexMusicMonitor
 
 @aiohttp.web.middleware
 async def cors_middleware(request: aiohttp.web.Request, handler):
@@ -56,6 +60,10 @@ class API(commands.Cog):
             aiohttp.web.get('/api/announcements', self.handle_get_announcements),
             aiohttp.web.post('/api/books/suggest', self.handle_book_suggest),
             aiohttp.web.get('/api/books/suggestions', self.handle_get_suggestions),
+            aiohttp.web.get('/api/plex/now-playing', self.handle_plex_now_playing),
+            aiohttp.web.get('/api/plex/cover', self.handle_plex_cover),
+            aiohttp.web.get('/api/now-playing', self.handle_plex_now_playing),
+            aiohttp.web.get('/api/now-playing/cover', self.handle_plex_cover),
             aiohttp.web.get('/', self.handle_serve_index),
             aiohttp.web.get('/index.html', self.handle_serve_index),
             aiohttp.web.get('/suggestions', self.handle_serve_suggestions),
@@ -66,6 +74,7 @@ class API(commands.Cog):
         self.site = None
         self.pending_pins = {}
         self.rate_limits = {}
+        self.plex_monitor = PlexMusicMonitor()
         
         self.pb_url = os.getenv("POCKETBASE_URL")
         self.pb_user = os.getenv("POCKETBASE_USER")
@@ -97,6 +106,7 @@ class API(commands.Cog):
 
     async def cog_unload(self):
         self.cleanup_task.cancel()
+        await self.plex_monitor.close()
         if self.runner:
             await self.runner.cleanup()
 
@@ -400,6 +410,48 @@ class API(commands.Cog):
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response({"error": "Failed to fetch suggestions"}, status=500)
 
+    def _get_public_base_url(self, request: aiohttp.web.Request) -> str:
+        env_base = os.getenv("PUBLIC_API_URL", "").strip()
+        if env_base:
+            return env_base.rstrip("/")
+        host = request.headers.get("Host", "").strip()
+        if not host:
+            return ""
+        proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        if proto not in ("http", "https"):
+            proto = getattr(request, "scheme", "https") or "https"
+        return f"{proto}://{host}"
+
+    async def handle_plex_now_playing(self, request: aiohttp.web.Request):
+        try:
+            base_url = self._get_public_base_url(request)
+            data = await self.plex_monitor.get_now_playing(base_url=base_url)
+            return aiohttp.web.json_response(
+                data,
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response(
+                {"error": "Failed to fetch Plex status"},
+                status=500,
+            )
+
+    async def handle_plex_cover(self, request: aiohttp.web.Request):
+        try:
+            result = await self.plex_monitor.get_cover_image()
+            if not result:
+                return aiohttp.web.Response(status=404, text="Cover art not found")
+            img_bytes, content_type = result
+            return aiohttp.web.Response(
+                body=img_bytes,
+                content_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.Response(status=500, text="Failed to fetch cover art")
+
     async def handle_serve_index(self, request: aiohttp.web.Request):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         index_path = os.path.join(base_dir, "templates", "index.html")
@@ -441,6 +493,79 @@ class API(commands.Cog):
     @cleanup_task.before_loop
     async def before_cleanup_task(self):
         await self.bot.wait_until_ready()
+
+    @app_commands.command(name="nowplaying", description="Check the current Plex music playback status.")
+    async def nowplaying(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        status = await self.plex_monitor.get_now_playing()
+
+        if not status.get("configured"):
+            await interaction.followup.send(
+                "Plex monitoring is not configured (`PLEX_URL` / `PLEX_TOKEN` missing).",
+                ephemeral=True,
+            )
+            return
+
+        track = status.get("track")
+        state = status.get("state", "stopped")
+        is_playing = bool(status.get("is_playing"))
+
+        if not track:
+            embed = discord.Embed(
+                title="🎧 Plex Now Playing",
+                description="Nothing is currently streaming on Plex.",
+                color=discord.Color.light_grey(),
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        title = track.get("title") or "Untitled Track"
+        artist = track.get("artist") or "Unknown Artist"
+        album = track.get("album") or ""
+        year = track.get("year")
+        player = track.get("player") or "Plex"
+        progress_ms = int(track.get("progress_ms") or 0)
+        duration_ms = int(track.get("duration_ms") or 0)
+        pct = float(track.get("progress_percent") or 0.0)
+
+        if is_playing:
+            header = "🟢 Now Playing on Plex"
+            color = discord.Color.green()
+        elif state == "paused":
+            header = "⏸️ Paused on Plex"
+            color = discord.Color.gold()
+        else:
+            header = "⏹️ Last Played on Plex"
+            color = discord.Color.light_grey()
+
+        embed = discord.Embed(
+            title=title,
+            description=f"**{artist}**" + (f"\n*{album}{f' ({year})' if year else ''}*" if album else ""),
+            color=color,
+        )
+        embed.set_author(name=header)
+
+        if duration_ms > 0 and (is_playing or state == "paused"):
+            bar_len = 12
+            filled = min(bar_len, max(0, round((pct / 100.0) * bar_len)))
+            bar = "━" * filled + "●" + "─" * max(0, bar_len - filled - 1)
+            time_str = f"`{bar}` `{format_duration_mmss(progress_ms)} / {format_duration_mmss(duration_ms)}`"
+            embed.add_field(name="Progress", value=time_str, inline=False)
+        elif duration_ms > 0:
+            embed.add_field(name="Duration", value=f"`{format_duration_mmss(duration_ms)}`", inline=True)
+
+        embed.set_footer(text=f"Player: {player}")
+
+        cover_data = await self.plex_monitor.get_cover_image()
+        if cover_data:
+            img_bytes, content_type = cover_data
+            ext = "png" if "png" in content_type else "jpg"
+            filename = f"cover.{ext}"
+            file = discord.File(io.BytesIO(img_bytes), filename=filename)
+            embed.set_thumbnail(url=f"attachment://{filename}")
+            await interaction.followup.send(embed=embed, file=file)
+        else:
+            await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(API(bot))

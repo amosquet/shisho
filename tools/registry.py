@@ -132,6 +132,10 @@ from tools.excel import (
     handle_excel_export_workbook,
     handle_excel_list_workbooks,
 )
+from tools.plex import (
+    GET_PLEX_STATUS_TOOL,
+    handle_get_plex_status,
+)
 
 
 # Unified List of all Function Declarations for Gemini
@@ -185,6 +189,7 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     EXCEL_MANAGE_SHEET_TOOL,
     EXCEL_EXPORT_WORKBOOK_TOOL,
     EXCEL_LIST_WORKBOOKS_TOOL,
+    GET_PLEX_STATUS_TOOL,
 ]
 
 GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
@@ -252,6 +257,7 @@ TOOL_HANDLERS: dict[str, Callable[[Any, dict, str], Coroutine[Any, Any, str]]] =
     "excel_manage_sheet": handle_excel_manage_sheet,
     "excel_export_workbook": handle_excel_export_workbook,
     "excel_list_workbooks": handle_excel_list_workbooks,
+    "get_plex_status": handle_get_plex_status,
 }
 
 
