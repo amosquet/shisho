@@ -421,6 +421,7 @@ class PlexMusicMonitor:
             or raw.get("grandparentThumb")
             or ""
         )
+        parent_rating_key = str(raw.get("parentRatingKey") or "")
         thumb_path = self._sanitize_thumb_path(str(thumb_raw))
         version_key = self._cover_version_key(rating_key, thumb_path) if thumb_path else ""
         if version_key and thumb_path:
@@ -442,6 +443,7 @@ class PlexMusicMonitor:
 
         return {
             "rating_key": rating_key,
+            "parent_rating_key": parent_rating_key,
             "title": title,
             "artist": artist,
             "album_artist": album_artist or artist,
