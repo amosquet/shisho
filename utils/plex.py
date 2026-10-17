@@ -887,9 +887,9 @@ class PlexMusicMonitor:
             )
             best_quality = sorted_formats[0]
 
-        # Resolve YouTube and Qobuz links for the album
-        youtube_url, qobuz_url = await asyncio.gather(
-            self._lookup_youtube_url(title, artist, kind="album"),
+        # Resolve YouTube Music and Qobuz links for the album
+        youtube_music_url, qobuz_url = await asyncio.gather(
+            self._lookup_youtube_music_url(title, artist, kind="album"),
             self._lookup_qobuz_url(title, artist, kind="album"),
         )
 
@@ -907,7 +907,8 @@ class PlexMusicMonitor:
             "track_count": len(tracks),
             "total_duration_ms": total_duration_ms,
             "audio_quality": best_quality,
-            "youtube_url": youtube_url,
+            "youtube_url": youtube_music_url,
+            "youtube_music_url": youtube_music_url,
             "qobuz_url": qobuz_url,
             "tracks": tracks,
         }
@@ -1052,6 +1053,47 @@ class PlexMusicMonitor:
         except Exception:
             pass
         return search_url
+
+    async def _lookup_youtube_music_url(
+        self, title: str, artist: str, kind: str = "album", original_url: str = ""
+    ) -> str:
+        """Resolve a direct YouTube Music album/playlist link (or search fallback)."""
+        lower_orig = (original_url or "").lower()
+        if "music.youtube.com/" in lower_orig:
+            return original_url
+        if ("youtube.com/playlist?list=" in lower_orig or "youtu.be/" in lower_orig) and "list=" in lower_orig:
+            match = re.search(r"list=([a-zA-Z0-9_-]+)", original_url)
+            if match:
+                return f"https://music.youtube.com/playlist?list={match.group(1)}"
+
+        query = f"{title} {artist}".strip()
+        if not query:
+            return ""
+
+        encoded_music_query = urllib.parse.quote(query)
+        music_search_fallback = f"https://music.youtube.com/search?q={encoded_music_query}"
+
+        # Search for official album / playlist on YouTube to find a playlistId
+        search_term = f"{query} album"
+        encoded = urllib.parse.quote(search_term)
+        # sp=EgIQAw%3D%3D filters YouTube search results specifically to Playlists / Albums
+        search_url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAw%3D%3D"
+        session = await self._get_http_session()
+        try:
+            async with session.get(
+                search_url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ShishoBot/1.0)"},
+            ) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'"playlistId":"(OLAK5uy_[a-zA-Z0-9_-]+)"', html)
+                    if not match:
+                        match = re.search(r'"playlistId":"([a-zA-Z0-9_-]{18,})"', html)
+                    if match:
+                        return f"https://music.youtube.com/playlist?list={match.group(1)}"
+        except Exception:
+            pass
+        return music_search_fallback
 
     async def _lookup_qobuz_url(
         self, title: str, artist: str, kind: str = "song", original_url: str = ""
