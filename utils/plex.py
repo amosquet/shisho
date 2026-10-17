@@ -942,6 +942,16 @@ class PlexMusicMonitor:
             return None
 
         artist_raw = artist_items[0] if artist_items else {}
+        item_type = str(artist_raw.get("type") or "").lower()
+        if item_type == "album":
+            parent_key = str(artist_raw.get("parentRatingKey") or "").strip()
+            if parent_key and parent_key != clean_key:
+                return await self.get_artist_details(parent_key, base_url=base_url)
+        elif item_type == "track":
+            grandparent_key = str(artist_raw.get("grandparentRatingKey") or "").strip()
+            if grandparent_key and grandparent_key != clean_key:
+                return await self.get_artist_details(grandparent_key, base_url=base_url)
+
         name = artist_raw.get("title") or "Unknown Artist"
         summary = artist_raw.get("summary") or ""
 
