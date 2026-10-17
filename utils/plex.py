@@ -1059,7 +1059,7 @@ class PlexMusicMonitor:
 
         session = await self._get_http_session()
 
-        # 1. YouTube oEmbed
+        # 1. YouTube / YouTube Music oEmbed
         if "youtube.com/" in lower or "youtu.be/" in lower:
             try:
                 oe_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
@@ -1067,7 +1067,12 @@ class PlexMusicMonitor:
                     if resp.status == 200:
                         data = await resp.json()
                         raw_title = str(data.get("title") or "").strip()
-                        raw_author = str(data.get("author_name") or "").strip()
+                        raw_author = re.sub(
+                            r"\s*-\s*Topic$",
+                            "",
+                            str(data.get("author_name") or "").strip(),
+                            flags=re.I,
+                        ).strip()
                         thumb = str(data.get("thumbnail_url") or "")
                         if " - " in raw_title:
                             parts = raw_title.split(" - ", 1)
