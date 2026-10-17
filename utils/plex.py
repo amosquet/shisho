@@ -1021,11 +1021,8 @@ class PlexMusicMonitor:
         message = str(cls._record_field(record, "message", "") or "")
         submitter = str(cls._record_field(record, "submitter", "") or "Anonymous")
         suggested_from = str(cls._record_field(record, "suggested_from", "Web Form") or "Web Form")
-        date_suggested = str(
-            cls._record_field(record, "date_suggested", "")
-            or cls._record_field(record, "created", "")
-            or ""
-        )
+        created = str(cls._record_field(record, "created", "") or "")
+        updated = str(cls._record_field(record, "updated", "") or "")
         raw_public = cls._record_field(record, "is_public", True)
         is_public = bool(raw_public) if raw_public is not None else True
 
@@ -1040,7 +1037,9 @@ class PlexMusicMonitor:
             "message": message,
             "submitter": submitter,
             "suggested_from": suggested_from,
-            "date_suggested": date_suggested,
+            "created": created,
+            "updated": updated,
+            "date_suggested": created[:10] if created else "",
             "cover_url": cover_url,
             "is_public": is_public,
         }
@@ -1094,7 +1093,6 @@ class PlexMusicMonitor:
         submitter: str = "Anonymous",
         suggested_from: str = "Web Form",
         is_public: bool = True,
-        date_suggested: str = "",
     ) -> dict[str, Any]:
         clean_kind = kind if kind in ("song", "album") else "song"
         cover_url, youtube_url, qobuz_url = await asyncio.gather(
@@ -1103,7 +1101,6 @@ class PlexMusicMonitor:
             self._lookup_qobuz_url(title, artist, kind=clean_kind, original_url=url),
         )
         cover_file = await self._download_cover_image(cover_url) if cover_url else None
-        date_str = date_suggested or time.strftime("%Y-%m-%d", time.gmtime())
 
         def _add_to_pb() -> dict[str, Any]:
             pb = get_pb_client()
@@ -1119,7 +1116,6 @@ class PlexMusicMonitor:
                 "message": reason,
                 "submitter": submitter or "Anonymous",
                 "suggested_from": suggested_from,
-                "date_suggested": date_str,
                 "cover_url": cover_url,
                 "is_public": bool(is_public),
             }
@@ -1147,6 +1143,7 @@ class PlexMusicMonitor:
             return await run_in_executor(_add_to_pb)
         except Exception:
             # Fallback to local JSON file if PocketBase is not configured or unreachable
+            now_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             entry = {
                 "id": uuid.uuid4().hex[:10],
                 "title": title,
@@ -1158,7 +1155,9 @@ class PlexMusicMonitor:
                 "message": reason,
                 "submitter": submitter or "Anonymous",
                 "suggested_from": suggested_from,
-                "date_suggested": date_str,
+                "created": now_iso,
+                "updated": now_iso,
+                "date_suggested": now_iso[:10],
                 "cover_url": cover_url,
                 "is_public": bool(is_public),
             }
@@ -1173,21 +1172,14 @@ class PlexMusicMonitor:
             pb = get_pb_client()
             pb_url = get_pb_url()
 
-            try:
-                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_list(
-                    1,
-                    limit,
-                    query_params={
-                        "sort": "-date_suggested,-created",
-                        "filter": "is_public = true",
-                    },
-                )
-            except Exception:
-                records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_list(
-                    1,
-                    limit,
-                    query_params={"sort": "-created"},
-                )
+            records = pb.collection(MUSIC_RECOMMENDATIONS_COLLECTION).get_list(
+                1,
+                limit,
+                query_params={
+                    "sort": "-created",
+                    "filter": "is_public = true",
+                },
+            )
 
             items = getattr(records, "items", None) or []
             return [self._record_to_suggestion_dict(r, pb_url=pb_url) for r in items]
