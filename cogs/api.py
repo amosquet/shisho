@@ -64,6 +64,7 @@ class API(commands.Cog):
             aiohttp.web.get('/api/plex/cover', self.handle_plex_cover),
             aiohttp.web.get('/api/plex/crate', self.handle_plex_crate),
             aiohttp.web.get('/api/plex/album', self.handle_plex_album),
+            aiohttp.web.get('/api/plex/artist', self.handle_plex_artist),
             aiohttp.web.get('/api/plex/recent', self.handle_plex_crate),
             aiohttp.web.get('/api/plex/top', self.handle_plex_crate),
             aiohttp.web.post('/api/plex/suggest', self.handle_plex_suggest),
@@ -506,6 +507,37 @@ class API(commands.Cog):
             sentry_sdk.capture_exception(e)
             return aiohttp.web.json_response(
                 {"error": "Failed to fetch album details"},
+                status=500,
+            )
+
+    async def handle_plex_artist(self, request: aiohttp.web.Request):
+        try:
+            artist_id = ""
+            if hasattr(request, "query") and hasattr(request.query, "get"):
+                artist_id = str(request.query.get("id", "") or "").strip()
+            elif hasattr(request, "query") and isinstance(request.query, dict):
+                artist_id = str(request.query.get("id", "") or "").strip()
+
+            if not artist_id:
+                return aiohttp.web.json_response(
+                    {"error": "Missing 'id' query parameter."}, status=400
+                )
+
+            base_url = self._get_public_base_url(request)
+            data = await self.plex_monitor.get_artist_details(artist_id, base_url=base_url)
+            if not data:
+                return aiohttp.web.json_response(
+                    {"error": "Artist not found."}, status=404
+                )
+
+            return aiohttp.web.json_response(
+                data,
+                headers={"Cache-Control": "public, max-age=60"},
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            return aiohttp.web.json_response(
+                {"error": "Failed to fetch artist details"},
                 status=500,
             )
 

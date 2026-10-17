@@ -893,8 +893,15 @@ class PlexMusicMonitor:
             self._lookup_qobuz_url(title, artist, kind="album"),
         )
 
+        artist_rating_key = str(
+            album_raw.get("parentRatingKey")
+            or (track_items[0].get("grandparentRatingKey") if track_items else "")
+            or ""
+        )
+
         return {
             "rating_key": clean_key,
+            "artist_rating_key": artist_rating_key,
             "title": title,
             "artist": artist,
             "year": year,
@@ -911,6 +918,135 @@ class PlexMusicMonitor:
             "youtube_music_url": youtube_music_url,
             "qobuz_url": qobuz_url,
             "tracks": tracks,
+        }
+
+    async def get_artist_details(self, rating_key: str, base_url: str = "") -> dict[str, Any] | None:
+        """Fetch artist profile, albums (discography), and top tracks from Plex."""
+        clean_key = str(rating_key or "").strip()
+        if not clean_key or not clean_key.isdigit() or not self.is_configured:
+            return None
+
+        artist_items, album_items, track_items = await asyncio.gather(
+            self._fetch_plex_items(f"/library/metadata/{clean_key}"),
+            self._fetch_plex_items(f"/library/metadata/{clean_key}/children"),
+            self._fetch_plex_items(f"/library/metadata/{clean_key}/allLeaves"),
+        )
+
+        if not artist_items and not album_items and not track_items:
+            return None
+
+        artist_raw = artist_items[0] if artist_items else {}
+        name = artist_raw.get("title") or "Unknown Artist"
+        summary = artist_raw.get("summary") or ""
+
+        genres: list[str] = []
+        raw_genres = artist_raw.get("Genre") or []
+        if isinstance(raw_genres, list):
+            for g in raw_genres:
+                if isinstance(g, dict) and g.get("tag"):
+                    genres.append(str(g["tag"]))
+                elif isinstance(g, str):
+                    genres.append(g)
+
+        countries: list[str] = []
+        raw_countries = artist_raw.get("Country") or []
+        if isinstance(raw_countries, list):
+            for c in raw_countries:
+                if isinstance(c, dict) and c.get("tag"):
+                    countries.append(str(c["tag"]))
+                elif isinstance(c, str):
+                    countries.append(c)
+
+        prefix = base_url.rstrip("/") if base_url else ""
+
+        # Artist avatar
+        avatar_thumb = self._sanitize_thumb_path(str(artist_raw.get("thumb") or ""))
+        avatar_version = self._cover_version_key(clean_key, avatar_thumb) if avatar_thumb else ""
+        if avatar_version and avatar_thumb:
+            self._register_thumb(avatar_version, avatar_thumb)
+        avatar_url = f"{prefix}/api/plex/cover?v={avatar_version}" if avatar_version else None
+
+        # Artist backdrop art
+        art_path = self._sanitize_thumb_path(str(artist_raw.get("art") or ""))
+        art_version = self._cover_version_key(f"art_{clean_key}", art_path) if art_path else ""
+        if art_version and art_path:
+            self._register_thumb(art_version, art_path)
+        backdrop_url = f"{prefix}/api/plex/cover?v={art_version}" if art_version else None
+
+        # Albums formatting
+        albums: list[dict[str, Any]] = []
+        for alb in album_items:
+            a_key = str(alb.get("ratingKey") or "")
+            a_thumb = self._sanitize_thumb_path(str(alb.get("thumb") or ""))
+            a_ver = self._cover_version_key(a_key, a_thumb) if a_thumb else ""
+            if a_ver and a_thumb:
+                self._register_thumb(a_ver, a_thumb)
+            a_cover = f"{prefix}/api/plex/cover?v={a_ver}" if a_ver else None
+
+            albums.append({
+                "rating_key": a_key,
+                "title": alb.get("title") or "Untitled Album",
+                "year": alb.get("year"),
+                "view_count": int(alb.get("viewCount") or 0),
+                "track_count": int(alb.get("leafCount") or 0),
+                "cover_url": a_cover,
+            })
+
+        albums.sort(key=lambda a: (a.get("year") or 0, a.get("view_count") or 0), reverse=True)
+
+        # Tracks & Statistics
+        all_tracks: list[dict[str, Any]] = []
+        total_plays = 0
+        total_duration_ms = 0
+
+        for t_raw in track_items:
+            t_key = str(t_raw.get("ratingKey") or "")
+            t_title = t_raw.get("title") or "Untitled Track"
+            t_album = t_raw.get("parentTitle") or ""
+            t_album_key = str(t_raw.get("parentRatingKey") or "")
+            dur = int(t_raw.get("duration") or 0)
+            total_duration_ms += dur
+            t_plays = int(t_raw.get("viewCount") or 0)
+            total_plays += t_plays
+
+            audio_info = self._extract_audio_stream_info_json(t_raw)
+            all_tracks.append({
+                "rating_key": t_key,
+                "title": t_title,
+                "album": t_album,
+                "album_rating_key": t_album_key,
+                "duration_ms": dur,
+                "view_count": t_plays,
+                "audio_codec": audio_info.get("audio_codec"),
+                "audio_quality": audio_info.get("audio_quality"),
+            })
+
+        # Top Tracks sorted by plays descending
+        all_tracks.sort(key=lambda t: t.get("view_count", 0), reverse=True)
+        top_tracks = all_tracks[:10]
+
+        # External Links
+        youtube_music_url, qobuz_url = await asyncio.gather(
+            self._lookup_youtube_music_artist_url(name),
+            self._lookup_qobuz_url(name, name, kind="artist"),
+        )
+
+        return {
+            "rating_key": clean_key,
+            "name": name,
+            "summary": summary,
+            "genres": genres,
+            "countries": countries,
+            "avatar_url": avatar_url,
+            "backdrop_url": backdrop_url,
+            "total_albums": len(albums),
+            "total_tracks": len(all_tracks),
+            "total_duration_ms": total_duration_ms,
+            "total_plays": total_plays,
+            "youtube_music_url": youtube_music_url,
+            "qobuz_url": qobuz_url,
+            "top_tracks": top_tracks,
+            "albums": albums,
         }
 
     async def get_cover_image(self, version_key: str = "") -> tuple[bytes, str] | None:
@@ -1129,6 +1265,55 @@ class PlexMusicMonitor:
             pass
 
         return music_search_fallback
+
+    async def _lookup_youtube_music_artist_url(self, artist: str) -> str:
+        """Resolve an official YouTube Music artist channel link (or search fallback)."""
+        clean_artist = (artist or "").strip()
+        if not clean_artist:
+            return ""
+
+        encoded = urllib.parse.quote(clean_artist)
+        fallback = f"https://music.youtube.com/search?q={encoded}"
+
+        session = await self._get_http_session()
+        innertube_url = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20240101.01.00",
+                    "hl": "en",
+                    "gl": "US",
+                }
+            },
+            "query": clean_artist,
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            "Referer": "https://music.youtube.com/",
+        }
+
+        try:
+            async with session.post(innertube_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    tabs = data.get("contents", {}).get("tabbedSearchResultsRenderer", {}).get("tabs", [])
+                    if tabs:
+                        sections = tabs[0].get("tabRenderer", {}).get("content", {}).get("sectionListRenderer", {}).get("contents", [])
+                        for s in sections:
+                            card = s.get("musicCardShelfRenderer")
+                            if card:
+                                runs = card.get("title", {}).get("runs", [])
+                                if runs and isinstance(runs[0], dict):
+                                    ep = runs[0].get("navigationEndpoint", {}).get("browseEndpoint", {})
+                                    cid = ep.get("browseId", "")
+                                    if cid.startswith("UC"):
+                                        return f"https://music.youtube.com/channel/{cid}"
+        except Exception:
+            pass
+
+        return fallback
 
     async def _lookup_qobuz_url(
         self, title: str, artist: str, kind: str = "song", original_url: str = ""
