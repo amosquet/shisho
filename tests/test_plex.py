@@ -775,6 +775,563 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
 
         await monitor.close()
 
+    async def test_search_library_hubs_and_direct(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        hub_data = {
+            "Hub": [
+                {
+                    "type": "track",
+                    "Metadata": [
+                        {
+                            "type": "track",
+                            "ratingKey": "101",
+                            "title": "Midnight City",
+                            "grandparentTitle": "M83",
+                            "parentTitle": "Hurry Up, We're Dreaming",
+                            "duration": 243000,
+                        }
+                    ],
+                },
+                {
+                    "type": "album",
+                    "Metadata": [
+                        {
+                            "type": "album",
+                            "ratingKey": "201",
+                            "title": "Hurry Up, We're Dreaming",
+                            "parentTitle": "M83",
+                            "year": 2011,
+                        }
+                    ],
+                },
+                {
+                    "type": "artist",
+                    "Metadata": [
+                        {
+                            "type": "artist",
+                            "ratingKey": "301",
+                            "title": "M83",
+                            "summary": "French electronic music project.",
+                            "Genre": [{"tag": "Synthpop"}, {"tag": "Shoegaze"}],
+                        }
+                    ],
+                },
+            ]
+        }
+
+        monitor._fetch_plex_container = AsyncMock(return_value=hub_data)
+
+        # Search all
+        all_res = await monitor.search_library("M83", media_type="all")
+        self.assertEqual(len(all_res), 3)
+        self.assertEqual(all_res[0]["media_type"], "track")
+        self.assertEqual(all_res[0]["title"], "Midnight City")
+        self.assertEqual(all_res[1]["media_type"], "album")
+        self.assertEqual(all_res[2]["media_type"], "artist")
+
+        # Search tracks only
+        track_res = await monitor.search_library("M83", media_type="track")
+        self.assertEqual(len(track_res), 1)
+        self.assertEqual(track_res[0]["media_type"], "track")
+
+        # Search albums only
+        album_res = await monitor.search_library("M83", media_type="album")
+        self.assertEqual(len(album_res), 1)
+        self.assertEqual(album_res[0]["media_type"], "album")
+
+        # Search artists only
+        artist_res = await monitor.search_library("M83", media_type="artist")
+        self.assertEqual(len(artist_res), 1)
+        self.assertEqual(artist_res[0]["media_type"], "artist")
+
+        await monitor.close()
+
+    async def test_get_album_and_artist_name_resolution(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        monitor.search_library = AsyncMock()
+        monitor.search_library.side_effect = [
+            [{"rating_key": "999", "title": "Random Access Memories", "media_type": "album"}],
+            [{"rating_key": "888", "title": "Daft Punk", "media_type": "artist"}],
+        ]
+
+        monitor._fetch_plex_items = AsyncMock()
+        monitor._fetch_plex_items.side_effect = [
+            [{"ratingKey": "999", "title": "Random Access Memories", "type": "album"}],
+            [{"ratingKey": "1001", "title": "Get Lucky", "duration": 360000}],
+            [{"ratingKey": "888", "title": "Daft Punk", "type": "artist"}],
+            [{"ratingKey": "999", "title": "Random Access Memories"}],
+            [{"ratingKey": "1001", "title": "Get Lucky", "duration": 360000}],
+        ]
+        monitor._lookup_youtube_music_url = AsyncMock(return_value="")
+        monitor._lookup_qobuz_url = AsyncMock(return_value="")
+        monitor._lookup_youtube_music_artist_url = AsyncMock(return_value="")
+
+        # Calling with title should resolve via search_library
+        album = await monitor.get_album_details("Random Access Memories")
+        self.assertIsNotNone(album)
+        self.assertEqual(album["rating_key"], "999")
+        self.assertEqual(album["title"], "Random Access Memories")
+
+        artist = await monitor.get_artist_details("Daft Punk")
+        self.assertIsNotNone(artist)
+        self.assertEqual(artist["rating_key"], "888")
+        self.assertEqual(artist["name"], "Daft Punk")
+
+        await monitor.close()
+
+    async def test_get_library_stats(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        async def fake_container(path):
+            if "type=8" in path:
+                return {"totalSize": "25"}
+            if "type=9" in path:
+                return {"totalSize": "100"}
+            if "type=10" in path:
+                return {"totalSize": "1250"}
+            return {}
+
+        async def fake_items(path):
+            if "type=9&sort=addedAt:desc" in path:
+                return [{"ratingKey": "1", "title": "New Album", "parentTitle": "Artist A", "year": 2026}]
+            if "type=8&sort=viewCount:desc" in path:
+                return [{"ratingKey": "10", "title": "Artist A", "viewCount": 500, "Genre": [{"tag": "Electronic"}]}]
+            return []
+
+        monitor._fetch_plex_container = fake_container
+        monitor._fetch_plex_items = fake_items
+
+        stats = await monitor.get_library_stats()
+        self.assertTrue(stats["configured"])
+        self.assertEqual(stats["total_artists"], 25)
+        self.assertEqual(stats["total_albums"], 100)
+        self.assertEqual(stats["total_tracks"], 1250)
+        self.assertEqual(len(stats["recently_added_albums"]), 1)
+        self.assertEqual(stats["top_genres"], ["Electronic"])
+
+        await monitor.close()
+
+    async def test_playlists_crud(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        monitor.get_server_machine_identifier = AsyncMock(return_value="server_12345")
+
+        # 1. get_playlists
+        monitor._fetch_plex_items = AsyncMock(return_value=[
+            {
+                "ratingKey": "50",
+                "title": "Synthwave Favorites",
+                "summary": "Retro vibes",
+                "leafCount": 12,
+                "duration": 2500000,
+            }
+        ])
+        playlists = await monitor.get_playlists()
+        self.assertEqual(len(playlists), 1)
+        self.assertEqual(playlists[0]["rating_key"], "50")
+        self.assertEqual(playlists[0]["title"], "Synthwave Favorites")
+
+        # 2. get_playlist_details
+        monitor._fetch_plex_items = AsyncMock()
+        monitor._fetch_plex_items.side_effect = [
+            [{"ratingKey": "50", "title": "Synthwave Favorites", "summary": "Retro vibes"}],
+            [{"ratingKey": "101", "title": "Track 1", "grandparentTitle": "Artist 1", "duration": 180000}],
+        ]
+        pl = await monitor.get_playlist_details("50")
+        self.assertIsNotNone(pl)
+        self.assertEqual(pl["rating_key"], "50")
+        self.assertEqual(len(pl["tracks"]), 1)
+
+        # 3. create_playlist
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.post = MagicMock(return_value=FakeResponse(
+            status=200,
+            json_data={"MediaContainer": {"Metadata": [{"ratingKey": "51", "title": "Chillout", "leafCount": 2}]}},
+            headers={"Content-Type": "application/json"},
+        ))
+        fake_session.put = MagicMock(return_value=FakeResponse(status=200))
+        fake_session.delete = MagicMock(return_value=FakeResponse(status=200))
+        monitor._session = fake_session
+
+        created = await monitor.create_playlist("Chillout", ["101", "102"])
+        self.assertIsNotNone(created)
+        self.assertEqual(created["rating_key"], "51")
+
+        # 4. add_to_playlist
+        added = await monitor.add_to_playlist("51", ["103"])
+        self.assertTrue(added)
+
+        # 5. delete_playlist
+        deleted = await monitor.delete_playlist("51")
+        self.assertTrue(deleted)
+
+        await monitor.close()
+
+    async def test_rate_item_and_check_in_library(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.put = MagicMock(return_value=FakeResponse(status=200))
+        monitor._session = fake_session
+
+        ok = await monitor.rate_item("101", 5.0)
+        self.assertTrue(ok)
+        put_call = fake_session.put.call_args[0][0]
+        self.assertIn("rating=10", put_call)
+
+        clear_ok = await monitor.rate_item("101", 0)
+        self.assertTrue(clear_ok)
+        put_clear = fake_session.put.call_args[0][0]
+        self.assertIn("rating=-1", put_clear)
+
+        # Test check_in_library
+        monitor.search_library = AsyncMock(return_value=[
+            {"rating_key": "101", "title": "Plastic Love", "artist": "Mariya Takeuchi", "media_type": "track"}
+        ])
+        check1 = await monitor.check_in_library("Plastic Love", "Mariya Takeuchi")
+        self.assertTrue(check1["in_library"])
+        self.assertEqual(check1["matched_item"]["rating_key"], "101")
+
+        check2 = await monitor.check_in_library("Nonexistent Song", "Unknown")
+        self.assertFalse(check2["in_library"])
+
+        await monitor.close()
+
+    async def test_ai_tool_handlers(self):
+        from tools.plex import (
+            handle_search_plex_music,
+            handle_get_plex_album_details,
+            handle_get_plex_artist_details,
+            handle_get_plex_library_stats,
+            handle_manage_plex_playlist,
+            handle_rate_plex_music,
+            handle_add_music_suggestion,
+        )
+
+        mock_bot = MagicMock()
+        mock_bot.owner_id = 123456789
+
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        # Mock API cog with monitor
+        api_cog = MagicMock()
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        # 1. handle_search_plex_music
+        monitor.search_library = AsyncMock(return_value=[
+            {
+                "media_type": "track",
+                "rating_key": "10",
+                "title": "Song A",
+                "artist": "Artist X",
+                "album": "Album Y",
+                "duration_ms": 180000,
+                "audio_quality": "FLAC • 24-bit/96kHz",
+                "view_count": 42,
+            }
+        ])
+        out_search = await handle_search_plex_music(mock_bot, {"query": "Song A"}, "123456789")
+        self.assertIn("Song A", out_search)
+        self.assertIn("Artist X", out_search)
+        self.assertIn("FLAC", out_search)
+
+        # 2. handle_get_plex_album_details
+        monitor.get_album_details = AsyncMock(return_value={
+            "rating_key": "20",
+            "title": "Album Y",
+            "artist": "Artist X",
+            "year": 2024,
+            "audio_quality": "FLAC 24-bit",
+            "view_count": 50,
+            "total_duration_ms": 360000,
+            "tracks": [{"index": 1, "title": "Song A", "duration_ms": 180000, "audio_quality": "FLAC", "view_count": 42, "rating_key": "10"}],
+        })
+        out_album = await handle_get_plex_album_details(mock_bot, {"query_or_id": "20"}, "123456789")
+        self.assertIn("Album Y", out_album)
+        self.assertIn("Tracklist:", out_album)
+
+        # 3. handle_get_plex_artist_details
+        monitor.get_artist_details = AsyncMock(return_value={
+            "rating_key": "30",
+            "name": "Artist X",
+            "genres": ["Indie"],
+            "total_albums": 2,
+            "total_tracks": 15,
+            "total_plays": 200,
+            "top_tracks": [{"title": "Song A", "album": "Album Y", "duration_ms": 180000, "view_count": 42, "rating_key": "10"}],
+            "albums": [{"title": "Album Y", "year": 2024, "track_count": 10, "view_count": 50, "rating_key": "20"}],
+        })
+        out_artist = await handle_get_plex_artist_details(mock_bot, {"query_or_id": "Artist X"}, "123456789")
+        self.assertIn("Artist X", out_artist)
+        self.assertIn("Top Tracks in Library:", out_artist)
+
+        # 4. handle_get_plex_library_stats
+        monitor.get_library_stats = AsyncMock(return_value={
+            "configured": True,
+            "total_artists": 10,
+            "total_albums": 30,
+            "total_tracks": 300,
+            "top_artists": [{"name": "Artist X", "view_count": 200}],
+            "top_genres": ["Indie", "Rock"],
+            "recently_added_albums": [{"title": "Album Y", "artist": "Artist X", "year": 2024, "rating_key": "20"}],
+        })
+        out_stats = await handle_get_plex_library_stats(mock_bot, {}, "123456789")
+        self.assertIn("Plex Music Library Overview", out_stats)
+        self.assertIn("Total Artists: 10", out_stats)
+
+        # 5. handle_manage_plex_playlist permissions: unauthorized user
+        out_denied = await handle_manage_plex_playlist(mock_bot, {"action": "create", "title": "My Mix"}, "999999999")
+        self.assertIn("Permission Denied", out_denied)
+
+        # Authorized user
+        monitor.create_playlist = AsyncMock(return_value={"rating_key": "60", "title": "My Mix", "track_count": 2})
+        out_created = await handle_manage_plex_playlist(mock_bot, {"action": "create", "title": "My Mix", "track_keys": ["10", "11"]}, "123456789")
+        self.assertIn("Successfully created", out_created)
+        self.assertIn("My Mix", out_created)
+
+        # 6. handle_rate_plex_music permissions and execution
+        out_rate_denied = await handle_rate_plex_music(mock_bot, {"rating": 5}, "999999999")
+        self.assertIn("Permission Denied", out_rate_denied)
+
+        monitor.rate_item = AsyncMock(return_value=True)
+        monitor.get_now_playing = AsyncMock(return_value={"track": {"rating_key": "10", "title": "Song A", "artist": "Artist X"}})
+        out_rate_now = await handle_rate_plex_music(mock_bot, {"rating": 5}, "123456789")
+        self.assertIn("Rated Plex item", out_rate_now)
+        self.assertIn("5 star(s)", out_rate_now)
+
+        # 7. handle_add_music_suggestion with kind parameter (regression test for kind bug)
+        monitor.add_music_suggestion = AsyncMock(return_value={
+            "id": "rec123",
+            "title": "Discovery",
+            "artist": "Daft Punk",
+            "kind": "album",
+            "youtube_url": "https://youtube.com/test",
+        })
+        monitor.check_in_library = AsyncMock(return_value={"in_library": True, "matched_item": {"rating_key": "20"}})
+        out_suggest = await handle_add_music_suggestion(mock_bot, {"title": "Discovery", "artist": "Daft Punk", "kind": "album"}, "123456789")
+        self.assertIn("Added album recommendation", out_suggest)
+        self.assertIn("Discovery", out_suggest)
+        self.assertIn("Already owned in your Plex library!", out_suggest)
+
+        # 8. handle_get_plex_sonic_similar
+        from tools.plex import handle_get_plex_sonic_similar
+        monitor.get_sonically_similar = AsyncMock(return_value=[
+            {
+                "rating_key": "1002",
+                "title": "Fly-day Chinatown",
+                "artist": "Yasuha",
+                "duration_ms": 207000,
+                "distance": 0.1425,
+                "audio_quality": "FLAC",
+            }
+        ])
+        out_sonic = await handle_get_plex_sonic_similar(mock_bot, {"query_or_id": "Plastic Love"}, "123456789")
+        self.assertIn("Fly-day Chinatown", out_sonic)
+        self.assertIn("Distance: 0.1425", out_sonic)
+
+        # Sonic fallback when not available
+        monitor.get_sonically_similar = AsyncMock(return_value=[])
+        out_sonic_empty = await handle_get_plex_sonic_similar(mock_bot, {"query_or_id": "Obscure Track"}, "123456789")
+        self.assertIn("No sonically similar items found", out_sonic_empty)
+        self.assertIn("Plex Pass", out_sonic_empty)
+
+        await monitor.close()
+
+    async def test_get_sonically_similar_and_sonic_playlist(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        nearest_items = [
+            {
+                "ratingKey": "501",
+                "type": "track",
+                "title": "Stay With Me",
+                "grandparentTitle": "Miki Matsubara",
+                "duration": 312000,
+                "distance": "0.1582",
+            },
+            {
+                "ratingKey": "502",
+                "type": "track",
+                "title": "4:00 AM",
+                "grandparentTitle": "Taeko Onuki",
+                "duration": 285000,
+                "distance": "0.2104",
+            },
+        ]
+
+        monitor._fetch_plex_items = AsyncMock(return_value=nearest_items)
+
+        # 1. Query by numeric key
+        similar = await monitor.get_sonically_similar("101", media_type="track", limit=5)
+        self.assertEqual(len(similar), 2)
+        self.assertEqual(similar[0]["title"], "Stay With Me")
+        self.assertEqual(similar[0]["artist"], "Miki Matsubara")
+        self.assertEqual(similar[0]["distance"], 0.1582)
+
+        # 2. Query by name (resolves via search_library)
+        monitor.search_library = AsyncMock(return_value=[{"rating_key": "101", "title": "Plastic Love"}])
+        similar_by_name = await monitor.get_sonically_similar("Plastic Love", media_type="track")
+        self.assertEqual(len(similar_by_name), 2)
+        monitor.search_library.assert_called_once_with("Plastic Love", media_type="track", limit=1)
+
+        # 3. create_sonic_playlist
+        monitor.create_playlist = AsyncMock(return_value={"rating_key": "99", "title": "City Pop Sonic Mix", "track_count": 2})
+        pl = await monitor.create_sonic_playlist("City Pop Sonic Mix", "101")
+        self.assertIsNotNone(pl)
+        self.assertEqual(pl["rating_key"], "99")
+        monitor.create_playlist.assert_called_once_with(title="City Pop Sonic Mix", track_keys=["501", "502"])
+
+        await monitor.close()
+
+    async def test_edge_cases_key_normalization_and_combined_playlist_tracks(self):
+        from tools.plex import (
+            handle_manage_plex_playlist,
+            handle_rate_plex_music,
+            handle_get_plex_sonic_similar,
+        )
+
+        mock_bot = MagicMock()
+        mock_bot.owner_id = 123456789
+
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+        api_cog = MagicMock()
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        # 1. Verify _normalize_key strips '#' prefix on numeric keys
+        self.assertEqual(monitor._normalize_key("#101"), "101")
+        self.assertEqual(monitor._normalize_key("  #999 "), "999")
+        self.assertEqual(monitor._normalize_key("#1 Song"), "#1 Song")
+
+        # 2. Verify manage_plex_playlist combines both track_keys (with '#') and track_queries
+        monitor.search_library = AsyncMock(return_value=[{"rating_key": "202", "title": "Track Two"}])
+        monitor.create_playlist = AsyncMock(return_value={"rating_key": "77", "title": "Combined Mix", "track_count": 2})
+
+        res_create = await handle_manage_plex_playlist(
+            mock_bot,
+            {
+                "action": "create",
+                "title": "Combined Mix",
+                "track_keys": ["#101"],
+                "track_queries": ["Track Two"],
+            },
+            "123456789",
+        )
+        self.assertIn("Successfully created", res_create)
+        monitor.create_playlist.assert_awaited_once_with(title="Combined Mix", track_keys=["101", "202"])
+
+        # 3. Verify manage_plex_playlist list, view, add, delete with '#77' key
+        monitor.get_playlists = AsyncMock(return_value=[
+            {"rating_key": "77", "title": "Combined Mix", "track_count": 2, "duration_ms": 360000, "smart": False}
+        ])
+        res_list = await handle_manage_plex_playlist(mock_bot, {"action": "list"}, "999999")
+        self.assertIn("Combined Mix", res_list)
+
+        monitor.get_playlist_details = AsyncMock(return_value={
+            "rating_key": "77",
+            "title": "Combined Mix",
+            "summary": "Test summary",
+            "track_count": 1,
+            "duration_ms": 180000,
+            "tracks": [{"index": 1, "rating_key": "101", "title": "Track One", "artist": "Artist A", "duration_ms": 180000}],
+        })
+        res_view = await handle_manage_plex_playlist(mock_bot, {"action": "view", "playlist_id": "#77"}, "999999")
+        self.assertIn("Combined Mix", res_view)
+        self.assertIn("Track One", res_view)
+
+        monitor.add_to_playlist = AsyncMock(return_value=True)
+        res_add = await handle_manage_plex_playlist(
+            mock_bot,
+            {"action": "add", "playlist_id": "#77", "track_keys": ["#303"]},
+            "123456789",
+        )
+        self.assertIn("Successfully added 1 track(s)", res_add)
+        monitor.add_to_playlist.assert_awaited_once_with("77", ["303"])
+
+        monitor.delete_playlist = AsyncMock(return_value=True)
+        res_del = await handle_manage_plex_playlist(
+            mock_bot,
+            {"action": "delete", "playlist_id": "#77"},
+            "123456789",
+        )
+        self.assertIn("Successfully deleted playlist [#77]", res_del)
+        monitor.delete_playlist.assert_awaited_once_with("77")
+
+        # 4. Verify rate_plex_music with '#101' does not trigger search_library
+        monitor.search_library.reset_mock()
+        monitor.rate_item = AsyncMock(return_value=True)
+        res_rate = await handle_rate_plex_music(
+            mock_bot,
+            {"query_or_id": "#101", "rating": 4.5},
+            "123456789",
+        )
+        self.assertIn("Rated Plex item [#101]", res_rate)
+        monitor.search_library.assert_not_called()
+        monitor.rate_item.assert_awaited_once_with("101", 4.5)
+
+        # 5. Verify get_plex_sonic_similar with create_playlist=True for authorized vs unauthorized
+        monitor.get_sonically_similar = AsyncMock(return_value=[
+            {"rating_key": "501", "title": "Similar 1", "artist": "Artist 1", "duration_ms": 200000, "distance": 0.12},
+        ])
+        monitor.create_playlist = AsyncMock(return_value={"rating_key": "88", "title": "Sonic Mix", "track_count": 1})
+
+        res_sonic_unauth = await handle_get_plex_sonic_similar(
+            mock_bot,
+            {"query_or_id": "#101", "create_playlist": True},
+            "999999999",
+        )
+        self.assertIn("Playlist creation skipped", res_sonic_unauth)
+        monitor.create_playlist.assert_not_called()
+
+        res_sonic_auth = await handle_get_plex_sonic_similar(
+            mock_bot,
+            {"query_or_id": "#101", "create_playlist": True, "playlist_title": "Custom Sonic Mix"},
+            "123456789",
+        )
+        self.assertIn("Created Plex playlist **Custom Sonic Mix** [#88]", res_sonic_auth)
+        monitor.create_playlist.assert_awaited_once_with(title="Custom Sonic Mix", track_keys=["501"])
+
+        await monitor.close()
 
 
-
+if __name__ == "__main__":
+    unittest.main()

@@ -86,3 +86,19 @@
   - **Zero-Latency In-Memory TTL Cache:** 10-minute cache with negative caching for unregistered users, plus instant invalidation when preferences are updated.
   - **Prompt Placement Weight:** Custom instructions are injected at the absolute bottom of the system prompt to maximize LLM attention and prevent the "Lost in the Middle" phenomenon.
   - **Emergency Reset Command:** Instant `/reset_ai_preferences` slash and prefix command to completely wipe custom rules and reset AI behavior without needing to go through the LLM.
+
+## Plex Music & Library Integration
+- **Commands:** `/nowplaying`
+- **AI Tools:** `get_plex_status`, `search_plex_music`, `get_plex_album_details`, `get_plex_artist_details`, `get_plex_library_stats`, `manage_plex_playlist`, `rate_plex_music`, `get_plex_sonic_similar`, `get_music_suggestions`, `add_music_suggestion`, `delete_music_suggestion`
+- **Description:** Deep integration with Plex Media Server for monitoring real-time playback, searching and browsing your personal music library, managing audio playlists, rating tracks/albums, finding sonically similar music, and collecting community recommendations.
+- **Features:**
+  - **Now Playing & Audio Quality:** Real-time playback tracking displaying track title, artist, album, audio format (e.g. `FLAC 24-bit/96kHz`), playback progress bar, player device, and cover art proxy.
+  - **Music Library Search:** Search tracks, albums, and artists in your personal Plex music library with play count and audio format details.
+  - **Album & Artist Deep Inspection:** View tracklists with durations and play counts, artist biography, top played tracks in your library, owned discography, and direct external streaming links (YouTube Music & Qobuz).
+  - **Sonic Similarity & Acoustic Matching:** Query Plex Sonic Analysis (`GET /library/metadata/{id}/nearest`) to find acoustically closest tracks or albums in your library with distance scores, or auto-generate a Plex Sonic Mix playlist from matching tracks.
+  - **Library Statistics:** View total artists, albums, tracks, top played artists, top genres, and recently added albums.
+  - **Audio Playlist Management:** List, inspect, create, append tracks to, or delete Plex audio playlists through natural language (write actions gated to bot owner).
+  - **Track & Album Rating:** Rate currently playing or specified tracks and albums directly on Plex (1-5 star scale mapped to Plex 0-10, owner only).
+  - **Community Recommendations & Library Matching:** Collect music suggestions via Discord or web form with automatic YouTube Music / Qobuz links, and automatically cross-reference against your Plex library to indicate whether a suggestion is already owned.
+
+

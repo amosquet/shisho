@@ -81,6 +81,14 @@ class PlexMusicMonitor:
         self._album_lock = asyncio.Lock()
         self._artist_lock = asyncio.Lock()
 
+        # Library stats cache
+        self._machine_identifier: str = ""
+        self._cached_library_stats: dict[str, Any] | None = None
+        self._cached_library_stats_at: float = 0.0
+        self.stats_cache_ttl: float = 600.0  # 10 minutes
+        self._stats_lock = asyncio.Lock()
+        self._playlist_lock = asyncio.Lock()
+
         # Last played track persisted across restarts
         self._last_played: dict[str, Any] | None = None
         self._last_persisted_key: str = ""
@@ -520,37 +528,61 @@ class PlexMusicMonitor:
             "cover_version": version_key,
         }
 
-    async def _fetch_plex_items(self, query_path: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _normalize_key(val: Any) -> str:
+        """Strip leading '#' from ratingKeys when the rest is numeric (e.g. '#101' -> '101')."""
+        s = str(val or "").strip()
+        if s.startswith("#"):
+            stripped = s.lstrip("#").strip()
+            if stripped.isdigit():
+                return stripped
+        return s
+
+    async def _fetch_plex_container(self, query_path: str) -> dict[str, Any]:
         if not self.is_configured:
-            return []
+            return {}
         session = await self._get_http_session()
         url = f"{self.plex_url}{query_path}"
         try:
             async with session.get(url, headers=self._plex_headers()) as resp:
                 if resp.status != 200:
-                    return []
+                    return {}
                 content_type = resp.headers.get("Content-Type", "").lower()
                 if "json" in content_type:
                     data = await resp.json()
-                    container = data.get("MediaContainer") or {}
-                    metadata = container.get("Metadata") or []
-                    if isinstance(metadata, dict):
-                        return [metadata]
-                    if isinstance(metadata, list):
-                        return [m for m in metadata if isinstance(m, dict)]
+                    return data.get("MediaContainer") or {}
                 else:
                     text = await resp.text()
                     try:
                         data = json.loads(text)
-                        container = data.get("MediaContainer") or {}
-                        metadata = container.get("Metadata") or []
-                        if isinstance(metadata, list):
-                            return [m for m in metadata if isinstance(m, dict)]
+                        return data.get("MediaContainer") or {}
                     except Exception:
                         root = ET.fromstring(text)
-                        return [dict(elem.attrib) for elem in root]
+                        res: dict[str, Any] = dict(root.attrib)
+                        children: list[dict[str, Any]] = []
+                        hubs: list[dict[str, Any]] = []
+                        for elem in root:
+                            if elem.tag.lower() == "hub":
+                                hub_dict = dict(elem.attrib)
+                                hub_dict["Metadata"] = [dict(sub.attrib) for sub in elem]
+                                hubs.append(hub_dict)
+                            else:
+                                children.append(dict(elem.attrib))
+                        res["Metadata"] = children
+                        if hubs:
+                            res["Hub"] = hubs
+                        return res
         except Exception:
-            return []
+            return {}
+        return {}
+
+    async def _fetch_plex_items(self, query_path: str) -> list[dict[str, Any]]:
+        container = await self._fetch_plex_container(query_path)
+        metadata = container.get("Metadata") or []
+        if isinstance(metadata, dict):
+            return [metadata]
+        if isinstance(metadata, list):
+            return [m for m in metadata if isinstance(m, dict)]
         return []
 
     async def _fetch_recent_track_from_plex(self) -> dict[str, Any] | None:
@@ -815,9 +847,16 @@ class PlexMusicMonitor:
 
     async def get_album_details(self, rating_key: str, base_url: str = "") -> dict[str, Any] | None:
         """Fetch album metadata and its tracklist from Plex."""
-        clean_key = str(rating_key or "").strip()
-        if not clean_key or not clean_key.isdigit() or not self.is_configured:
+        clean_key = self._normalize_key(rating_key)
+        if not clean_key or not self.is_configured:
             return None
+
+        if not clean_key.isdigit():
+            found = await self.search_library(clean_key, media_type="album", limit=1)
+            if found and found[0].get("rating_key"):
+                clean_key = str(found[0]["rating_key"])
+            else:
+                return None
 
         now = time.time()
         if clean_key in self._album_cache:
@@ -963,9 +1002,16 @@ class PlexMusicMonitor:
 
     async def get_artist_details(self, rating_key: str, base_url: str = "") -> dict[str, Any] | None:
         """Fetch artist profile, albums (discography), and top tracks from Plex."""
-        clean_key = str(rating_key or "").strip()
-        if not clean_key or not clean_key.isdigit() or not self.is_configured:
+        clean_key = self._normalize_key(rating_key)
+        if not clean_key or not self.is_configured:
             return None
+
+        if not clean_key.isdigit():
+            found = await self.search_library(clean_key, media_type="artist", limit=1)
+            if found and found[0].get("rating_key"):
+                clean_key = str(found[0]["rating_key"])
+            else:
+                return None
 
         now = time.time()
         if clean_key in self._artist_cache:
@@ -1197,6 +1243,539 @@ class PlexMusicMonitor:
                 continue
 
         return None
+
+    async def get_server_machine_identifier(self) -> str:
+        """Fetch and cache the unique machine identifier of the Plex Media Server."""
+        if self._machine_identifier:
+            return self._machine_identifier
+        if not self.is_configured:
+            return ""
+
+        for path in ("/identity", "/"):
+            container = await self._fetch_plex_container(path)
+            mid = container.get("machineIdentifier")
+            if mid:
+                self._machine_identifier = str(mid).strip()
+                return self._machine_identifier
+        return ""
+
+    def _format_search_item(self, item: dict[str, Any], base_url: str = "") -> dict[str, Any] | None:
+        raw_type = str(item.get("type", "")).lower()
+        prefix = base_url.rstrip("/") if base_url else ""
+        if raw_type == "track":
+            t = self._extract_track_dict(item, state="stopped")
+            t.update(self._extract_audio_stream_info_json(item))
+            res = self._format_public_track(t, base_url=base_url, state="stopped")
+            res["media_type"] = "track"
+            if item.get("distance") is not None:
+                try:
+                    res["distance"] = round(float(item["distance"]), 4)
+                except (ValueError, TypeError):
+                    pass
+            return res
+        elif raw_type == "album":
+            a = self._extract_album_dict(item)
+            c_ver = a.pop("cover_version", "")
+            a["cover_url"] = f"{prefix}/api/plex/cover?v={c_ver}" if c_ver else None
+            a["media_type"] = "album"
+            if item.get("distance") is not None:
+                try:
+                    a["distance"] = round(float(item["distance"]), 4)
+                except (ValueError, TypeError):
+                    pass
+            return a
+        elif raw_type == "artist":
+            rating_key = str(item.get("ratingKey") or item.get("key") or "")
+            title = str(item.get("title") or "Unknown Artist").strip()
+            summary = str(item.get("summary") or "").strip()
+            thumb_raw = item.get("thumb") or ""
+            thumb_path = self._sanitize_thumb_path(str(thumb_raw))
+            version_key = self._cover_version_key(rating_key, thumb_path) if thumb_path else ""
+            if version_key and thumb_path:
+                self._register_thumb(version_key, thumb_path)
+            genres: list[str] = []
+            raw_g = item.get("Genre") or []
+            if isinstance(raw_g, list):
+                for g in raw_g:
+                    tag = g.get("tag") if isinstance(g, dict) else str(g)
+                    if tag:
+                        genres.append(tag)
+            return {
+                "rating_key": rating_key,
+                "title": title,
+                "summary": summary,
+                "genres": genres,
+                "cover_url": f"{prefix}/api/plex/cover?v={version_key}" if version_key else None,
+                "media_type": "artist",
+            }
+        return None
+
+    async def search_library(
+        self,
+        query: str,
+        media_type: str = "all",
+        limit: int = 15,
+        base_url: str = "",
+    ) -> list[dict[str, Any]]:
+        """
+        Search the Plex music library across tracks, albums, and artists.
+        media_type can be 'all', 'track', 'album', or 'artist'.
+        """
+        clean_q = (query or "").strip()
+        if not clean_q or not self.is_configured:
+            return []
+
+        clean_type = (media_type or "all").lower().strip()
+        if clean_type not in ("all", "track", "album", "artist"):
+            clean_type = "all"
+
+        safe_limit = max(1, min(limit or 15, 50))
+        encoded_q = urllib.parse.quote(clean_q)
+
+        results: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        # 1. Try Hub search first
+        hubs_container = await self._fetch_plex_container(
+            f"/hubs/search?query={encoded_q}&limit={safe_limit}"
+        )
+        hubs = hubs_container.get("Hub") or []
+        if isinstance(hubs, dict):
+            hubs = [hubs]
+
+        for hub in hubs:
+            if not isinstance(hub, dict):
+                continue
+            hub_type = str(hub.get("type", "")).lower()
+            if clean_type != "all" and hub_type != clean_type:
+                continue
+            hub_meta = hub.get("Metadata") or []
+            if isinstance(hub_meta, dict):
+                hub_meta = [hub_meta]
+            for item in hub_meta:
+                if not isinstance(item, dict):
+                    continue
+                k = str(item.get("ratingKey") or item.get("key") or "")
+                if not k or k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                formatted = self._format_search_item(item, base_url=base_url)
+                if formatted:
+                    results.append(formatted)
+
+        # 2. Supplementary direct library queries if Hubs returned fewer than requested
+        if len(results) < safe_limit:
+            type_queries: list[tuple[str, str]] = []
+            if clean_type in ("track", "all"):
+                type_queries.append(("track", f"/library/all?type=10&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+            if clean_type in ("album", "all"):
+                type_queries.append(("album", f"/library/all?type=9&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+            if clean_type in ("artist", "all"):
+                type_queries.append(("artist", f"/library/all?type=8&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+
+            if type_queries:
+                fetched_batches = await asyncio.gather(
+                    *(self._fetch_plex_items(path) for _, path in type_queries)
+                )
+                typed_lists: list[list[dict[str, Any]]] = []
+                for (m_type, _), items in zip(type_queries, fetched_batches):
+                    batch: list[dict[str, Any]] = []
+                    for item in items:
+                        item_with_type = dict(item)
+                        if "type" not in item_with_type:
+                            item_with_type["type"] = m_type
+                        batch.append(item_with_type)
+                    typed_lists.append(batch)
+
+                max_len = max((len(b) for b in typed_lists), default=0)
+                for idx in range(max_len):
+                    for batch in typed_lists:
+                        if idx >= len(batch):
+                            continue
+                        item_with_type = batch[idx]
+                        k = str(item_with_type.get("ratingKey") or item_with_type.get("key") or "")
+                        if not k or k in seen_keys:
+                            continue
+                        seen_keys.add(k)
+                        formatted = self._format_search_item(item_with_type, base_url=base_url)
+                        if formatted:
+                            results.append(formatted)
+                        if len(results) >= safe_limit:
+                            break
+                    if len(results) >= safe_limit:
+                        break
+
+        return results[:safe_limit]
+
+    def _format_library_stats(self, cached: dict[str, Any], base_url: str = "") -> dict[str, Any]:
+        prefix = base_url.rstrip("/") if base_url else ""
+        res_copy = dict(cached)
+        formatted_recent = []
+        for alb in cached.get("recently_added_albums", []):
+            a_copy = dict(alb)
+            ver = a_copy.pop("_cover_version", "")
+            a_copy["cover_url"] = f"{prefix}/api/plex/cover?v={ver}" if ver else a_copy.get("cover_url")
+            formatted_recent.append(a_copy)
+        res_copy["recently_added_albums"] = formatted_recent
+        return res_copy
+
+    async def get_library_stats(self, base_url: str = "") -> dict[str, Any]:
+        """
+        Fetch aggregate stats for the music library: total artists, albums, tracks,
+        recently added albums, top played artists, and top genres.
+        Cached for 10 minutes.
+        """
+        if not self.is_configured:
+            return {
+                "configured": False,
+                "total_artists": 0,
+                "total_albums": 0,
+                "total_tracks": 0,
+                "top_artists": [],
+                "top_genres": [],
+                "recently_added_albums": [],
+            }
+
+        now = time.time()
+        if self._cached_library_stats is not None and (now - self._cached_library_stats_at) < self.stats_cache_ttl:
+            return self._format_library_stats(self._cached_library_stats, base_url=base_url)
+
+        async with self._stats_lock:
+            now = time.time()
+            if self._cached_library_stats is not None and (now - self._cached_library_stats_at) < self.stats_cache_ttl:
+                return self._format_library_stats(self._cached_library_stats, base_url=base_url)
+
+            c_artists, c_albums, c_tracks, recent_albums_raw, top_artists_raw = await asyncio.gather(
+                self._fetch_plex_container("/library/all?type=8&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_container("/library/all?type=9&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_container("/library/all?type=10&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_items("/library/all?type=9&sort=addedAt:desc&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
+                self._fetch_plex_items("/library/all?type=8&sort=viewCount:desc&viewCount>>=0&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
+            )
+
+            def _get_size(c: dict[str, Any]) -> int:
+                val = c.get("totalSize") or c.get("size")
+                try:
+                    return int(val) if val is not None else 0
+                except (ValueError, TypeError):
+                    return 0
+
+            total_artists = _get_size(c_artists)
+            total_albums = _get_size(c_albums)
+            total_tracks = _get_size(c_tracks)
+
+            formatted_recent: list[dict[str, Any]] = []
+            for item in recent_albums_raw:
+                alb = self._extract_album_dict(item)
+                ver = alb.pop("cover_version", "")
+                alb["_cover_version"] = ver
+                alb["cover_url"] = None
+                formatted_recent.append(alb)
+
+            top_artists: list[dict[str, Any]] = []
+            genre_counts: dict[str, int] = {}
+            for art in top_artists_raw:
+                name = art.get("title") or "Unknown Artist"
+                plays = int(art.get("viewCount") or 0)
+                top_artists.append({
+                    "rating_key": str(art.get("ratingKey") or ""),
+                    "name": name,
+                    "view_count": plays,
+                })
+                raw_g = art.get("Genre") or []
+                if isinstance(raw_g, list):
+                    for g in raw_g:
+                        tag = g.get("tag") if isinstance(g, dict) else str(g)
+                        if tag:
+                            genre_counts[tag] = genre_counts.get(tag, 0) + 1
+
+            top_genres = sorted(genre_counts.keys(), key=lambda g: genre_counts[g], reverse=True)[:8]
+
+            res = {
+                "configured": True,
+                "total_artists": total_artists,
+                "total_albums": total_albums,
+                "total_tracks": total_tracks,
+                "top_artists": top_artists,
+                "top_genres": top_genres,
+                "recently_added_albums": formatted_recent,
+            }
+            self._cached_library_stats = res
+            self._cached_library_stats_at = time.time()
+            return self._format_library_stats(res, base_url=base_url)
+
+    async def get_playlists(self) -> list[dict[str, Any]]:
+        """List all audio playlists on Plex."""
+        if not self.is_configured:
+            return []
+        items = await self._fetch_plex_items("/playlists?playlistType=audio")
+        playlists = []
+        for p in items:
+            playlists.append({
+                "rating_key": str(p.get("ratingKey") or ""),
+                "title": str(p.get("title") or "Untitled Playlist").strip(),
+                "summary": str(p.get("summary") or "").strip(),
+                "track_count": int(p.get("leafCount") or 0),
+                "duration_ms": int(p.get("duration") or 0),
+                "smart": bool(p.get("smart", False)),
+            })
+        return playlists
+
+    async def get_playlist_details(self, rating_key: str) -> dict[str, Any] | None:
+        """Fetch details and tracklist for a specific Plex audio playlist by ID or title."""
+        clean_key = self._normalize_key(rating_key)
+        if not clean_key or not self.is_configured:
+            return None
+
+        if not clean_key.isdigit():
+            all_pl = await self.get_playlists()
+            target = clean_key.lower()
+            matched = next((p for p in all_pl if p["title"].lower() == target or target in p["title"].lower()), None)
+            if matched:
+                clean_key = matched["rating_key"]
+            else:
+                return None
+
+        info_items, track_items = await asyncio.gather(
+            self._fetch_plex_items(f"/playlists/{clean_key}"),
+            self._fetch_plex_items(f"/playlists/{clean_key}/items"),
+        )
+        if not info_items and not track_items:
+            return None
+
+        p_info = info_items[0] if info_items else {}
+        tracks = []
+        total_dur = 0
+        for idx, t_raw in enumerate(track_items, start=1):
+            dur = int(t_raw.get("duration") or 0)
+            total_dur += dur
+            tracks.append({
+                "rating_key": str(t_raw.get("ratingKey") or ""),
+                "index": idx,
+                "title": str(t_raw.get("title") or "Untitled Track"),
+                "artist": str(t_raw.get("grandparentTitle") or t_raw.get("originalTitle") or "Unknown Artist"),
+                "album": str(t_raw.get("parentTitle") or ""),
+                "duration_ms": dur,
+            })
+
+        return {
+            "rating_key": clean_key,
+            "title": str(p_info.get("title") or "Untitled Playlist"),
+            "summary": str(p_info.get("summary") or ""),
+            "track_count": len(tracks),
+            "duration_ms": total_dur,
+            "tracks": tracks,
+        }
+
+    async def create_playlist(self, title: str, track_keys: list[str]) -> dict[str, Any] | None:
+        """Create a new audio playlist on Plex."""
+        clean_title = (title or "").strip()
+        if not clean_title or not self.is_configured:
+            return None
+
+        valid_keys = [self._normalize_key(k) for k in track_keys if self._normalize_key(k).isdigit()]
+        mid = await self.get_server_machine_identifier()
+        session = await self._get_http_session()
+
+        params = {
+            "type": "audio",
+            "title": clean_title,
+            "smart": "0",
+        }
+        if valid_keys:
+            keys_str = ",".join(valid_keys)
+            if mid:
+                params["uri"] = f"server://{mid}/com.plexapp.plugins.library/library/metadata/{keys_str}"
+            else:
+                params["uri"] = f"library:///directory/library/metadata/{keys_str}"
+
+        encoded_params = urllib.parse.urlencode(params)
+        url = f"{self.plex_url}/playlists?{encoded_params}"
+        try:
+            async with session.post(url, headers=self._plex_headers()) as resp:
+                if resp.status in (200, 201):
+                    content_type = resp.headers.get("Content-Type", "").lower()
+                    if "json" in content_type:
+                        data = await resp.json()
+                        container = data.get("MediaContainer") or {}
+                        meta = container.get("Metadata") or []
+                        if isinstance(meta, list) and meta:
+                            m0 = meta[0]
+                            return {
+                                "rating_key": str(m0.get("ratingKey") or ""),
+                                "title": str(m0.get("title") or clean_title),
+                                "track_count": int(m0.get("leafCount") or len(valid_keys)),
+                            }
+                    return {"title": clean_title, "track_count": len(valid_keys)}
+        except Exception:
+            pass
+        return None
+
+    async def add_to_playlist(self, playlist_id: str, track_keys: list[str]) -> bool:
+        """Append track rating keys to an existing audio playlist."""
+        clean_id = self._normalize_key(playlist_id)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+        valid_keys = [self._normalize_key(k) for k in track_keys if self._normalize_key(k).isdigit()]
+        if not valid_keys:
+            return False
+
+        mid = await self.get_server_machine_identifier()
+        session = await self._get_http_session()
+        keys_str = ",".join(valid_keys)
+        uri = (
+            f"server://{mid}/com.plexapp.plugins.library/library/metadata/{keys_str}"
+            if mid
+            else f"library:///directory/library/metadata/{keys_str}"
+        )
+        encoded = urllib.parse.urlencode({"uri": uri})
+        url = f"{self.plex_url}/playlists/{clean_id}/items?{encoded}"
+        try:
+            async with session.put(url, headers=self._plex_headers()) as resp:
+                return resp.status in (200, 201, 204)
+        except Exception:
+            return False
+
+    async def delete_playlist(self, playlist_id: str) -> bool:
+        """Delete an audio playlist from Plex."""
+        clean_id = self._normalize_key(playlist_id)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+        session = await self._get_http_session()
+        url = f"{self.plex_url}/playlists/{clean_id}"
+        try:
+            async with session.delete(url, headers=self._plex_headers()) as resp:
+                return resp.status in (200, 204)
+        except Exception:
+            return False
+
+    async def rate_item(self, rating_key: str, rating: float) -> bool:
+        """
+        Rate an item on Plex. rating is 0 to 5 stars (or 0 to 10 scale).
+        If rating <= 5, maps to Plex 2-10 (e.g. 5 stars -> 10).
+        0 or negative clears the rating.
+        """
+        clean_id = self._normalize_key(rating_key)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+
+        if rating <= 0:
+            plex_rating = -1
+        elif rating <= 5:
+            plex_rating = int(round(rating * 2))
+        else:
+            plex_rating = int(min(10, max(0, round(rating))))
+
+        session = await self._get_http_session()
+        params = {
+            "key": clean_id,
+            "identifier": "com.plexapp.plugins.library",
+            "rating": str(plex_rating),
+        }
+        encoded = urllib.parse.urlencode(params)
+        url = f"{self.plex_url}/:/rate?{encoded}"
+        try:
+            async with session.put(url, headers=self._plex_headers()) as resp:
+                return resp.status in (200, 204)
+        except Exception:
+            return False
+
+    async def check_in_library(self, title: str, artist: str = "", kind: str = "song") -> dict[str, Any]:
+        """Check if a track or album exists in the local Plex library."""
+        if not self.is_configured or not title:
+            return {"in_library": False, "matched_item": None}
+
+        media_type = "album" if kind == "album" else "track"
+        results = await self.search_library(query=title, media_type=media_type, limit=5)
+        clean_artist = artist.strip().lower()
+        clean_title = title.strip().lower()
+
+        for item in results:
+            item_title = str(item.get("title") or "").strip().lower()
+            item_artist = str(item.get("artist") or item.get("album_artist") or "").strip().lower()
+            if clean_title in item_title or item_title in clean_title:
+                if not clean_artist or clean_artist in item_artist or item_artist in clean_artist:
+                    return {
+                        "in_library": True,
+                        "matched_item": item,
+                    }
+        return {"in_library": False, "matched_item": None}
+
+    async def get_sonically_similar(
+        self,
+        rating_key_or_name: str,
+        media_type: str = "track",
+        limit: int = 15,
+        max_distance: float | None = None,
+        base_url: str = "",
+    ) -> list[dict[str, Any]]:
+        """
+        Query Plex Sonic Analysis to find sonically similar tracks or albums
+        relative to a seed track or album ratingKey (or title).
+        Requires Sonic Analysis generated on the music library (Plex Pass).
+        """
+        if not self.is_configured:
+            return []
+
+        clean_target = self._normalize_key(rating_key_or_name)
+        if not clean_target:
+            return []
+
+        clean_type = "album" if str(media_type).lower().strip() == "album" else "track"
+        type_id = 9 if clean_type == "album" else 10
+
+        target_key = clean_target
+        if not target_key.isdigit():
+            found = await self.search_library(clean_target, media_type=clean_type, limit=1)
+            if found and found[0].get("rating_key"):
+                target_key = str(found[0]["rating_key"])
+            else:
+                return []
+
+        safe_limit = max(1, min(limit or 15, 50))
+        params: dict[str, str] = {
+            "limit": str(safe_limit),
+            "type": str(type_id),
+        }
+        if max_distance is not None:
+            params["maxDistance"] = str(max_distance)
+
+        encoded_params = urllib.parse.urlencode(params)
+        items = await self._fetch_plex_items(f"/library/metadata/{target_key}/nearest?{encoded_params}")
+
+        results: list[dict[str, Any]] = []
+        for item in items:
+            item_with_type = dict(item)
+            if "type" not in item_with_type:
+                item_with_type["type"] = clean_type
+            formatted = self._format_search_item(item_with_type, base_url=base_url)
+            if formatted:
+                results.append(formatted)
+
+        return results
+
+    async def create_sonic_playlist(
+        self,
+        title: str,
+        seed_rating_key_or_name: str,
+        limit: int = 20,
+    ) -> dict[str, Any] | None:
+        """
+        Generate an automatic playlist of sonically matched tracks seeded by a track.
+        """
+        similar_tracks = await self.get_sonically_similar(
+            seed_rating_key_or_name,
+            media_type="track",
+            limit=limit,
+        )
+        if not similar_tracks:
+            return None
+
+        track_keys = [self._normalize_key(t.get("rating_key", "")) for t in similar_tracks if self._normalize_key(t.get("rating_key", "")).isdigit()]
+        if not track_keys:
+            return None
+
+        return await self.create_playlist(title=title, track_keys=track_keys)
 
     # -------------------------------------------------------------------------
     # Community Music Suggestions (PocketBase `shisho_music_recommendations` + local fallback)
