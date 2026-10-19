@@ -571,8 +571,10 @@ async def handle_get_plex_library_stats(bot, args: dict, user_id: str) -> str:
     if not stats.get("configured"):
         return "Plex monitoring is not configured."
 
+    lib_name = stats.get("library_name")
+    header = f"**Plex Music Library Overview ({lib_name})**" if lib_name else "**Plex Music Library Overview**"
     lines = [
-        "**Plex Music Library Overview**",
+        header,
         f"- Total Artists: {stats.get('total_artists', 0)}",
         f"- Total Albums: {stats.get('total_albums', 0)}",
         f"- Total Tracks: {stats.get('total_tracks', 0)}",

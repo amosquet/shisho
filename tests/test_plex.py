@@ -1332,6 +1332,227 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
 
         await monitor.close()
 
+    async def test_get_music_section_id_resolution(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        # 1. Normal resolution matching "Music"
+        monitor._fetch_plex_container = AsyncMock(return_value={
+            "Directory": [
+                {"key": "1", "type": "movie", "title": "Movies"},
+                {"key": "2", "type": "show", "title": "TV Shows"},
+                {"key": "3", "type": "artist", "title": "Music"},
+                {"key": "4", "type": "artist", "title": "Audiobooks"},
+            ]
+        })
+        sec_id = await monitor.get_music_section_id()
+        self.assertEqual(sec_id, "3")
+
+        # 2. Case-insensitivity ("music")
+        monitor._music_section_id = None
+        monitor._fetch_plex_container = AsyncMock(return_value={
+            "Directory": [
+                {"key": "5", "type": "artist", "title": "music"},
+            ]
+        })
+        sec_id = await monitor.get_music_section_id(force_refresh=True)
+        self.assertEqual(sec_id, "5")
+
+        # 3. Fallback to first artist section if "Music" title is missing
+        monitor._music_section_id = None
+        monitor._fetch_plex_container = AsyncMock(return_value={
+            "Directory": [
+                {"key": "10", "type": "movie", "title": "Movies"},
+                {"key": "7", "type": "artist", "title": "FLAC Discography"},
+            ]
+        })
+        sec_id = await monitor.get_music_section_id(force_refresh=True)
+        self.assertEqual(sec_id, "7")
+
+        # 4. Custom library name
+        monitor_custom = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            plex_music_library="Hi-Fi",
+            state_file=self.state_file,
+        )
+        monitor_custom._fetch_plex_container = AsyncMock(return_value={
+            "Directory": [
+                {"key": "3", "type": "artist", "title": "Music"},
+                {"key": "9", "type": "artist", "title": "Hi-Fi"},
+            ]
+        })
+        custom_sec_id = await monitor_custom.get_music_section_id()
+        self.assertEqual(custom_sec_id, "9")
+
+        await monitor.close()
+        await monitor_custom.close()
+
+    async def test_session_filtering_by_library_section(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            plex_user="sadako",
+            state_file=self.state_file,
+        )
+        monitor._music_section_id = "3"
+
+        # JSON Sessions: one track from "Music", one track from "Audiobooks"
+        json_payload = {
+            "MediaContainer": {
+                "Metadata": [
+                    {
+                        "type": "track",
+                        "title": "Audiobook Chapter 1",
+                        "librarySectionTitle": "Audiobooks",
+                        "librarySectionID": "4",
+                        "User": {"title": "sadako"},
+                        "Player": {"state": "playing"},
+                    },
+                    {
+                        "type": "track",
+                        "title": "Music Song 1",
+                        "librarySectionTitle": "Music",
+                        "librarySectionID": "3",
+                        "User": {"title": "sadako"},
+                        "Player": {"state": "playing"},
+                    },
+                ]
+            }
+        }
+        tracks = monitor._parse_json_sessions(json_payload)
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["title"], "Music Song 1")
+
+        # XML Sessions: one from "Soundtracks", one from "Music"
+        xml_text = """
+        <MediaContainer>
+            <Track type="track" title="Film Score 1" librarySectionTitle="Soundtracks" librarySectionID="8">
+                <User title="sadako" />
+                <Player state="playing" />
+            </Track>
+            <Track type="track" title="Music Song 2" librarySectionTitle="Music" librarySectionID="3">
+                <User title="sadako" />
+                <Player state="playing" />
+            </Track>
+        </MediaContainer>
+        """
+        xml_tracks = monitor._parse_xml_sessions(xml_text)
+        self.assertEqual(len(xml_tracks), 1)
+        self.assertEqual(xml_tracks[0]["title"], "Music Song 2")
+
+        await monitor.close()
+
+    async def test_recent_and_crate_scoped_to_music_section(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+        monitor.get_music_section_id = AsyncMock(return_value="3")
+
+        queried_paths = []
+        async def fake_fetch(path):
+            queried_paths.append(path)
+            if "type=10" in path:
+                return [
+                    {"ratingKey": "101", "title": "Track 1", "librarySectionTitle": "Music", "librarySectionID": "3"},
+                    {"ratingKey": "999", "title": "Other Track", "librarySectionTitle": "Podcasts", "librarySectionID": "9"},
+                ]
+            if "type=9" in path:
+                return [
+                    {"ratingKey": "201", "title": "Album 1", "librarySectionTitle": "Music", "librarySectionID": "3"},
+                    {"ratingKey": "888", "title": "Other Album", "librarySectionTitle": "Podcasts", "librarySectionID": "9"},
+                ]
+            return []
+
+        monitor._fetch_plex_items = fake_fetch
+
+        # 1. Recent track
+        recent = await monitor._fetch_recent_track_from_plex()
+        self.assertIsNotNone(recent)
+        self.assertEqual(recent["title"], "Track 1")
+        self.assertTrue(any(p.startswith("/library/sections/3/all?type=10") for p in queried_paths))
+
+        # 2. Crate data
+        crate = await monitor.get_crate_data()
+        self.assertEqual(len(crate["recent_tracks"]), 1)
+        self.assertEqual(crate["recent_tracks"][0]["title"], "Track 1")
+        self.assertEqual(len(crate["top_albums"]), 1)
+        self.assertEqual(crate["top_albums"][0]["title"], "Album 1")
+        self.assertTrue(any(p.startswith("/library/sections/3/all?type=9") for p in queried_paths))
+
+        await monitor.close()
+
+    async def test_search_and_stats_scoped_to_music_section(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+        monitor.get_music_section_id = AsyncMock(return_value="3")
+
+        hub_queried = []
+        async def fake_container(path):
+            hub_queried.append(path)
+            if "hubs/search" in path:
+                return {
+                    "Hub": [
+                        {
+                            "type": "track",
+                            "Metadata": [
+                                {"type": "track", "ratingKey": "101", "title": "Music Track", "librarySectionTitle": "Music", "librarySectionID": "3"},
+                                {"type": "track", "ratingKey": "999", "title": "Podcast Episode", "librarySectionTitle": "Podcasts", "librarySectionID": "9"},
+                            ],
+                        },
+                        {
+                            "type": "movie",
+                            "Metadata": [
+                                {"type": "movie", "ratingKey": "555", "title": "Some Movie", "librarySectionTitle": "Movies", "librarySectionID": "1"},
+                            ],
+                        },
+                    ]
+                }
+            if "type=8" in path:
+                return {"totalSize": "10"}
+            if "type=9" in path:
+                return {"totalSize": "50"}
+            if "type=10" in path:
+                return {"totalSize": "500"}
+            return {}
+
+        monitor._fetch_plex_container = fake_container
+        monitor._fetch_plex_items = AsyncMock(return_value=[])
+
+        # Test search scoping
+        results = await monitor.search_library("test", media_type="all")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Music Track")
+        self.assertIn("sectionId=3", hub_queried[0])
+
+        # Test stats scoping
+        stats = await monitor.get_library_stats()
+        self.assertEqual(stats["library_name"], "Music")
+        self.assertEqual(stats["section_id"], "3")
+        self.assertEqual(stats["total_artists"], 10)
+        self.assertEqual(stats["total_albums"], 50)
+        self.assertEqual(stats["total_tracks"], 500)
+        self.assertTrue(any(p.startswith("/library/sections/3/all?type=8") for p in hub_queried))
+        self.assertTrue(any(p.startswith("/library/sections/3/all?type=9") for p in hub_queried))
+        self.assertTrue(any(p.startswith("/library/sections/3/all?type=10") for p in hub_queried))
+
+        # Test album & artist rejecting non-music section items
+        monitor._fetch_plex_items = AsyncMock(return_value=[
+            {"ratingKey": "900", "title": "Audiobook Title", "librarySectionTitle": "Audiobooks", "librarySectionID": "4"}
+        ])
+        self.assertIsNone(await monitor.get_album_details("900"))
+        self.assertIsNone(await monitor.get_artist_details("900"))
+
+        await monitor.close()
+
 
 if __name__ == "__main__":
     unittest.main()

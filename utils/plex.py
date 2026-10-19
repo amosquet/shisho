@@ -30,6 +30,7 @@ class PlexMusicMonitor:
         plex_url: str | None = None,
         plex_token: str | None = None,
         plex_user: str | None = None,
+        plex_music_library: str | None = None,
         cache_ttl: float | None = None,
         state_file: str | None = None,
         suggestions_file: str | None = None,
@@ -37,6 +38,13 @@ class PlexMusicMonitor:
         self.plex_url = (plex_url if plex_url is not None else os.getenv("PLEX_URL", "")).strip().rstrip("/")
         self.plex_token = (plex_token if plex_token is not None else os.getenv("PLEX_TOKEN", "")).strip()
         self.plex_user = (plex_user if plex_user is not None else os.getenv("PLEX_USER", "")).strip()
+
+        raw_music_lib = (
+            plex_music_library
+            if plex_music_library is not None
+            else os.getenv("PLEX_MUSIC_LIBRARY", "Music")
+        )
+        self.plex_music_library = (raw_music_lib or "").strip()
 
         raw_ttl = cache_ttl if cache_ttl is not None else os.getenv("PLEX_CACHE_TTL", "5")
         try:
@@ -88,6 +96,12 @@ class PlexMusicMonitor:
         self.stats_cache_ttl: float = 600.0  # 10 minutes
         self._stats_lock = asyncio.Lock()
         self._playlist_lock = asyncio.Lock()
+
+        # Scoped music library section cache
+        self._music_section_id: str | None = None
+        self._music_section_cached_at: float = 0.0
+        self.section_cache_ttl: float = 600.0  # 10 minutes
+        self._section_lock = asyncio.Lock()
 
         # Last played track persisted across restarts
         self._last_played: dict[str, Any] | None = None
@@ -156,6 +170,32 @@ class PlexMusicMonitor:
             return True
         target = self.plex_user.lower()
         return user_title.lower() == target or user_id.lower() == target
+
+    def _matches_section(self, section_title: str = "", section_id: str = "") -> bool:
+        """
+        Check if a Plex item's section title or ID matches the configured music library.
+        If no section metadata is provided (e.g. in test fixtures or atypical clients), returns True.
+        """
+        if not self.plex_music_library:
+            return True
+        sec_title = str(section_title or "").strip()
+        sec_id = str(section_id or "").strip()
+        if not sec_title and not sec_id:
+            return True
+
+        target = self.plex_music_library.lower()
+        if sec_title and sec_title.lower() == target:
+            return True
+        if sec_id:
+            if sec_id.lower() == target:
+                return True
+            if self._music_section_id and sec_id == str(self._music_section_id):
+                return True
+            if self._music_section_id and sec_id != str(self._music_section_id):
+                return False
+        if sec_title:
+            return False
+        return True
 
     @staticmethod
     def _state_priority(state: str) -> int:
@@ -333,6 +373,11 @@ class PlexMusicMonitor:
             if media_type != "track":
                 continue
 
+            sec_title = str(item.get("librarySectionTitle") or "")
+            sec_id = str(item.get("librarySectionID") or "")
+            if not self._matches_section(sec_title, sec_id):
+                continue
+
             user_obj = item.get("User") or {}
             user_title = str(user_obj.get("title", "")) if isinstance(user_obj, dict) else ""
             user_id = str(user_obj.get("id", "")) if isinstance(user_obj, dict) else ""
@@ -368,6 +413,11 @@ class PlexMusicMonitor:
             tag_lower = elem.tag.lower()
             item_type = (elem.attrib.get("type") or "").lower()
             if tag_lower != "track" and item_type != "track":
+                continue
+
+            sec_title = str(elem.attrib.get("librarySectionTitle") or "")
+            sec_id = str(elem.attrib.get("librarySectionID") or "")
+            if not self._matches_section(sec_title, sec_id):
                 continue
 
             user_elem = elem.find("User")
@@ -585,15 +635,73 @@ class PlexMusicMonitor:
             return [m for m in metadata if isinstance(m, dict)]
         return []
 
+    async def get_music_section_id(self, force_refresh: bool = False) -> str | None:
+        """
+        Resolve and cache the Plex library section ID for the configured music library
+        (defaults to "Music"). If the library is not found or not configured, returns None.
+        """
+        if not self.is_configured or not self.plex_music_library:
+            return None
+
+        now = time.time()
+        if not force_refresh and self._music_section_id is not None:
+            if (now - self._music_section_cached_at) < self.section_cache_ttl:
+                return self._music_section_id
+
+        async with self._section_lock:
+            now = time.time()
+            if not force_refresh and self._music_section_id is not None:
+                if (now - self._music_section_cached_at) < self.section_cache_ttl:
+                    return self._music_section_id
+
+            container = await self._fetch_plex_container("/library/sections")
+            dirs = container.get("Directory") or container.get("Metadata") or []
+            if isinstance(dirs, dict):
+                dirs = [dirs]
+            elif not isinstance(dirs, list):
+                dirs = []
+
+            target = self.plex_music_library.lower()
+            matched_key: str | None = None
+            fallback_artist_key: str | None = None
+
+            for d in dirs:
+                if not isinstance(d, dict):
+                    continue
+                title = str(d.get("title") or "").strip().lower()
+                key = str(d.get("key") or "").strip()
+                sec_type = str(d.get("type") or "").strip().lower()
+
+                if title == target or key == target:
+                    matched_key = key
+                    break
+
+                if fallback_artist_key is None and sec_type == "artist":
+                    fallback_artist_key = key
+
+            resolved_key = matched_key or (fallback_artist_key if target == "music" else None)
+            if resolved_key:
+                self._music_section_id = resolved_key
+                self._music_section_cached_at = time.time()
+                return self._music_section_id
+
+            return None
+
     async def _fetch_recent_track_from_plex(self) -> dict[str, Any] | None:
         """Fallback to fetch the most recently played track from Plex if no session is active."""
+        sec_id = await self.get_music_section_id()
+        base_path = f"/library/sections/{sec_id}/all" if sec_id else "/library/all"
         items = await self._fetch_plex_items(
-            "/library/all?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
-            "&X-Plex-Container-Start=0&X-Plex-Container-Size=1"
+            f"{base_path}?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
+            "&X-Plex-Container-Start=0&X-Plex-Container-Size=5"
         )
-        if items:
-            track = self._extract_track_dict(items[0], state="stopped")
-            track.update(self._extract_audio_stream_info_json(items[0]))
+        for item in items:
+            sec_title = str(item.get("librarySectionTitle") or "")
+            item_sec_id = str(item.get("librarySectionID") or "")
+            if not self._matches_section(sec_title, item_sec_id):
+                continue
+            track = self._extract_track_dict(item, state="stopped")
+            track.update(self._extract_audio_stream_info_json(item))
             return track
         return None
 
@@ -680,6 +788,9 @@ class PlexMusicMonitor:
                     base_url=base_url,
                     elapsed_sec=max(0.0, now - self._cached_at),
                 )
+
+            # Ensure music section ID is resolved for session filtering
+            await self.get_music_section_id()
 
             active_tracks: list[dict[str, Any]] = []
             session = await self._get_http_session()
@@ -768,35 +879,49 @@ class PlexMusicMonitor:
             async with self._crate_lock:
                 now = time.time()
                 if self._cached_crate is None or (now - self._cached_crate_at) >= self.crate_cache_ttl:
+                    sec_id = await self.get_music_section_id()
+                    base_path = f"/library/sections/{sec_id}/all" if sec_id else "/library/all"
                     recent_raw, top_albums_raw = await asyncio.gather(
                         self._fetch_plex_items(
-                            "/library/all?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
+                            f"{base_path}?type=10&sort=lastViewedAt:desc&lastViewedAt>>=0"
                             "&X-Plex-Container-Start=0&X-Plex-Container-Size=12"
                         ),
                         self._fetch_plex_items(
-                            "/library/all?type=9&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
+                            f"{base_path}?type=9&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
                             "&X-Plex-Container-Start=0&X-Plex-Container-Size=8"
                         ),
                     )
 
                     recent_tracks: list[dict[str, Any]] = []
                     for item in recent_raw:
+                        sec_title = str(item.get("librarySectionTitle") or "")
+                        item_sec_id = str(item.get("librarySectionID") or "")
+                        if not self._matches_section(sec_title, item_sec_id):
+                            continue
                         t = self._extract_track_dict(item, state="stopped")
                         t.update(self._extract_audio_stream_info_json(item))
                         recent_tracks.append(t)
 
                     top_albums: list[dict[str, Any]] = []
                     for item in top_albums_raw:
+                        sec_title = str(item.get("librarySectionTitle") or "")
+                        item_sec_id = str(item.get("librarySectionID") or "")
+                        if not self._matches_section(sec_title, item_sec_id):
+                            continue
                         top_albums.append(self._extract_album_dict(item))
 
                     # Fallback: if Plex has no album-level viewCounts, derive top rotation from top tracks
                     if not top_albums:
                         top_tracks_raw = await self._fetch_plex_items(
-                            "/library/all?type=10&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
+                            f"{base_path}?type=10&sort=viewCount:desc,lastViewedAt:desc&viewCount>>=0"
                             "&X-Plex-Container-Start=0&X-Plex-Container-Size=24"
                         )
                         seen_albums: set[str] = set()
                         for item in top_tracks_raw:
+                            sec_title = str(item.get("librarySectionTitle") or "")
+                            item_sec_id = str(item.get("librarySectionID") or "")
+                            if not self._matches_section(sec_title, item_sec_id):
+                                continue
                             t = self._extract_track_dict(item, state="stopped")
                             album_key = f"{t.get('album') or t.get('title')}:{t.get('album_artist')}"
                             if album_key in seen_albums:
@@ -879,6 +1004,10 @@ class PlexMusicMonitor:
             return None
 
         album_raw = album_items[0] if album_items else {}
+        sec_title = str(album_raw.get("librarySectionTitle") or "")
+        item_sec_id = str(album_raw.get("librarySectionID") or "")
+        if not self._matches_section(sec_title, item_sec_id):
+            return None
         item_type = str(album_raw.get("type") or "").lower()
         if item_type == "track":
             parent_key = str(album_raw.get("parentRatingKey") or "").strip()
@@ -1047,6 +1176,10 @@ class PlexMusicMonitor:
             return None
 
         artist_raw = artist_items[0] if artist_items else {}
+        sec_title = str(artist_raw.get("librarySectionTitle") or "")
+        item_sec_id = str(artist_raw.get("librarySectionID") or "")
+        if not self._matches_section(sec_title, item_sec_id):
+            return None
         item_type = str(artist_raw.get("type") or "").lower()
         if item_type == "album":
             parent_key = str(artist_raw.get("parentRatingKey") or "").strip()
@@ -1335,10 +1468,13 @@ class PlexMusicMonitor:
         results: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
 
+        sec_id = await self.get_music_section_id()
+
         # 1. Try Hub search first
-        hubs_container = await self._fetch_plex_container(
-            f"/hubs/search?query={encoded_q}&limit={safe_limit}"
-        )
+        hub_url = f"/hubs/search?query={encoded_q}&limit={safe_limit}"
+        if sec_id:
+            hub_url = f"{hub_url}&sectionId={sec_id}"
+        hubs_container = await self._fetch_plex_container(hub_url)
         hubs = hubs_container.get("Hub") or []
         if isinstance(hubs, dict):
             hubs = [hubs]
@@ -1349,11 +1485,17 @@ class PlexMusicMonitor:
             hub_type = str(hub.get("type", "")).lower()
             if clean_type != "all" and hub_type != clean_type:
                 continue
+            if clean_type == "all" and hub_type not in ("track", "album", "artist"):
+                continue
             hub_meta = hub.get("Metadata") or []
             if isinstance(hub_meta, dict):
                 hub_meta = [hub_meta]
             for item in hub_meta:
                 if not isinstance(item, dict):
+                    continue
+                sec_title = str(item.get("librarySectionTitle") or "")
+                item_sec_id = str(item.get("librarySectionID") or "")
+                if not self._matches_section(sec_title, item_sec_id):
                     continue
                 k = str(item.get("ratingKey") or item.get("key") or "")
                 if not k or k in seen_keys:
@@ -1365,13 +1507,14 @@ class PlexMusicMonitor:
 
         # 2. Supplementary direct library queries if Hubs returned fewer than requested
         if len(results) < safe_limit:
+            base_path = f"/library/sections/{sec_id}/all" if sec_id else "/library/all"
             type_queries: list[tuple[str, str]] = []
             if clean_type in ("track", "all"):
-                type_queries.append(("track", f"/library/all?type=10&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+                type_queries.append(("track", f"{base_path}?type=10&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
             if clean_type in ("album", "all"):
-                type_queries.append(("album", f"/library/all?type=9&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+                type_queries.append(("album", f"{base_path}?type=9&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
             if clean_type in ("artist", "all"):
-                type_queries.append(("artist", f"/library/all?type=8&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
+                type_queries.append(("artist", f"{base_path}?type=8&title={encoded_q}&X-Plex-Container-Start=0&X-Plex-Container-Size={safe_limit}"))
 
             if type_queries:
                 fetched_batches = await asyncio.gather(
@@ -1381,6 +1524,10 @@ class PlexMusicMonitor:
                 for (m_type, _), items in zip(type_queries, fetched_batches):
                     batch: list[dict[str, Any]] = []
                     for item in items:
+                        sec_title = str(item.get("librarySectionTitle") or "")
+                        item_sec_id = str(item.get("librarySectionID") or "")
+                        if not self._matches_section(sec_title, item_sec_id):
+                            continue
                         item_with_type = dict(item)
                         if "type" not in item_with_type:
                             item_with_type["type"] = m_type
@@ -1428,6 +1575,8 @@ class PlexMusicMonitor:
         if not self.is_configured:
             return {
                 "configured": False,
+                "library_name": self.plex_music_library,
+                "section_id": None,
                 "total_artists": 0,
                 "total_albums": 0,
                 "total_tracks": 0,
@@ -1445,12 +1594,15 @@ class PlexMusicMonitor:
             if self._cached_library_stats is not None and (now - self._cached_library_stats_at) < self.stats_cache_ttl:
                 return self._format_library_stats(self._cached_library_stats, base_url=base_url)
 
+            sec_id = await self.get_music_section_id()
+            base_path = f"/library/sections/{sec_id}/all" if sec_id else "/library/all"
+
             c_artists, c_albums, c_tracks, recent_albums_raw, top_artists_raw = await asyncio.gather(
-                self._fetch_plex_container("/library/all?type=8&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
-                self._fetch_plex_container("/library/all?type=9&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
-                self._fetch_plex_container("/library/all?type=10&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
-                self._fetch_plex_items("/library/all?type=9&sort=addedAt:desc&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
-                self._fetch_plex_items("/library/all?type=8&sort=viewCount:desc&viewCount>>=0&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
+                self._fetch_plex_container(f"{base_path}?type=8&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_container(f"{base_path}?type=9&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_container(f"{base_path}?type=10&X-Plex-Container-Start=0&X-Plex-Container-Size=0"),
+                self._fetch_plex_items(f"{base_path}?type=9&sort=addedAt:desc&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
+                self._fetch_plex_items(f"{base_path}?type=8&sort=viewCount:desc&viewCount>>=0&X-Plex-Container-Start=0&X-Plex-Container-Size=6"),
             )
 
             def _get_size(c: dict[str, Any]) -> int:
@@ -1466,6 +1618,10 @@ class PlexMusicMonitor:
 
             formatted_recent: list[dict[str, Any]] = []
             for item in recent_albums_raw:
+                sec_title = str(item.get("librarySectionTitle") or "")
+                item_sec_id = str(item.get("librarySectionID") or "")
+                if not self._matches_section(sec_title, item_sec_id):
+                    continue
                 alb = self._extract_album_dict(item)
                 ver = alb.pop("cover_version", "")
                 alb["_cover_version"] = ver
@@ -1475,6 +1631,10 @@ class PlexMusicMonitor:
             top_artists: list[dict[str, Any]] = []
             genre_counts: dict[str, int] = {}
             for art in top_artists_raw:
+                sec_title = str(art.get("librarySectionTitle") or "")
+                item_sec_id = str(art.get("librarySectionID") or "")
+                if not self._matches_section(sec_title, item_sec_id):
+                    continue
                 name = art.get("title") or "Unknown Artist"
                 plays = int(art.get("viewCount") or 0)
                 top_artists.append({
@@ -1493,6 +1653,8 @@ class PlexMusicMonitor:
 
             res = {
                 "configured": True,
+                "library_name": self.plex_music_library,
+                "section_id": sec_id,
                 "total_artists": total_artists,
                 "total_albums": total_albums,
                 "total_tracks": total_tracks,
@@ -1745,6 +1907,10 @@ class PlexMusicMonitor:
 
         results: list[dict[str, Any]] = []
         for item in items:
+            sec_title = str(item.get("librarySectionTitle") or "")
+            item_sec_id = str(item.get("librarySectionID") or "")
+            if not self._matches_section(sec_title, item_sec_id):
+                continue
             item_with_type = dict(item)
             if "type" not in item_with_type:
                 item_with_type["type"] = clean_type
