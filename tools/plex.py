@@ -1,6 +1,6 @@
 """
 tools/plex.py - AI Tool definitions and handlers for Plex music status, library search,
-album/artist details, audio playlists, track rating, and community music suggestions.
+album/artist details, audio playlists, track rating, metadata modification, and community music suggestions.
 """
 
 import os
@@ -119,23 +119,28 @@ MANAGE_PLEX_PLAYLIST_TOOL = types.FunctionDeclaration(
         "Manages audio playlists on Plex Media Server. Actions: "
         "'list' (view all playlists), 'view' (inspect tracks in a playlist), "
         "'create' (create a new playlist), 'add' (append tracks to a playlist), "
-        "or 'delete' (delete a playlist). Creating, adding, and deleting require bot owner authorization."
+        "'edit' (update playlist title or summary), "
+        "or 'delete' (delete a playlist). Creating, adding, editing, and deleting require bot owner authorization."
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
             "action": types.Schema(
                 type=types.Type.STRING,
-                description="Action to perform: 'list', 'view', 'create', 'add', or 'delete'.",
-                enum=["list", "view", "create", "add", "delete"],
+                description="Action to perform: 'list', 'view', 'create', 'add', 'edit', or 'delete'.",
+                enum=["list", "view", "create", "add", "edit", "delete"],
             ),
             "playlist_id": types.Schema(
                 type=types.Type.STRING,
-                description="The Plex playlist ratingKey or title (required for 'view', 'add', 'delete').",
+                description="The Plex playlist ratingKey or title (required for 'view', 'add', 'edit', 'delete').",
             ),
             "title": types.Schema(
                 type=types.Type.STRING,
-                description="Title for the new playlist (required for 'create').",
+                description="Title for the new playlist (required for 'create') or updated title (for 'edit').",
+            ),
+            "summary": types.Schema(
+                type=types.Type.STRING,
+                description="Optional description/summary for the playlist (for 'edit').",
             ),
             "track_keys": types.Schema(
                 type=types.Type.ARRAY,
@@ -146,6 +151,340 @@ MANAGE_PLEX_PLAYLIST_TOOL = types.FunctionDeclaration(
                 type=types.Type.ARRAY,
                 items=types.Schema(type=types.Type.STRING),
                 description="List of track titles/names to search and add to the playlist (alternative to track_keys).",
+            ),
+        },
+        required=["action"],
+    ),
+)
+
+UPDATE_PLEX_METADATA_TOOL = types.FunctionDeclaration(
+    name="update_plex_metadata",
+    description=(
+        "Modifies metadata, tags, artwork (cover/poster or background art), field locks, or triggers a metadata refresh "
+        "for content on the Plex Media Server (tracks, albums, artists, playlists, movies, TV shows, seasons, or episodes). "
+        "Can target an item by ratingKey, title/search query, or the currently playing item (if query_or_id is omitted). "
+        "Also supports uploading an image attached to the Discord message as custom cover/poster or backdrop art. "
+        "Requires bot owner or Plex admin authorization."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "query_or_id": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "The Plex ratingKey (e.g. '12345' or '#12345') or title/name of the item to modify. "
+                    "If omitted (or 'now_playing'), targets the currently playing track (or its album/artist when media_type is 'album'/'artist')."
+                ),
+            ),
+            "media_type": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "Media type of the target item: 'track', 'album', 'artist', 'playlist', 'movie', 'show', 'season', 'episode', or 'all'. "
+                    "Defaults to 'all' (or 'track' when targeting now playing)."
+                ),
+                enum=["all", "track", "album", "artist", "playlist", "movie", "show", "season", "episode"],
+            ),
+            "artist_filter": types.Schema(
+                type=types.Type.STRING,
+                description="Optional artist name to disambiguate when searching for a track or album by title.",
+            ),
+            "album_filter": types.Schema(
+                type=types.Type.STRING,
+                description="Optional album title to disambiguate when searching for a track by title.",
+            ),
+            "title": types.Schema(
+                type=types.Type.STRING,
+                description="New title for the track, album, artist, playlist, movie, show, or episode.",
+            ),
+            "sort_title": types.Schema(
+                type=types.Type.STRING,
+                description="New sort title (titleSort) for alphabetical ordering in Plex.",
+            ),
+            "original_title": types.Schema(
+                type=types.Type.STRING,
+                description="New original title (originalTitle). For music tracks, Plex uses originalTitle as the track artist.",
+            ),
+            "artist": types.Schema(
+                type=types.Type.STRING,
+                description="New artist name (track artist for tracks, album artist for albums, or artist title).",
+            ),
+            "album_artist": types.Schema(
+                type=types.Type.STRING,
+                description="New album artist name.",
+            ),
+            "album": types.Schema(
+                type=types.Type.STRING,
+                description="New album title.",
+            ),
+            "summary": types.Schema(
+                type=types.Type.STRING,
+                description="New summary, biography, description, or review text.",
+            ),
+            "tagline": types.Schema(
+                type=types.Type.STRING,
+                description="New tagline.",
+            ),
+            "year": types.Schema(
+                type=types.Type.INTEGER,
+                description="New release year (e.g. 1984).",
+            ),
+            "release_date": types.Schema(
+                type=types.Type.STRING,
+                description="New release / originally available date in YYYY-MM-DD format.",
+            ),
+            "studio": types.Schema(
+                type=types.Type.STRING,
+                description="New studio or record label name.",
+            ),
+            "track_number": types.Schema(
+                type=types.Type.INTEGER,
+                description="New track number (or episode/season index).",
+            ),
+            "disc_number": types.Schema(
+                type=types.Type.INTEGER,
+                description="New disc number (or parent season index).",
+            ),
+            "content_rating": types.Schema(
+                type=types.Type.STRING,
+                description="New content rating (e.g. 'Explicit', 'PG-13', 'R').",
+            ),
+            "user_rating": types.Schema(
+                type=types.Type.NUMBER,
+                description="New user star rating from 0 to 5 stars (0 clears rating).",
+            ),
+            "genres": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of genre tags to add (or set if replace_tags is true).",
+            ),
+            "remove_genres": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of genre tags to remove.",
+            ),
+            "styles": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of style tags to add (or set if replace_tags is true).",
+            ),
+            "remove_styles": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of style tags to remove.",
+            ),
+            "moods": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of mood tags to add (or set if replace_tags is true).",
+            ),
+            "remove_moods": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of mood tags to remove.",
+            ),
+            "collections": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of collection tags to add (or set if replace_tags is true).",
+            ),
+            "remove_collections": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of collection tags to remove.",
+            ),
+            "labels": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of sharing/filter label tags to add (or set if replace_tags is true).",
+            ),
+            "remove_labels": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of label tags to remove.",
+            ),
+            "countries": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of country tags to add (or set if replace_tags is true).",
+            ),
+            "remove_countries": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of country tags to remove.",
+            ),
+            "similar_artists": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of similar artist tags to add (or set if replace_tags is true).",
+            ),
+            "remove_similar_artists": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of similar artist tags to remove.",
+            ),
+            "directors": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of director tags to add (for movies/episodes/music videos).",
+            ),
+            "remove_directors": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of director tags to remove.",
+            ),
+            "writers": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of writer tags to add.",
+            ),
+            "remove_writers": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of writer tags to remove.",
+            ),
+            "producers": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of producer tags to add.",
+            ),
+            "remove_producers": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of producer tags to remove.",
+            ),
+            "replace_tags": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, provided tag lists (e.g. genres) overwrite existing tags in that category instead of merging.",
+            ),
+            "poster_url": types.Schema(
+                type=types.Type.STRING,
+                description="Direct http/https image URL to set as the item's cover art / poster / avatar.",
+            ),
+            "background_art_url": types.Schema(
+                type=types.Type.STRING,
+                description="Direct http/https image URL to set as the item's background art / backdrop.",
+            ),
+            "use_attached_image": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, uploads an image attached to the current or replied Discord message as artwork.",
+            ),
+            "artwork_target": types.Schema(
+                type=types.Type.STRING,
+                description="When use_attached_image is true, whether to set it as 'poster' (cover/avatar, default) or 'art' (background/backdrop).",
+                enum=["poster", "art"],
+            ),
+            "lock_fields": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="Whether to lock modified fields on Plex so future scans do not overwrite them (defaults to true).",
+            ),
+            "unlock_fields": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="Optional list of field names to unlock (e.g. ['title', 'summary', 'genres', 'poster']).",
+            ),
+            "refresh_metadata": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, triggers a Plex metadata refresh on the item.",
+            ),
+            "match_guid": types.Schema(
+                type=types.Type.STRING,
+                description="Optional metadata agent GUID (e.g. 'plex://album/...', 'mbid://...') to associate/Fix Match the item with.",
+            ),
+            "match_name": types.Schema(
+                type=types.Type.STRING,
+                description="Optional title/name override when applying a metadata agent match.",
+            ),
+            "match_year": types.Schema(
+                type=types.Type.INTEGER,
+                description="Optional release year override when searching or applying a metadata agent match.",
+            ),
+            "match_agent": types.Schema(
+                type=types.Type.STRING,
+                description="Optional metadata agent identifier or alias (e.g. 'plex_music', 'musicbrainz', 'lastfm', 'plex_movie', 'tmdb', 'imdb', 'tvdb', 'plex_series').",
+            ),
+            "match_language": types.Schema(
+                type=types.Type.STRING,
+                description="Optional language code (e.g. 'en-US', 'ja-JP') when querying metadata agent matches.",
+            ),
+            "auto_match": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, automatically searches the Plex metadata agent and binds the item to the best match.",
+            ),
+            "unmatch": types.Schema(
+                type=types.Type.BOOLEAN,
+                description="If true, removes/strips the current metadata agent association from the item.",
+            ),
+        },
+    ),
+)
+
+MATCH_PLEX_MEDIA_TOOL = types.FunctionDeclaration(
+    name="match_plex_media",
+    description=(
+        "Manages Plex 'Fix Match' / Metadata Agent Association for library content (albums, artists, tracks, movies, TV shows). "
+        "Actions: "
+        "'search' (query metadata agents for candidate matches with confidence scores and GUIDs), "
+        "'match' (apply a specific match by GUID or candidate index, or auto-match the top agent result), "
+        "or 'unmatch' (remove the current agent association). "
+        "Applying a match or unmatching requires bot owner or Plex admin authorization."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "action": types.Schema(
+                type=types.Type.STRING,
+                description="Action to perform: 'search' (list candidate matches), 'match' (apply a match), or 'unmatch' (remove match).",
+                enum=["search", "match", "unmatch"],
+            ),
+            "query_or_id": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "The Plex ratingKey (e.g. '12345' or '#12345') or title/name of the item in Plex. "
+                    "If omitted, targets the currently playing item."
+                ),
+            ),
+            "media_type": types.Schema(
+                type=types.Type.STRING,
+                description="Media type of the target item: 'album', 'artist', 'track', 'movie', 'show', 'season', 'episode', or 'all'.",
+                enum=["all", "album", "artist", "track", "movie", "show", "season", "episode"],
+            ),
+            "artist_filter": types.Schema(
+                type=types.Type.STRING,
+                description="Optional artist name to disambiguate when resolving the item in Plex.",
+            ),
+            "album_filter": types.Schema(
+                type=types.Type.STRING,
+                description="Optional album title to disambiguate when resolving the item in Plex.",
+            ),
+            "guid": types.Schema(
+                type=types.Type.STRING,
+                description="Explicit metadata agent GUID (e.g. 'plex://album/5d07cd...') to bind to (for 'match').",
+            ),
+            "match_index": types.Schema(
+                type=types.Type.INTEGER,
+                description="Zero-based index of the candidate from 'search' results to apply (defaults to 0 = best match).",
+            ),
+            "search_title": types.Schema(
+                type=types.Type.STRING,
+                description="Override title (or external ID such as 'mbid://...', 'imdb://tt...', 'tmdb://...') to query the metadata agent with.",
+            ),
+            "search_year": types.Schema(
+                type=types.Type.INTEGER,
+                description="Override release year to query the metadata agent with.",
+            ),
+            "agent": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "Metadata agent identifier or shorthand alias to use: 'plex_music' ('tv.plex.agents.music'), "
+                    "'musicbrainz' ('org.musicbrainz.agents.music'), 'lastfm' ('com.plexapp.agents.lastfm'), "
+                    "'plex_movie' ('tv.plex.agents.movie'), 'tmdb' ('com.plexapp.agents.themoviedb'), "
+                    "'imdb' ('com.plexapp.agents.imdb'), 'plex_series' ('tv.plex.agents.series'), "
+                    "'tvdb' ('com.plexapp.agents.thetvdb'), or 'personal' ('com.plexapp.agents.none')."
+                ),
+            ),
+            "language": types.Schema(
+                type=types.Type.STRING,
+                description="Optional language code for the metadata agent (e.g. 'en-US', 'ja-JP').",
             ),
         },
         required=["action"],
@@ -606,11 +945,12 @@ async def handle_manage_plex_playlist(bot, args: dict, user_id: str) -> str:
     action = str(raw.get("action", "list") or "list").strip().lower()
     playlist_id = PlexMusicMonitor._normalize_key(raw.get("playlist_id", ""))
     title = str(raw.get("title", "")).strip()
+    summary = raw.get("summary")
     track_keys = raw.get("track_keys") or []
     track_queries = raw.get("track_queries") or []
 
     # Mutating actions check
-    if action in ("create", "add", "delete"):
+    if action in ("create", "add", "edit", "update", "delete"):
         if not await _is_authorized_plex_admin(bot, user_id):
             return "Permission Denied: Only the bot owner or authorized users can create, modify, or delete Plex playlists."
 
@@ -708,6 +1048,24 @@ async def handle_manage_plex_playlist(bot, args: dict, user_id: str) -> str:
                 return f"Failed to add tracks to playlist [#{target_pl_key}]."
             return f"Successfully added {len(resolved_keys)} track(s) to playlist [#{target_pl_key}]."
 
+        elif action in ("edit", "update"):
+            if not playlist_id:
+                return "Error: 'playlist_id' is required to edit a playlist."
+            if not title and summary is None:
+                return "Error: Provide 'title' and/or 'summary' to update the playlist."
+            res = await monitor.update_metadata(
+                rating_key_or_query=playlist_id,
+                media_type="playlist",
+                title=title if title else None,
+                summary=str(summary).strip() if summary is not None else None,
+            )
+            if not res.get("success"):
+                return res.get("error") or f"Failed to update playlist '{playlist_id}'."
+            return (
+                f"Successfully updated playlist **{res.get('title')}** "
+                f"[#{res.get('rating_key')}] (updated: {', '.join(res.get('updated_fields', []))})."
+            )
+
         elif action == "delete":
             if not playlist_id:
                 return "Error: 'playlist_id' is required to delete a playlist."
@@ -724,8 +1082,350 @@ async def handle_manage_plex_playlist(bot, args: dict, user_id: str) -> str:
                 return f"Failed to delete playlist [#{target_pl_key}]."
             return f"Successfully deleted playlist [#{target_pl_key}]."
 
-        return f"Unknown playlist action '{action}'. Valid actions: 'list', 'view', 'create', 'add', 'delete'."
+        return f"Unknown playlist action '{action}'. Valid actions: 'list', 'view', 'create', 'add', 'edit', 'delete'."
 
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+
+def _extract_image_from_context(context: dict | None) -> tuple[str, bytes, str] | None:
+    """
+    Extract the first image attachment (filename, bytes, content_type) from current or reply
+    Discord message attachments in the tool execution context.
+    """
+    if not context or not isinstance(context, dict):
+        return None
+    raw_atts = context.get("current_attachments") or context.get("reply_attachments")
+    if raw_atts is None:
+        raw_atts = context.get("attachments", [])
+    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+    for att in raw_atts:
+        if isinstance(att, dict) and "bytes" in att:
+            fname = str(att.get("filename") or "cover.jpg")
+            ct = str(att.get("content_type") or "").lower()
+            if ct.startswith("image/") or fname.lower().endswith(image_exts):
+                if not ct.startswith("image/"):
+                    ct = "image/png" if fname.lower().endswith(".png") else (
+                        "image/webp" if fname.lower().endswith(".webp") else "image/jpeg"
+                    )
+                return fname, att["bytes"], ct
+        elif isinstance(att, (tuple, list)) and len(att) >= 2:
+            fname = str(att[0] or "cover.jpg")
+            data_bytes = att[1]
+            if fname.lower().endswith(image_exts) and isinstance(data_bytes, (bytes, bytearray)):
+                ct = "image/png" if fname.lower().endswith(".png") else (
+                    "image/webp" if fname.lower().endswith(".webp") else "image/jpeg"
+                )
+                return fname, bytes(data_bytes), ct
+    return None
+
+
+async def handle_update_plex_metadata(
+    bot, args: dict, user_id: str, context: dict | None = None
+) -> str:
+    """Handler for the update_plex_metadata AI tool."""
+    if not await _is_authorized_plex_admin(bot, user_id):
+        return "Permission Denied: Only the bot owner or authorized users can modify metadata on the Plex Media Server."
+
+    raw = args or {}
+    query_or_id = str(raw.get("query_or_id") or "").strip()
+    media_type = str(raw.get("media_type") or "all").strip().lower()
+    artist_filter = str(raw.get("artist_filter") or "").strip()
+    album_filter = str(raw.get("album_filter") or "").strip()
+
+    def _opt_str(key: str) -> str | None:
+        if key not in raw or raw[key] is None:
+            return None
+        return str(raw[key]).strip()
+
+    def _opt_int(key: str) -> tuple[int | None, str | None]:
+        if key not in raw or raw[key] is None or raw[key] == "":
+            return None, None
+        try:
+            return int(raw[key]), None
+        except (ValueError, TypeError):
+            return None, f"Error: '{key}' must be an integer."
+
+    def _opt_float(key: str) -> tuple[float | None, str | None]:
+        if key not in raw or raw[key] is None or raw[key] == "":
+            return None, None
+        try:
+            return float(raw[key]), None
+        except (ValueError, TypeError):
+            return None, f"Error: '{key}' must be a number."
+
+    def _opt_str_list(key: str) -> list[str] | None:
+        if key not in raw or raw[key] is None:
+            return None
+        val = raw[key]
+        if isinstance(val, str):
+            return [s.strip() for s in val.split(",") if s.strip()]
+        if isinstance(val, list):
+            return [str(s).strip() for s in val if str(s).strip()]
+        return None
+
+    year, err = _opt_int("year")
+    if err:
+        return err
+    track_number, err = _opt_int("track_number")
+    if err:
+        return err
+    disc_number, err = _opt_int("disc_number")
+    if err:
+        return err
+    user_rating, err = _opt_float("user_rating")
+    if err:
+        return err
+    match_year, err = _opt_int("match_year")
+    if err:
+        return err
+
+    poster_url = _opt_str("poster_url") or _opt_str("cover_url")
+    background_art_url = _opt_str("background_art_url") or _opt_str("art_url")
+    use_attached_image = bool(raw.get("use_attached_image", False))
+    artwork_target = str(raw.get("artwork_target") or "poster").strip().lower()
+
+    poster_bytes: bytes | None = None
+    poster_ct = "image/jpeg"
+    art_bytes: bytes | None = None
+    art_ct = "image/jpeg"
+
+    attached_img = _extract_image_from_context(context)
+    has_other_edits = any(
+        raw.get(k) is not None
+        for k in (
+            "title", "sort_title", "original_title", "artist", "album_artist", "album",
+            "summary", "tagline", "year", "release_date", "originally_available_at",
+            "studio", "track_number", "disc_number", "content_rating", "user_rating",
+            "genres", "remove_genres", "styles", "remove_styles", "moods", "remove_moods",
+            "collections", "remove_collections", "labels", "remove_labels",
+            "countries", "remove_countries", "similar_artists", "remove_similar_artists",
+            "directors", "remove_directors", "writers", "remove_writers",
+            "producers", "remove_producers", "poster_url", "cover_url",
+            "background_art_url", "art_url", "unlock_fields",
+            "match_guid", "match_agent",
+        )
+    ) or bool(raw.get("refresh_metadata")) or bool(raw.get("auto_match")) or bool(raw.get("unmatch"))
+
+    if use_attached_image or (attached_img is not None and not has_other_edits):
+        if not attached_img:
+            return "Error: 'use_attached_image' was set, but no image attachment was found in the message or reply."
+        _, img_data, img_ct = attached_img
+        if artwork_target in ("art", "backdrop", "background"):
+            art_bytes = img_data
+            art_ct = img_ct
+        else:
+            poster_bytes = img_data
+            poster_ct = img_ct
+
+    lock_fields = True if raw.get("lock_fields") is None else bool(raw.get("lock_fields"))
+    replace_tags = bool(raw.get("replace_tags", False))
+    refresh_metadata = bool(raw.get("refresh_metadata", False))
+    auto_match = bool(raw.get("auto_match", False))
+    unmatch = bool(raw.get("unmatch", False))
+
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        res = await monitor.update_metadata(
+            rating_key_or_query=query_or_id,
+            media_type=media_type,
+            artist_filter=artist_filter,
+            album_filter=album_filter,
+            title=_opt_str("title"),
+            sort_title=_opt_str("sort_title"),
+            original_title=_opt_str("original_title"),
+            artist=_opt_str("artist"),
+            album_artist=_opt_str("album_artist"),
+            album=_opt_str("album"),
+            summary=_opt_str("summary"),
+            tagline=_opt_str("tagline"),
+            year=year,
+            originally_available_at=_opt_str("release_date") or _opt_str("originally_available_at"),
+            studio=_opt_str("studio"),
+            track_number=track_number,
+            disc_number=disc_number,
+            content_rating=_opt_str("content_rating"),
+            user_rating=user_rating,
+            genres=_opt_str_list("genres"),
+            remove_genres=_opt_str_list("remove_genres"),
+            styles=_opt_str_list("styles"),
+            remove_styles=_opt_str_list("remove_styles"),
+            moods=_opt_str_list("moods"),
+            remove_moods=_opt_str_list("remove_moods"),
+            collections=_opt_str_list("collections"),
+            remove_collections=_opt_str_list("remove_collections"),
+            labels=_opt_str_list("labels"),
+            remove_labels=_opt_str_list("remove_labels"),
+            countries=_opt_str_list("countries"),
+            remove_countries=_opt_str_list("remove_countries"),
+            similar_artists=_opt_str_list("similar_artists"),
+            remove_similar_artists=_opt_str_list("remove_similar_artists"),
+            directors=_opt_str_list("directors"),
+            remove_directors=_opt_str_list("remove_directors"),
+            writers=_opt_str_list("writers"),
+            remove_writers=_opt_str_list("remove_writers"),
+            producers=_opt_str_list("producers"),
+            remove_producers=_opt_str_list("remove_producers"),
+            replace_tags=replace_tags,
+            poster_url=poster_url,
+            poster_bytes=poster_bytes,
+            poster_content_type=poster_ct,
+            background_art_url=background_art_url,
+            background_art_bytes=art_bytes,
+            background_art_content_type=art_ct,
+            lock_fields=lock_fields,
+            unlock_fields=_opt_str_list("unlock_fields"),
+            refresh_metadata=refresh_metadata,
+            match_guid=_opt_str("match_guid"),
+            match_name=_opt_str("match_name"),
+            match_year=match_year,
+            match_agent=_opt_str("match_agent"),
+            match_language=_opt_str("match_language"),
+            auto_match=auto_match,
+            unmatch=unmatch,
+        )
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+    if not res.get("success"):
+        return f"Error: {res.get('error') or 'Failed to update Plex metadata.'}"
+
+    m_type = str(res.get("media_type") or "item").capitalize()
+    rk = res.get("rating_key") or "N/A"
+    item_title = res.get("title") or f"#{rk}"
+    prev_title = res.get("previous_title") or ""
+    updated = res.get("updated_fields") or []
+
+    title_display = f"**{item_title}**"
+    if prev_title and prev_title != item_title:
+        title_display = f"**{item_title}** (was *{prev_title}*)"
+
+    match_suffix = ""
+    if res.get("matched_guid"):
+        match_suffix = f" [Matched GUID: `{res['matched_guid']}`]"
+
+    return (
+        f"Successfully updated Plex {m_type} [#{rk}] {title_display} "
+        f"(modified: {', '.join(updated)}).{match_suffix}"
+    )
+
+
+async def handle_match_plex_media(bot, args: dict, user_id: str) -> str:
+    """Handler for the match_plex_media (Fix Match / Agent Association) AI tool."""
+    raw = args or {}
+    action = str(raw.get("action") or "search").strip().lower()
+    query_or_id = str(raw.get("query_or_id") or "").strip()
+    media_type = str(raw.get("media_type") or "all").strip().lower()
+    artist_filter = str(raw.get("artist_filter") or "").strip()
+    album_filter = str(raw.get("album_filter") or "").strip()
+    guid = str(raw.get("guid") or "").strip() or None
+    search_title = str(raw.get("search_title") or raw.get("title") or "").strip() or None
+    agent = str(raw.get("agent") or "").strip() or None
+    language = str(raw.get("language") or "").strip() or None
+
+    search_year: int | None = None
+    raw_year = raw.get("search_year") if raw.get("search_year") is not None else raw.get("year")
+    if raw_year is not None and raw_year != "":
+        try:
+            search_year = int(raw_year)
+        except (ValueError, TypeError):
+            return "Error: 'search_year' must be an integer."
+
+    match_index = 0
+    if raw.get("match_index") is not None and raw.get("match_index") != "":
+        try:
+            match_index = int(raw["match_index"])
+        except (ValueError, TypeError):
+            return "Error: 'match_index' must be an integer."
+
+    if action in ("match", "apply", "auto", "unmatch"):
+        if not await _is_authorized_plex_admin(bot, user_id):
+            return "Permission Denied: Only the bot owner or authorized users can fix matches or unmatch content on Plex."
+
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        if action == "search":
+            res = await monitor.search_metadata_matches(
+                rating_key_or_query=query_or_id,
+                media_type=media_type,
+                title=search_title,
+                year=search_year,
+                agent=agent,
+                language=language,
+                artist_filter=artist_filter,
+                album_filter=album_filter,
+            )
+            if not res.get("success"):
+                return f"Error: {res.get('error') or 'Failed to search Plex metadata matches.'}"
+
+            matches = res.get("matches") or []
+            m_type = str(res.get("media_type") or "item").capitalize()
+            rk = res.get("rating_key") or "N/A"
+            item_title = res.get("title") or f"#{rk}"
+            agent_str = f" (Agent: `{res['agent']}`)" if res.get("agent") else ""
+
+            if not matches:
+                return f"No metadata agent matches found for Plex {m_type} [#{rk}] **{item_title}**{agent_str}."
+
+            lines = [
+                f"Found {len(matches)} Fix Match candidate(s) for Plex {m_type} [#{rk}] **{item_title}**{agent_str}:"
+            ]
+            for m in matches[:15]:
+                yr = f" ({m['year']})" if m.get("year") else ""
+                sc = f" • Score: {m['score']}%" if m.get("score") is not None else ""
+                summ = f" — {m['summary'][:120]}" if m.get("summary") else ""
+                lines.append(
+                    f"{m.get('index', 0)}. **{m.get('name')}**{yr}{sc} • GUID: `{m.get('guid')}`{summ}"
+                )
+            return "\n".join(lines)
+
+        elif action in ("match", "apply", "auto"):
+            res = await monitor.fix_metadata_match(
+                rating_key_or_query=query_or_id,
+                media_type=media_type,
+                guid=guid,
+                name=search_title if guid else None,
+                title=search_title,
+                year=search_year,
+                agent=agent,
+                language=language,
+                match_index=match_index,
+                unmatch=False,
+                artist_filter=artist_filter,
+                album_filter=album_filter,
+            )
+            if not res.get("success"):
+                return f"Error: {res.get('error') or 'Failed to apply Plex metadata match.'}"
+
+            m_type = str(res.get("media_type") or "item").capitalize()
+            rk = res.get("rating_key") or "N/A"
+            matched_name = res.get("matched_name") or res.get("title") or f"#{rk}"
+            yr_str = f" ({res['matched_year']})" if res.get("matched_year") else ""
+            sc_str = f" [Score: {res['matched_score']}%]" if res.get("matched_score") is not None else ""
+            return (
+                f"Successfully matched Plex {m_type} [#{rk}] to **{matched_name}**{yr_str}{sc_str} "
+                f"(GUID: `{res.get('matched_guid')}`)."
+            )
+
+        elif action == "unmatch":
+            res = await monitor.fix_metadata_match(
+                rating_key_or_query=query_or_id,
+                media_type=media_type,
+                unmatch=True,
+                artist_filter=artist_filter,
+                album_filter=album_filter,
+            )
+            if not res.get("success"):
+                return f"Error: {res.get('error') or 'Failed to unmatch Plex item.'}"
+
+            m_type = str(res.get("media_type") or "item").capitalize()
+            rk = res.get("rating_key") or "N/A"
+            item_title = res.get("title") or f"#{rk}"
+            return f"Successfully unmatched Plex {m_type} [#{rk}] **{item_title}** from its metadata agent."
+
+        return f"Unknown match action '{action}'. Valid actions: 'search', 'match', 'unmatch'."
     finally:
         if owns_monitor:
             await monitor.close()

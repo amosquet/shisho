@@ -89,16 +89,18 @@
 
 ## Plex Music & Library Integration
 - **Commands:** `/nowplaying`
-- **AI Tools:** `get_plex_status`, `search_plex_music`, `get_plex_album_details`, `get_plex_artist_details`, `get_plex_library_stats`, `manage_plex_playlist`, `rate_plex_music`, `get_plex_sonic_similar`, `get_music_suggestions`, `add_music_suggestion`, `delete_music_suggestion`
-- **Description:** Deep integration with Plex Media Server for monitoring real-time playback, searching and browsing your personal music library, managing audio playlists, rating tracks/albums, finding sonically similar music, and collecting community recommendations.
+- **AI Tools:** `get_plex_status`, `search_plex_music`, `get_plex_album_details`, `get_plex_artist_details`, `get_plex_library_stats`, `manage_plex_playlist`, `rate_plex_music`, `update_plex_metadata`, `match_plex_media`, `get_plex_sonic_similar`, `get_music_suggestions`, `add_music_suggestion`, `delete_music_suggestion`
+- **Description:** Deep integration with Plex Media Server for monitoring real-time playback, searching and browsing your personal music library, modifying media metadata and artwork, fixing metadata agent matches, managing audio playlists, rating tracks/albums, finding sonically similar music, and collecting community recommendations.
 - **Features:**
   - **Now Playing & Audio Quality:** Real-time playback tracking displaying track title, artist, album, audio format (e.g. `FLAC 24-bit/96kHz`), playback progress bar, player device, and cover art proxy.
   - **Music Library Search:** Search tracks, albums, and artists in your personal Plex music library with play count and audio format details.
   - **Album & Artist Deep Inspection:** View tracklists with durations and play counts, artist biography, top played tracks in your library, owned discography, and direct external streaming links (YouTube Music & Qobuz).
   - **Sonic Similarity & Acoustic Matching:** Query Plex Sonic Analysis (`GET /library/metadata/{id}/nearest`) to find acoustically closest tracks or albums in your library with distance scores, or auto-generate a Plex Sonic Mix playlist from matching tracks.
   - **Library Statistics:** View total artists, albums, tracks, top played artists, top genres, and recently added albums.
-  - **Audio Playlist Management:** List, inspect, create, append tracks to, or delete Plex audio playlists through natural language (write actions gated to bot owner).
+  - **Audio Playlist Management:** List, inspect, create, append tracks to, edit, or delete Plex audio playlists through natural language (write actions gated to bot owner).
   - **Track & Album Rating:** Rate currently playing or specified tracks and albums directly on Plex (1-5 star scale mapped to Plex 0-10, owner only).
+  - **Metadata & Artwork Modification:** Edit titles, sort titles, artists, album artists, summaries/bios, release dates/years, studios/record labels, track/disc numbers, tags (genres, styles, moods, collections, labels, countries, similar artists, directors, writers, producers—supporting add, remove, or full replacement), custom cover/poster or backdrop artwork (via URL or Discord attachment), field locking/unlocking, and metadata refreshes across Plex media items (owner/admin only).
+  - **Fix Match & Agent Association:** Search Plex metadata agents (`GET /library/metadata/{id}/matches` across Plex Music, MusicBrainz, Last.fm, TMDb, IMDb, TheTVDB, etc.), inspect candidate matches with confidence scores and GUIDs, apply specific or automatic agent matches (`PUT /library/metadata/{id}/match`), or unmatch items (`PUT /library/metadata/{id}/unmatch`). Prioritized first by Shisho when correcting or fixing misidentified media so official GUIDs, tracklists, release dates, genres, and cover art are retrieved before falling back to manual field overrides.
   - **Community Recommendations & Library Matching:** Collect music suggestions via Discord or web form with automatic YouTube Music / Qobuz links, and automatically cross-reference against your Plex library to indicate whether a suggestion is already owned.
 
 

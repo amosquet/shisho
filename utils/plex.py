@@ -21,6 +21,118 @@ from utils.db import (
 
 MUSIC_RECOMMENDATIONS_COLLECTION = "shisho_music_recommendations"
 
+PLEX_MEDIA_TYPE_IDS: dict[str, int] = {
+    "movie": 1,
+    "show": 2,
+    "season": 3,
+    "episode": 4,
+    "trailer": 5,
+    "comic": 6,
+    "person": 7,
+    "artist": 8,
+    "album": 9,
+    "track": 10,
+    "photoalbum": 11,
+    "photo": 13,
+    "playlist": 15,
+}
+
+PLEX_TAG_CONFIG: dict[str, tuple[str, str]] = {
+    "genres": ("genre", "Genre"),
+    "styles": ("style", "Style"),
+    "moods": ("mood", "Mood"),
+    "collections": ("collection", "Collection"),
+    "labels": ("label", "Label"),
+    "countries": ("country", "Country"),
+    "similar_artists": ("similar", "Similar"),
+    "directors": ("director", "Director"),
+    "writers": ("writer", "Writer"),
+    "producers": ("producer", "Producer"),
+}
+
+PLEX_FIELD_LOCK_ALIASES: dict[str, str] = {
+    "title": "title",
+    "sort_title": "titleSort",
+    "titlesort": "titleSort",
+    "original_title": "originalTitle",
+    "originaltitle": "originalTitle",
+    "track_artist": "originalTitle",
+    "artist": "originalTitle",
+    "album_artist": "artist.title",
+    "album": "album.title",
+    "summary": "summary",
+    "bio": "summary",
+    "description": "summary",
+    "tagline": "tagline",
+    "year": "year",
+    "release_date": "originallyAvailableAt",
+    "originally_available_at": "originallyAvailableAt",
+    "originallyavailableat": "originallyAvailableAt",
+    "studio": "studio",
+    "record_label": "studio",
+    "track_number": "index",
+    "index": "index",
+    "disc_number": "parentIndex",
+    "parent_index": "parentIndex",
+    "parentindex": "parentIndex",
+    "content_rating": "contentRating",
+    "contentrating": "contentRating",
+    "user_rating": "userRating",
+    "userrating": "userRating",
+    "rating": "userRating",
+    "genre": "genre",
+    "genres": "genre",
+    "style": "style",
+    "styles": "style",
+    "mood": "mood",
+    "moods": "mood",
+    "collection": "collection",
+    "collections": "collection",
+    "label": "label",
+    "labels": "label",
+    "country": "country",
+    "countries": "country",
+    "similar": "similar",
+    "similar_artists": "similar",
+    "director": "director",
+    "directors": "director",
+    "writer": "writer",
+    "writers": "writer",
+    "producer": "producer",
+    "producers": "producer",
+    "poster": "thumb",
+    "cover": "thumb",
+    "thumb": "thumb",
+    "art": "art",
+    "backdrop": "art",
+    "background_art": "art",
+}
+
+PLEX_AGENT_ALIASES: dict[str, str] = {
+    "plex_music": "tv.plex.agents.music",
+    "plex music": "tv.plex.agents.music",
+    "music": "tv.plex.agents.music",
+    "musicbrainz": "org.musicbrainz.agents.music",
+    "lastfm": "com.plexapp.agents.lastfm",
+    "last.fm": "com.plexapp.agents.lastfm",
+    "plex_movie": "tv.plex.agents.movie",
+    "plex movie": "tv.plex.agents.movie",
+    "movie": "tv.plex.agents.movie",
+    "plex_series": "tv.plex.agents.series",
+    "plex series": "tv.plex.agents.series",
+    "plex_tv": "tv.plex.agents.series",
+    "series": "tv.plex.agents.series",
+    "tv": "tv.plex.agents.series",
+    "imdb": "com.plexapp.agents.imdb",
+    "tmdb": "com.plexapp.agents.themoviedb",
+    "themoviedb": "com.plexapp.agents.themoviedb",
+    "tvdb": "com.plexapp.agents.thetvdb",
+    "thetvdb": "com.plexapp.agents.thetvdb",
+    "personal": "com.plexapp.agents.none",
+    "none": "com.plexapp.agents.none",
+    "local": "com.plexapp.agents.localmedia",
+}
+
 
 class PlexMusicMonitor:
     """Monitors a Plex Media Server for active music sessions, history, top rotation, and cover art."""
@@ -1838,9 +1950,1107 @@ class PlexMusicMonitor:
         url = f"{self.plex_url}/:/rate?{encoded}"
         try:
             async with session.put(url, headers=self._plex_headers()) as resp:
-                return resp.status in (200, 204)
+                if resp.status in (200, 204):
+                    self.invalidate_metadata_cache(clean_id)
+                    return True
+                return False
         except Exception:
             return False
+
+    def invalidate_metadata_cache(self, rating_key: str | None = None) -> None:
+        """Invalidate in-memory metadata, session, crate, stats, and artwork caches after edits."""
+        self._cached_payload = None
+        self._cached_at = 0.0
+        self._cached_crate = None
+        self._cached_crate_at = 0.0
+        self._cached_library_stats = None
+        self._cached_library_stats_at = 0.0
+        self._album_cache.clear()
+        self._artist_cache.clear()
+        self._cover_cache = None
+        self._cover_cache_map.clear()
+
+    async def _search_any_plex_library(
+        self,
+        query: str,
+        media_type: str = "all",
+        limit: int = 15,
+    ) -> list[dict[str, Any]]:
+        """Search across all Plex library sections (including movies, shows, episodes, and music)."""
+        clean_q = (query or "").strip()
+        if not clean_q or not self.is_configured:
+            return []
+
+        clean_type = (media_type or "all").lower().strip()
+        safe_limit = max(1, min(limit or 15, 50))
+        encoded_q = urllib.parse.quote(clean_q)
+
+        hubs_container = await self._fetch_plex_container(f"/hubs/search?query={encoded_q}&limit={safe_limit}")
+        hubs = hubs_container.get("Hub") or []
+        if isinstance(hubs, dict):
+            hubs = [hubs]
+
+        results: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for hub in hubs:
+            if not isinstance(hub, dict):
+                continue
+            hub_type = str(hub.get("type", "")).lower()
+            if clean_type != "all" and hub_type != clean_type:
+                continue
+            hub_meta = hub.get("Metadata") or []
+            if isinstance(hub_meta, dict):
+                hub_meta = [hub_meta]
+            for item in hub_meta:
+                if not isinstance(item, dict):
+                    continue
+                k = str(item.get("ratingKey") or item.get("key") or "")
+                if not k or k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                item_type = str(item.get("type") or hub_type or "track").lower()
+                results.append({
+                    "rating_key": k,
+                    "media_type": item_type,
+                    "title": str(item.get("title") or "").strip(),
+                    "artist": str(
+                        item.get("originalTitle")
+                        or item.get("grandparentTitle")
+                        or item.get("parentTitle")
+                        or ""
+                    ).strip(),
+                    "album": str(item.get("parentTitle") or "").strip(),
+                    "section_id": str(item.get("librarySectionID") or item.get("sectionID") or "").strip(),
+                    "raw": item,
+                })
+        return results[:safe_limit]
+
+    async def _resolve_metadata_item(
+        self,
+        query_or_id: str = "",
+        media_type: str = "all",
+        artist_filter: str = "",
+        album_filter: str = "",
+    ) -> dict[str, Any] | None:
+        """
+        Resolve a target Plex item by ratingKey, search query, or currently playing status.
+        Returns a normalized raw Plex item dict containing at least 'ratingKey' and 'type'.
+        """
+        if not self.is_configured:
+            return None
+
+        clean_q = self._normalize_key(query_or_id)
+        clean_type = str(media_type or "all").strip().lower()
+        if clean_type not in PLEX_MEDIA_TYPE_IDS and clean_type != "all":
+            clean_type = "all"
+
+        target_key = ""
+        resolved_hint: dict[str, Any] | None = None
+
+        if not clean_q or clean_q.lower() in ("now_playing", "now playing", "current", "playing"):
+            now = await self.get_now_playing()
+            track = now.get("track")
+            if not track:
+                return None
+
+            if clean_type == "album":
+                parent_key = self._normalize_key(track.get("parent_rating_key", ""))
+                if parent_key and parent_key.isdigit():
+                    target_key = parent_key
+                    resolved_hint = {
+                        "ratingKey": target_key,
+                        "type": "album",
+                        "title": str(track.get("album") or ""),
+                        "parentTitle": str(track.get("artist") or ""),
+                    }
+                elif track.get("album"):
+                    clean_q = str(track["album"])
+                    if not artist_filter and track.get("artist"):
+                        artist_filter = str(track["artist"])
+                elif track.get("rating_key"):
+                    target_key = self._normalize_key(track["rating_key"])
+                    resolved_hint = {
+                        "ratingKey": target_key,
+                        "type": "track",
+                        "title": str(track.get("title") or ""),
+                    }
+            elif clean_type == "artist":
+                gp_key = self._normalize_key(
+                    track.get("grandparent_rating_key") or track.get("artist_rating_key") or ""
+                )
+                if gp_key and gp_key.isdigit():
+                    target_key = gp_key
+                    resolved_hint = {
+                        "ratingKey": target_key,
+                        "type": "artist",
+                        "title": str(track.get("artist") or ""),
+                    }
+                elif track.get("artist"):
+                    clean_q = str(track["artist"])
+                elif track.get("rating_key"):
+                    target_key = self._normalize_key(track["rating_key"])
+                    resolved_hint = {
+                        "ratingKey": target_key,
+                        "type": "track",
+                        "title": str(track.get("title") or ""),
+                    }
+            else:
+                rk = self._normalize_key(track.get("rating_key", ""))
+                if not rk:
+                    return None
+                target_key = rk
+                resolved_hint = {
+                    "ratingKey": target_key,
+                    "type": "track",
+                    "title": str(track.get("title") or ""),
+                    "originalTitle": str(track.get("artist") or ""),
+                    "parentTitle": str(track.get("album") or ""),
+                }
+
+        if not target_key:
+            if clean_q.isdigit():
+                target_key = clean_q
+            elif clean_type == "playlist":
+                playlists = await self.get_playlists()
+                q_lower = clean_q.lower()
+                matched_pl = None
+                for p in playlists:
+                    p_title = str(p.get("title") or "").strip()
+                    if p_title.lower() == q_lower:
+                        matched_pl = p
+                        break
+                    if matched_pl is None and q_lower in p_title.lower():
+                        matched_pl = p
+                if not matched_pl or not matched_pl.get("rating_key"):
+                    return None
+                target_key = self._normalize_key(matched_pl["rating_key"])
+                resolved_hint = {
+                    "ratingKey": target_key,
+                    "type": "playlist",
+                    "title": str(matched_pl.get("title") or ""),
+                    "summary": str(matched_pl.get("summary") or ""),
+                }
+            else:
+                candidates: list[dict[str, Any]] = []
+                if clean_type in ("all", "track", "album", "artist"):
+                    candidates = await self.search_library(
+                        clean_q,
+                        media_type=clean_type,
+                        limit=15,
+                    )
+                if not candidates:
+                    candidates = await self._search_any_plex_library(
+                        clean_q,
+                        media_type=clean_type,
+                        limit=15,
+                    )
+                if not candidates:
+                    return None
+
+                q_lower = clean_q.lower()
+                art_lower = (artist_filter or "").strip().lower()
+                alb_lower = (album_filter or "").strip().lower()
+
+                def _score_candidate(c: dict[str, Any]) -> tuple[int, int, int, int]:
+                    c_title = str(c.get("title") or c.get("name") or "").strip().lower()
+                    c_artist = str(c.get("artist") or c.get("album_artist") or "").strip().lower()
+                    c_album = str(c.get("album") or "").strip().lower()
+                    c_type = str(c.get("media_type") or "").strip().lower()
+
+                    type_match = 1 if (clean_type == "all" or c_type == clean_type) else 0
+                    art_match = (
+                        2 if (art_lower and c_artist == art_lower)
+                        else (1 if (art_lower and art_lower in c_artist) else 0)
+                    )
+                    alb_match = (
+                        2 if (alb_lower and c_album == alb_lower)
+                        else (1 if (alb_lower and alb_lower in c_album) else 0)
+                    )
+                    title_match = 2 if c_title == q_lower else (1 if q_lower in c_title else 0)
+                    return (type_match, art_match, alb_match, title_match)
+
+                best = max(candidates, key=_score_candidate)
+                rk = self._normalize_key(best.get("rating_key", ""))
+                if not rk:
+                    return None
+                target_key = rk
+                raw_from_candidate = best.get("raw") if isinstance(best.get("raw"), dict) else {}
+                resolved_hint = {
+                    **raw_from_candidate,
+                    "ratingKey": target_key,
+                    "type": str(best.get("media_type") or (clean_type if clean_type != "all" else "track")),
+                    "title": str(best.get("title") or best.get("name") or ""),
+                }
+                if best.get("section_id"):
+                    resolved_hint["librarySectionID"] = str(best["section_id"])
+
+        if not target_key:
+            return None
+
+        if clean_type == "playlist":
+            try:
+                pl_items = await self._fetch_plex_items(f"/playlists/{target_key}")
+                if pl_items and isinstance(pl_items[0], dict):
+                    item_raw = dict(pl_items[0])
+                    item_raw["ratingKey"] = str(item_raw.get("ratingKey") or target_key)
+                    item_raw["type"] = "playlist"
+                    return item_raw
+            except Exception:
+                pass
+            return resolved_hint or {"ratingKey": target_key, "type": "playlist", "title": ""}
+
+        try:
+            fetched = await self._fetch_plex_items(f"/library/metadata/{target_key}")
+        except Exception:
+            fetched = []
+
+        if fetched and isinstance(fetched[0], dict):
+            item_raw = dict(fetched[0])
+            actual_type = str(item_raw.get("type") or "").strip().lower()
+
+            # Follow hierarchy if caller asked for album/artist but provided a child track/album key
+            if clean_type == "album" and actual_type == "track":
+                parent_key = self._normalize_key(item_raw.get("parentRatingKey", ""))
+                if parent_key and parent_key.isdigit() and parent_key != target_key:
+                    parent_fetched = await self._fetch_plex_items(f"/library/metadata/{parent_key}")
+                    if parent_fetched and isinstance(parent_fetched[0], dict):
+                        item_raw = dict(parent_fetched[0])
+                        target_key = parent_key
+                        actual_type = str(item_raw.get("type") or "album").strip().lower()
+            elif clean_type == "artist" and actual_type in ("track", "album"):
+                anc_key = self._normalize_key(
+                    item_raw.get("grandparentRatingKey")
+                    if actual_type == "track"
+                    else item_raw.get("parentRatingKey")
+                )
+                if anc_key and anc_key.isdigit() and anc_key != target_key:
+                    anc_fetched = await self._fetch_plex_items(f"/library/metadata/{anc_key}")
+                    if anc_fetched and isinstance(anc_fetched[0], dict):
+                        item_raw = dict(anc_fetched[0])
+                        target_key = anc_key
+                        actual_type = str(item_raw.get("type") or "artist").strip().lower()
+
+            item_raw["ratingKey"] = str(item_raw.get("ratingKey") or target_key)
+            if not actual_type:
+                item_raw["type"] = (
+                    resolved_hint.get("type")
+                    if resolved_hint and resolved_hint.get("type")
+                    else (clean_type if clean_type != "all" else "track")
+                )
+            return item_raw
+
+        if resolved_hint:
+            return resolved_hint
+        if target_key.isdigit():
+            return {
+                "ratingKey": target_key,
+                "type": clean_type if clean_type != "all" else "track",
+                "title": "",
+            }
+        return None
+
+    async def update_item_artwork(
+        self,
+        rating_key: str,
+        *,
+        image_url: str | None = None,
+        image_bytes: bytes | None = None,
+        content_type: str = "image/jpeg",
+        artwork_type: str = "poster",
+    ) -> bool:
+        """
+        Update an item's poster/cover art ('poster'/'thumb') or background art ('art'/'backdrop')
+        on Plex Media Server from either a remote URL or raw image bytes.
+        """
+        clean_id = self._normalize_key(rating_key)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+
+        endpoint_kind = (
+            "arts"
+            if str(artwork_type or "poster").strip().lower() in ("art", "arts", "backdrop", "background")
+            else "posters"
+        )
+        session = await self._get_http_session()
+
+        if image_url:
+            clean_url = image_url.strip()
+            parsed = urllib.parse.urlparse(clean_url)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                return False
+            encoded = urllib.parse.urlencode({"url": clean_url})
+            url = f"{self.plex_url}/library/metadata/{clean_id}/{endpoint_kind}?{encoded}"
+            try:
+                async with session.post(url, headers=self._plex_headers()) as resp:
+                    if resp.status in (200, 201, 204):
+                        self.invalidate_metadata_cache(clean_id)
+                        return True
+            except Exception:
+                return False
+            return False
+
+        if image_bytes:
+            url = f"{self.plex_url}/library/metadata/{clean_id}/{endpoint_kind}"
+            headers = {
+                **self._plex_headers(),
+                "Content-Type": (content_type or "application/octet-stream").strip(),
+            }
+            try:
+                async with session.post(url, data=image_bytes, headers=headers) as resp:
+                    if resp.status in (200, 201, 204):
+                        self.invalidate_metadata_cache(clean_id)
+                        return True
+            except Exception:
+                return False
+            return False
+
+        return False
+
+    async def refresh_item_metadata(self, rating_key: str) -> bool:
+        """Trigger a metadata refresh on Plex Media Server for a specific ratingKey."""
+        clean_id = self._normalize_key(rating_key)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+
+        session = await self._get_http_session()
+        url = f"{self.plex_url}/library/metadata/{clean_id}/refresh"
+        try:
+            async with session.put(url, headers=self._plex_headers()) as resp:
+                if resp.status in (200, 201, 204):
+                    self.invalidate_metadata_cache(clean_id)
+                    return True
+                return False
+        except Exception:
+            return False
+
+    @staticmethod
+    def resolve_agent_identifier(agent: str | None) -> str:
+        """Resolve a shorthand agent alias (e.g. 'musicbrainz', 'tmdb', 'plex_music') or pass through raw agent ID."""
+        if not agent:
+            return ""
+        clean = str(agent).strip()
+        if not clean:
+            return ""
+        return PLEX_AGENT_ALIASES.get(clean.lower(), clean)
+
+    async def search_metadata_matches(
+        self,
+        rating_key_or_query: str = "",
+        media_type: str = "all",
+        *,
+        title: str | None = None,
+        year: int | None = None,
+        agent: str | None = None,
+        language: str | None = None,
+        manual: bool = True,
+        artist_filter: str = "",
+        album_filter: str = "",
+    ) -> dict[str, Any]:
+        """
+        Query Plex Media Server's Fix Match endpoint (/library/metadata/{id}/matches)
+        for potential metadata agent matches for a library item.
+        """
+        if not self.is_configured:
+            return {"success": False, "error": "Plex Media Server is not configured.", "matches": []}
+
+        item_raw = await self._resolve_metadata_item(
+            query_or_id=rating_key_or_query,
+            media_type=media_type,
+            artist_filter=artist_filter,
+            album_filter=album_filter,
+        )
+        if not item_raw or not item_raw.get("ratingKey"):
+            target_desc = rating_key_or_query or "currently playing item"
+            return {
+                "success": False,
+                "error": f"Could not find any Plex item matching '{target_desc}'.",
+                "matches": [],
+            }
+
+        target_key = self._normalize_key(item_raw["ratingKey"])
+        resolved_type = str(item_raw.get("type") or (media_type if media_type != "all" else "track")).strip().lower()
+        current_title = str(item_raw.get("title") or "").strip()
+
+        params: dict[str, str] = {"manual": "1" if manual else "0"}
+        if title is not None and str(title).strip():
+            params["title"] = str(title).strip()
+        if year is not None:
+            params["year"] = str(int(year))
+        resolved_agent = self.resolve_agent_identifier(agent)
+        if resolved_agent:
+            params["agent"] = resolved_agent
+        if language is not None and str(language).strip():
+            params["language"] = str(language).strip()
+
+        encoded = urllib.parse.urlencode(params)
+        container = await self._fetch_plex_container(f"/library/metadata/{target_key}/matches?{encoded}")
+
+        raw_results = (
+            container.get("SearchResult")
+            or container.get("Metadata")
+            or container.get("Directory")
+            or []
+        )
+        if isinstance(raw_results, dict):
+            raw_results = [raw_results]
+        elif not isinstance(raw_results, list):
+            raw_results = []
+
+        matches: list[dict[str, Any]] = []
+        for idx, m in enumerate(raw_results):
+            if not isinstance(m, dict):
+                continue
+            guid = str(m.get("guid") or "").strip()
+            name = str(m.get("name") or m.get("title") or "").strip()
+            if not guid and not name:
+                continue
+            m_year: int | None = None
+            if m.get("year") is not None:
+                try:
+                    m_year = int(m["year"])
+                except (ValueError, TypeError):
+                    m_year = None
+            m_score: int | None = None
+            if m.get("score") is not None:
+                try:
+                    m_score = int(m["score"])
+                except (ValueError, TypeError):
+                    m_score = None
+
+            matches.append({
+                "index": idx,
+                "guid": guid,
+                "name": name,
+                "year": m_year,
+                "score": m_score,
+                "summary": str(m.get("summary") or "").strip(),
+                "thumb": str(m.get("thumb") or "").strip(),
+            })
+
+        return {
+            "success": True,
+            "rating_key": target_key,
+            "media_type": resolved_type,
+            "title": current_title or f"Item #{target_key}",
+            "agent": resolved_agent or None,
+            "matches": matches,
+        }
+
+    async def apply_metadata_match(
+        self,
+        rating_key: str,
+        guid: str,
+        name: str = "",
+        year: int | None = None,
+    ) -> bool:
+        """
+        Bind/associate a Plex item with a metadata agent match GUID via
+        PUT /library/metadata/{rating_key}/match.
+        """
+        clean_id = self._normalize_key(rating_key)
+        clean_guid = (guid or "").strip()
+        if not clean_id or not clean_id.isdigit() or not clean_guid or not self.is_configured:
+            return False
+
+        params: dict[str, str] = {"guid": clean_guid}
+        if name and name.strip():
+            params["name"] = name.strip()
+        if year is not None:
+            params["year"] = str(int(year))
+
+        encoded = urllib.parse.urlencode(params)
+        session = await self._get_http_session()
+        url = f"{self.plex_url}/library/metadata/{clean_id}/match?{encoded}"
+        try:
+            async with session.put(url, headers=self._plex_headers()) as resp:
+                if resp.status in (200, 201, 204):
+                    self.invalidate_metadata_cache(clean_id)
+                    return True
+                return False
+        except Exception:
+            return False
+
+    async def unmatch_item_metadata(self, rating_key: str) -> bool:
+        """
+        Remove the metadata agent match from a Plex item via
+        PUT /library/metadata/{rating_key}/unmatch.
+        """
+        clean_id = self._normalize_key(rating_key)
+        if not clean_id or not clean_id.isdigit() or not self.is_configured:
+            return False
+
+        session = await self._get_http_session()
+        url = f"{self.plex_url}/library/metadata/{clean_id}/unmatch"
+        try:
+            async with session.put(url, headers=self._plex_headers()) as resp:
+                if resp.status in (200, 201, 204):
+                    self.invalidate_metadata_cache(clean_id)
+                    return True
+                return False
+        except Exception:
+            return False
+
+    async def fix_metadata_match(
+        self,
+        rating_key_or_query: str = "",
+        media_type: str = "all",
+        *,
+        guid: str | None = None,
+        name: str | None = None,
+        title: str | None = None,
+        year: int | None = None,
+        agent: str | None = None,
+        language: str | None = None,
+        match_index: int = 0,
+        unmatch: bool = False,
+        artist_filter: str = "",
+        album_filter: str = "",
+    ) -> dict[str, Any]:
+        """
+        Perform Plex 'Fix Match' / Agent Association on an item:
+        - If `unmatch=True`, strips the current agent match (`/unmatch`).
+        - If `guid` is provided, directly associates the item with that `guid` (and `name`/`year`).
+        - Otherwise, searches `/matches` using `title`, `year`, `agent`, `language`, picks the candidate
+          at `match_index` (default 0 = top match), and binds the item to that candidate.
+        """
+        if not self.is_configured:
+            return {"success": False, "error": "Plex Media Server is not configured."}
+
+        item_raw = await self._resolve_metadata_item(
+            query_or_id=rating_key_or_query,
+            media_type=media_type,
+            artist_filter=artist_filter,
+            album_filter=album_filter,
+        )
+        if not item_raw or not item_raw.get("ratingKey"):
+            target_desc = rating_key_or_query or "currently playing item"
+            return {
+                "success": False,
+                "error": f"Could not find any Plex item matching '{target_desc}'.",
+            }
+
+        target_key = self._normalize_key(item_raw["ratingKey"])
+        resolved_type = str(item_raw.get("type") or (media_type if media_type != "all" else "track")).strip().lower()
+        current_title = str(item_raw.get("title") or "").strip()
+
+        if unmatch:
+            ok = await self.unmatch_item_metadata(target_key)
+            if not ok:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to unmatch Plex item [#{target_key}].",
+                }
+            return {
+                "success": True,
+                "action": "unmatch",
+                "rating_key": target_key,
+                "media_type": resolved_type,
+                "title": current_title or f"Item #{target_key}",
+            }
+
+        chosen_guid = (guid or "").strip()
+        chosen_name = (name or "").strip()
+        chosen_year = year
+        chosen_score: int | None = None
+
+        if not chosen_guid:
+            search_res = await self.search_metadata_matches(
+                rating_key_or_query=target_key,
+                media_type=resolved_type,
+                title=title,
+                year=year,
+                agent=agent,
+                language=language,
+            )
+            candidates = search_res.get("matches") or []
+            if not candidates:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"No metadata agent matches found for '{title or current_title or target_key}'.",
+                }
+            idx = max(0, int(match_index or 0))
+            if idx >= len(candidates):
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Match index {idx} is out of range (found {len(candidates)} match candidate(s)).",
+                }
+            picked = candidates[idx]
+            chosen_guid = str(picked.get("guid") or "").strip()
+            if not chosen_name:
+                chosen_name = str(picked.get("name") or "").strip()
+            if chosen_year is None and picked.get("year") is not None:
+                chosen_year = picked["year"]
+            chosen_score = picked.get("score")
+
+        ok = await self.apply_metadata_match(
+            target_key,
+            guid=chosen_guid,
+            name=chosen_name,
+            year=chosen_year,
+        )
+        if not ok:
+            return {
+                "success": False,
+                "rating_key": target_key,
+                "media_type": resolved_type,
+                "error": f"Failed to apply metadata match ({chosen_guid}) to Plex item [#{target_key}].",
+            }
+
+        return {
+            "success": True,
+            "action": "match",
+            "rating_key": target_key,
+            "media_type": resolved_type,
+            "title": chosen_name or current_title or f"Item #{target_key}",
+            "previous_title": current_title,
+            "matched_guid": chosen_guid,
+            "matched_name": chosen_name,
+            "matched_year": chosen_year,
+            "matched_score": chosen_score,
+            "agent": self.resolve_agent_identifier(agent) or None,
+        }
+
+    async def update_metadata(
+        self,
+        rating_key_or_query: str = "",
+        media_type: str = "all",
+        *,
+        artist_filter: str = "",
+        album_filter: str = "",
+        title: str | None = None,
+        sort_title: str | None = None,
+        original_title: str | None = None,
+        artist: str | None = None,
+        album_artist: str | None = None,
+        album: str | None = None,
+        summary: str | None = None,
+        tagline: str | None = None,
+        year: int | None = None,
+        originally_available_at: str | None = None,
+        studio: str | None = None,
+        track_number: int | None = None,
+        disc_number: int | None = None,
+        content_rating: str | None = None,
+        user_rating: float | None = None,
+        genres: list[str] | None = None,
+        remove_genres: list[str] | None = None,
+        styles: list[str] | None = None,
+        remove_styles: list[str] | None = None,
+        moods: list[str] | None = None,
+        remove_moods: list[str] | None = None,
+        collections: list[str] | None = None,
+        remove_collections: list[str] | None = None,
+        labels: list[str] | None = None,
+        remove_labels: list[str] | None = None,
+        countries: list[str] | None = None,
+        remove_countries: list[str] | None = None,
+        similar_artists: list[str] | None = None,
+        remove_similar_artists: list[str] | None = None,
+        directors: list[str] | None = None,
+        remove_directors: list[str] | None = None,
+        writers: list[str] | None = None,
+        remove_writers: list[str] | None = None,
+        producers: list[str] | None = None,
+        remove_producers: list[str] | None = None,
+        replace_tags: bool = False,
+        poster_url: str | None = None,
+        poster_bytes: bytes | None = None,
+        poster_content_type: str = "image/jpeg",
+        background_art_url: str | None = None,
+        background_art_bytes: bytes | None = None,
+        background_art_content_type: str = "image/jpeg",
+        lock_fields: bool = True,
+        unlock_fields: list[str] | None = None,
+        refresh_metadata: bool = False,
+        match_guid: str | None = None,
+        match_name: str | None = None,
+        match_year: int | None = None,
+        match_agent: str | None = None,
+        match_language: str | None = None,
+        auto_match: bool = False,
+        unmatch: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Modify metadata fields, tags, ratings, field locks, and artwork for content
+        (tracks, albums, artists, playlists, movies, shows, episodes) on Plex Media Server.
+        """
+        if not self.is_configured:
+            return {"success": False, "error": "Plex Media Server is not configured."}
+
+        item_raw = await self._resolve_metadata_item(
+            query_or_id=rating_key_or_query,
+            media_type=media_type,
+            artist_filter=artist_filter,
+            album_filter=album_filter,
+        )
+        if not item_raw or not item_raw.get("ratingKey"):
+            target_desc = rating_key_or_query or "currently playing item"
+            return {
+                "success": False,
+                "error": f"Could not find any Plex item matching '{target_desc}'.",
+            }
+
+        target_key = self._normalize_key(item_raw["ratingKey"])
+        resolved_type = str(item_raw.get("type") or (media_type if media_type != "all" else "track")).strip().lower()
+        if resolved_type not in PLEX_MEDIA_TYPE_IDS:
+            resolved_type = "track"
+
+        current_title = str(item_raw.get("title") or "").strip()
+        lock_flag = "1" if lock_fields else "0"
+
+        params: dict[str, str] = {}
+        updated_fields: list[str] = []
+
+        def _set_scalar(plex_field: str, val: Any, label: str) -> None:
+            params[f"{plex_field}.value"] = str(val)
+            params[f"{plex_field}.locked"] = lock_flag
+            if label not in updated_fields:
+                updated_fields.append(label)
+
+        # 1. Handle playlist edits separately if the target is a playlist
+        if resolved_type == "playlist":
+            pl_params: dict[str, str] = {}
+            if title is not None:
+                pl_params["title"] = str(title).strip()
+                updated_fields.append("title")
+            if summary is not None:
+                pl_params["summary"] = str(summary).strip()
+                updated_fields.append("summary")
+
+            if pl_params:
+                session = await self._get_http_session()
+                encoded_pl = urllib.parse.urlencode(pl_params)
+                pl_url = f"{self.plex_url}/playlists/{target_key}?{encoded_pl}"
+                try:
+                    async with session.put(pl_url, headers=self._plex_headers()) as resp:
+                        if resp.status not in (200, 201, 204):
+                            return {
+                                "success": False,
+                                "rating_key": target_key,
+                                "media_type": resolved_type,
+                                "error": f"Plex returned HTTP {resp.status} while updating playlist [#{target_key}].",
+                            }
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "rating_key": target_key,
+                        "media_type": resolved_type,
+                        "error": f"Failed to update playlist [#{target_key}]: {exc}",
+                    }
+        else:
+            # 2. Scalar fields for library items
+            effective_title = title
+            if effective_title is None and resolved_type == "artist" and (artist is not None or album_artist is not None):
+                effective_title = artist if artist is not None else album_artist
+            elif effective_title is None and resolved_type == "album" and album is not None:
+                effective_title = album
+
+            if effective_title is not None:
+                _set_scalar("title", str(effective_title).strip(), "title")
+
+            if sort_title is not None:
+                _set_scalar("titleSort", str(sort_title).strip(), "sort_title")
+
+            if original_title is not None:
+                _set_scalar("originalTitle", str(original_title).strip(), "original_title")
+            elif artist is not None and resolved_type != "artist":
+                if resolved_type == "album":
+                    _set_scalar("artist.title", str(artist).strip(), "artist")
+                else:
+                    _set_scalar("originalTitle", str(artist).strip(), "artist")
+
+            if album_artist is not None and resolved_type != "artist":
+                _set_scalar("artist.title", str(album_artist).strip(), "album_artist")
+
+            if album is not None and resolved_type == "track":
+                _set_scalar("album.title", str(album).strip(), "album")
+
+            if summary is not None:
+                _set_scalar("summary", str(summary).strip(), "summary")
+
+            if tagline is not None:
+                _set_scalar("tagline", str(tagline).strip(), "tagline")
+
+            if originally_available_at is not None:
+                clean_date = str(originally_available_at).strip()
+                _set_scalar("originallyAvailableAt", clean_date, "release_date")
+                if year is None and len(clean_date) >= 4 and clean_date[:4].isdigit():
+                    _set_scalar("year", int(clean_date[:4]), "year")
+
+            if year is not None:
+                _set_scalar("year", int(year), "year")
+
+            if studio is not None:
+                _set_scalar("studio", str(studio).strip(), "studio")
+
+            if track_number is not None:
+                _set_scalar("index", int(track_number), "track_number")
+
+            if disc_number is not None:
+                _set_scalar("parentIndex", int(disc_number), "disc_number")
+
+            if content_rating is not None:
+                _set_scalar("contentRating", str(content_rating).strip(), "content_rating")
+
+            # 3. Tag / multi-value array fields
+            tag_inputs: list[tuple[str, list[str] | None, list[str] | None]] = [
+                ("genres", genres, remove_genres),
+                ("styles", styles, remove_styles),
+                ("moods", moods, remove_moods),
+                ("collections", collections, remove_collections),
+                ("labels", labels, remove_labels),
+                ("countries", countries, remove_countries),
+                ("similar_artists", similar_artists, remove_similar_artists),
+                ("directors", directors, remove_directors),
+                ("writers", writers, remove_writers),
+                ("producers", producers, remove_producers),
+            ]
+
+            for prop_name, add_list, rem_list in tag_inputs:
+                if add_list is None and not rem_list:
+                    continue
+                plex_tag, json_key = PLEX_TAG_CONFIG[prop_name]
+                clean_add = [str(x).strip() for x in (add_list or []) if str(x).strip()]
+                clean_rem = [str(x).strip() for x in (rem_list or []) if str(x).strip()]
+
+                if replace_tags and add_list is not None:
+                    existing_raw = item_raw.get(json_key) or []
+                    existing_tags: list[str] = []
+                    if isinstance(existing_raw, list):
+                        for entry in existing_raw:
+                            if isinstance(entry, dict) and entry.get("tag"):
+                                existing_tags.append(str(entry["tag"]).strip())
+                            elif isinstance(entry, str) and entry.strip():
+                                existing_tags.append(entry.strip())
+                    add_lower = {t.lower() for t in clean_add}
+                    for old_tag in existing_tags:
+                        if old_tag.lower() not in add_lower and old_tag not in clean_rem:
+                            clean_rem.append(old_tag)
+
+                for idx, val in enumerate(clean_add):
+                    params[f"{plex_tag}[{idx}].tag.tag"] = val
+
+                if clean_rem:
+                    params[f"{plex_tag}[].tag.tag-"] = ",".join(clean_rem)
+
+                if clean_add or clean_rem or (replace_tags and add_list is not None):
+                    params[f"{plex_tag}.locked"] = lock_flag
+                    if prop_name not in updated_fields:
+                        updated_fields.append(prop_name)
+
+            # 4. Explicit field unlocking
+            if unlock_fields:
+                for raw_f in unlock_fields:
+                    clean_f = str(raw_f or "").strip().lower()
+                    if not clean_f:
+                        continue
+                    plex_f = PLEX_FIELD_LOCK_ALIASES.get(clean_f, str(raw_f).strip())
+                    params[f"{plex_f}.locked"] = "0"
+                if "unlocked_fields" not in updated_fields:
+                    updated_fields.append("unlocked_fields")
+
+            # Execute PUT to Plex if we have field/tag/lock updates
+            if params:
+                type_id = PLEX_MEDIA_TYPE_IDS.get(resolved_type, 10)
+                section_id = str(
+                    item_raw.get("librarySectionID")
+                    or item_raw.get("sectionID")
+                    or ""
+                ).strip()
+                if not section_id and resolved_type in ("track", "album", "artist"):
+                    sec = await self.get_music_section_id()
+                    if sec:
+                        section_id = str(sec)
+
+                session = await self._get_http_session()
+                put_ok = False
+                last_status = 0
+
+                if section_id:
+                    sec_params = {
+                        "type": str(type_id),
+                        "id": target_key,
+                        "includeExternalMedia": "1",
+                        **params,
+                    }
+                    encoded_sec = urllib.parse.urlencode(sec_params)
+                    sec_url = f"{self.plex_url}/library/sections/{section_id}/all?{encoded_sec}"
+                    try:
+                        async with session.put(sec_url, headers=self._plex_headers()) as resp:
+                            last_status = resp.status
+                            if resp.status in (200, 201, 204):
+                                put_ok = True
+                    except Exception:
+                        pass
+
+                if not put_ok:
+                    meta_params = {
+                        "type": str(type_id),
+                        "id": target_key,
+                        **params,
+                    }
+                    encoded_meta = urllib.parse.urlencode(meta_params)
+                    meta_url = f"{self.plex_url}/library/metadata/{target_key}?{encoded_meta}"
+                    try:
+                        async with session.put(meta_url, headers=self._plex_headers()) as resp:
+                            last_status = resp.status
+                            if resp.status in (200, 201, 204):
+                                put_ok = True
+                    except Exception as exc:
+                        return {
+                            "success": False,
+                            "rating_key": target_key,
+                            "media_type": resolved_type,
+                            "error": f"Failed to update metadata on Plex item [#{target_key}]: {exc}",
+                        }
+
+                if not put_ok:
+                    return {
+                        "success": False,
+                        "rating_key": target_key,
+                        "media_type": resolved_type,
+                        "error": f"Plex returned HTTP {last_status} when updating metadata for [#{target_key}].",
+                    }
+
+        # 5. User rating update
+        if user_rating is not None:
+            rated = await self.rate_item(target_key, float(user_rating))
+            if not rated:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to update user rating for Plex item [#{target_key}].",
+                }
+            if "user_rating" not in updated_fields:
+                updated_fields.append("user_rating")
+
+        # 6. Poster / Cover Art update
+        if poster_url or poster_bytes:
+            poster_ok = await self.update_item_artwork(
+                target_key,
+                image_url=poster_url,
+                image_bytes=poster_bytes,
+                content_type=poster_content_type,
+                artwork_type="poster",
+            )
+            if not poster_ok:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to update poster/cover artwork for Plex item [#{target_key}].",
+                }
+            if "poster" not in updated_fields:
+                updated_fields.append("poster")
+
+        # 7. Background Art / Backdrop update
+        if background_art_url or background_art_bytes:
+            art_ok = await self.update_item_artwork(
+                target_key,
+                image_url=background_art_url,
+                image_bytes=background_art_bytes,
+                content_type=background_art_content_type,
+                artwork_type="art",
+            )
+            if not art_ok:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to update background artwork for Plex item [#{target_key}].",
+                }
+            if "background_art" not in updated_fields:
+                updated_fields.append("background_art")
+
+        # 8. Optional Fix Match / Agent Association or Unmatch
+        matched_info: dict[str, Any] = {}
+        if unmatch:
+            unmatch_ok = await self.unmatch_item_metadata(target_key)
+            if not unmatch_ok:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to unmatch Plex item [#{target_key}].",
+                }
+            if "unmatch" not in updated_fields:
+                updated_fields.append("unmatch")
+        elif match_guid or auto_match or match_agent:
+            fix_res = await self.fix_metadata_match(
+                rating_key_or_query=target_key,
+                media_type=resolved_type,
+                guid=match_guid,
+                name=match_name,
+                title=match_name or title or current_title,
+                year=match_year if match_year is not None else year,
+                agent=match_agent,
+                language=match_language,
+            )
+            if not fix_res.get("success"):
+                return fix_res
+            matched_info = {
+                "matched_guid": fix_res.get("matched_guid"),
+                "matched_name": fix_res.get("matched_name"),
+                "matched_year": fix_res.get("matched_year"),
+            }
+            if "agent_match" not in updated_fields:
+                updated_fields.append("agent_match")
+
+        # 9. Optional metadata refresh
+        if refresh_metadata:
+            ref_ok = await self.refresh_item_metadata(target_key)
+            if not ref_ok:
+                return {
+                    "success": False,
+                    "rating_key": target_key,
+                    "media_type": resolved_type,
+                    "error": f"Failed to trigger metadata refresh for Plex item [#{target_key}].",
+                }
+            if "refresh_metadata" not in updated_fields:
+                updated_fields.append("refresh_metadata")
+
+        if not updated_fields:
+            return {
+                "success": False,
+                "rating_key": target_key,
+                "media_type": resolved_type,
+                "error": "No metadata fields, tags, artwork, or actions were specified to update.",
+            }
+
+        self.invalidate_metadata_cache(target_key)
+        final_title = (
+            str(title).strip()
+            if title is not None
+            else (
+                str(artist).strip()
+                if (resolved_type == "artist" and artist is not None)
+                else (
+                    str(album).strip()
+                    if (resolved_type == "album" and album is not None)
+                    else (matched_info.get("matched_name") or current_title)
+                )
+            )
+        )
+
+        result_payload: dict[str, Any] = {
+            "success": True,
+            "rating_key": target_key,
+            "media_type": resolved_type,
+            "title": final_title or current_title or f"Item #{target_key}",
+            "previous_title": current_title,
+            "updated_fields": updated_fields,
+        }
+        if matched_info:
+            result_payload.update(matched_info)
+        return result_payload
 
     async def check_in_library(self, title: str, artist: str = "", kind: str = "song") -> dict[str, Any]:
         """Check if a track or album exists in the local Plex library."""

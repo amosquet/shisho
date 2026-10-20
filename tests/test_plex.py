@@ -1553,6 +1553,430 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
 
         await monitor.close()
 
+    async def test_update_metadata_fields_tags_artwork_and_refresh(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.put = MagicMock(return_value=FakeResponse(status=200))
+        fake_session.post = MagicMock(return_value=FakeResponse(status=200))
+        monitor._session = fake_session
+
+        # Seed caches to verify invalidation
+        monitor._album_cache["200"] = (9999999999.0, {"title": "Old Album"})
+        monitor._artist_cache["300"] = (9999999999.0, {"name": "Old Artist"})
+
+        async def fake_fetch_items(path):
+            if path == "/library/metadata/101":
+                return [{
+                    "ratingKey": "101",
+                    "type": "track",
+                    "title": "Plastic Love",
+                    "parentRatingKey": "200",
+                    "grandparentRatingKey": "300",
+                    "librarySectionID": "3",
+                    "Genre": [{"tag": "Pop"}, {"tag": "Disco"}],
+                }]
+            if path == "/library/metadata/200":
+                return [{
+                    "ratingKey": "200",
+                    "type": "album",
+                    "title": "VARIETY",
+                    "parentRatingKey": "300",
+                    "librarySectionID": "3",
+                    "Genre": [{"tag": "Pop"}, {"tag": "City Pop"}],
+                    "Style": [{"tag": "80s"}],
+                }]
+            if path == "/library/metadata/300":
+                return [{
+                    "ratingKey": "300",
+                    "type": "artist",
+                    "title": "Mariya Takeuchi",
+                    "librarySectionID": "3",
+                }]
+            return []
+
+        monitor._fetch_plex_items = fake_fetch_items
+
+        # 1. Update scalar fields + add/remove tags on a track
+        res_track = await monitor.update_metadata(
+            "#101",
+            media_type="track",
+            title="Plastic Love (12\" Extended Club Mix)",
+            artist="Mariya Takeuchi",
+            track_number=7,
+            disc_number=1,
+            genres=["City Pop", "Funk"],
+            remove_genres=["Pop"],
+            moods=["Upbeat"],
+            unlock_fields=["summary"],
+        )
+        self.assertTrue(res_track["success"])
+        self.assertEqual(res_track["rating_key"], "101")
+        self.assertEqual(res_track["media_type"], "track")
+        self.assertEqual(res_track["title"], "Plastic Love (12\" Extended Club Mix)")
+        self.assertEqual(res_track["previous_title"], "Plastic Love")
+        self.assertIn("title", res_track["updated_fields"])
+        self.assertIn("genres", res_track["updated_fields"])
+        self.assertIn("moods", res_track["updated_fields"])
+        self.assertIn("unlocked_fields", res_track["updated_fields"])
+
+        put_url = fake_session.put.call_args[0][0]
+        self.assertIn("/library/sections/3/all?", put_url)
+        self.assertIn("type=10", put_url)
+        self.assertIn("id=101", put_url)
+        self.assertIn("title.value=Plastic+Love+%2812%22+Extended+Club+Mix%29", put_url)
+        self.assertIn("originalTitle.value=Mariya+Takeuchi", put_url)
+        self.assertIn("index.value=7", put_url)
+        self.assertIn("parentIndex.value=1", put_url)
+        self.assertIn("genre%5B0%5D.tag.tag=City+Pop", put_url)
+        self.assertIn("genre%5B1%5D.tag.tag=Funk", put_url)
+        self.assertIn("genre%5B%5D.tag.tag-=Pop", put_url)
+        self.assertIn("summary.locked=0", put_url)
+
+        # Verify caches were invalidated
+        self.assertEqual(len(monitor._album_cache), 0)
+        self.assertEqual(len(monitor._artist_cache), 0)
+
+        # 2. Replace tags on an album (resolving parent album from track key #101 when media_type='album')
+        fake_session.put.reset_mock()
+        res_album = await monitor.update_metadata(
+            "#101",
+            media_type="album",
+            studio="Moon Records",
+            originally_available_at="1984-04-25",
+            genres=["City Pop", "Boogie"],
+            replace_tags=True,
+            poster_url="https://example.com/variety.jpg",
+            refresh_metadata=True,
+        )
+        self.assertTrue(res_album["success"])
+        self.assertEqual(res_album["rating_key"], "200")
+        self.assertEqual(res_album["media_type"], "album")
+        self.assertIn("studio", res_album["updated_fields"])
+        self.assertIn("release_date", res_album["updated_fields"])
+        self.assertIn("year", res_album["updated_fields"])
+        self.assertIn("genres", res_album["updated_fields"])
+        self.assertIn("poster", res_album["updated_fields"])
+        self.assertIn("refresh_metadata", res_album["updated_fields"])
+
+        # First PUT is the metadata edit, second PUT is the refresh
+        self.assertEqual(fake_session.put.call_count, 2)
+        album_put_url = fake_session.put.call_args_list[0][0][0]
+        self.assertIn("type=9", album_put_url)
+        self.assertIn("id=200", album_put_url)
+        self.assertIn("studio.value=Moon+Records", album_put_url)
+        self.assertIn("originallyAvailableAt.value=1984-04-25", album_put_url)
+        self.assertIn("year.value=1984", album_put_url)
+        # 'Pop' was in existing Genre list on #200 but not in ['City Pop', 'Boogie'], so it must be removed
+        self.assertIn("genre%5B%5D.tag.tag-=Pop", album_put_url)
+
+        refresh_put_url = fake_session.put.call_args_list[1][0][0]
+        self.assertIn("/library/metadata/200/refresh", refresh_put_url)
+
+        poster_post_url = fake_session.post.call_args[0][0]
+        self.assertIn("/library/metadata/200/posters?url=https%3A%2F%2Fexample.com%2Fvariety.jpg", poster_post_url)
+
+        # 3. Resolve artist from currently playing track when query_or_id is omitted and media_type='artist'
+        monitor.get_now_playing = AsyncMock(return_value={
+            "configured": True,
+            "is_playing": True,
+            "state": "playing",
+            "track": {
+                "rating_key": "101",
+                "parent_rating_key": "200",
+                "grandparent_rating_key": "300",
+                "title": "Plastic Love",
+                "artist": "Mariya Takeuchi",
+                "album": "VARIETY",
+            },
+        })
+        fake_session.put.reset_mock()
+        res_artist = await monitor.update_metadata(
+            "",
+            media_type="artist",
+            summary="Japanese singer-songwriter and pioneer of City Pop.",
+            countries=["Japan"],
+        )
+        self.assertTrue(res_artist["success"])
+        self.assertEqual(res_artist["rating_key"], "300")
+        self.assertEqual(res_artist["media_type"], "artist")
+        artist_put_url = fake_session.put.call_args[0][0]
+        self.assertIn("type=8", artist_put_url)
+        self.assertIn("id=300", artist_put_url)
+        self.assertIn("country%5B0%5D.tag.tag=Japan", artist_put_url)
+
+        # 4. Update non-music item (e.g. movie) resolved via global hub search
+        monitor.search_library = AsyncMock(return_value=[])
+        monitor._fetch_plex_container = AsyncMock(return_value={
+            "Hub": [{
+                "type": "movie",
+                "Metadata": [{
+                    "ratingKey": "777",
+                    "type": "movie",
+                    "title": "Inception",
+                    "librarySectionID": "1",
+                }],
+            }]
+        })
+        fake_session.put.reset_mock()
+        res_movie = await monitor.update_metadata(
+            "Inception",
+            media_type="movie",
+            tagline="Your mind is the scene of the crime.",
+            collections=["Sci-Fi", "Christopher Nolan"],
+            directors=["Christopher Nolan"],
+        )
+        self.assertTrue(res_movie["success"])
+        self.assertEqual(res_movie["rating_key"], "777")
+        self.assertEqual(res_movie["media_type"], "movie")
+        movie_put_url = fake_session.put.call_args[0][0]
+        self.assertIn("/library/sections/1/all?", movie_put_url)
+        self.assertIn("type=1", movie_put_url)
+        self.assertIn("id=777", movie_put_url)
+        self.assertIn("collection%5B0%5D.tag.tag=Sci-Fi", movie_put_url)
+        self.assertIn("director%5B0%5D.tag.tag=Christopher+Nolan", movie_put_url)
+
+        await monitor.close()
+
+    async def test_handle_update_plex_metadata_tool_and_api_endpoint(self):
+        from tools.plex import handle_update_plex_metadata, handle_manage_plex_playlist
+        from tools.registry import execute_tool
+
+        mock_bot = MagicMock()
+        mock_bot.owner_id = 123456789
+
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.put = MagicMock(return_value=FakeResponse(status=200))
+        fake_session.post = MagicMock(return_value=FakeResponse(status=200))
+        monitor._session = fake_session
+        monitor._fetch_plex_items = AsyncMock(return_value=[{
+            "ratingKey": "500",
+            "type": "album",
+            "title": "Discovery",
+            "librarySectionID": "3",
+        }])
+
+        api_cog = API(mock_bot)
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        # 1. Permission Denied for unauthorized user
+        denied = await handle_update_plex_metadata(
+            mock_bot,
+            {"query_or_id": "500", "title": "Discovery (Remastered)"},
+            "999999999",
+        )
+        self.assertIn("Permission Denied", denied)
+
+        # 2. Authorized metadata update via execute_tool with attached image in context
+        context = {
+            "current_attachments": [
+                {
+                    "filename": "custom_cover.png",
+                    "bytes": b"\x89PNG\r\n\x1a\ncoverbytes",
+                    "content_type": "image/png",
+                }
+            ]
+        }
+        out_ok = await execute_tool(
+            mock_bot,
+            "update_plex_metadata",
+            {
+                "query_or_id": "#500",
+                "media_type": "album",
+                "title": "Discovery (Japan Edition)",
+                "genres": ["French House", "Electronic"],
+                "use_attached_image": True,
+            },
+            "123456789",
+            context=context,
+        )
+        self.assertIn("Successfully updated Plex Album [#500]", out_ok)
+        self.assertIn("Discovery (Japan Edition)", out_ok)
+        self.assertIn("poster", out_ok)
+        fake_session.post.assert_called_once()
+        post_args, post_kwargs = fake_session.post.call_args
+        self.assertIn("/library/metadata/500/posters", post_args[0])
+        self.assertEqual(post_kwargs.get("data"), b"\x89PNG\r\n\x1a\ncoverbytes")
+        self.assertEqual(post_kwargs["headers"]["Content-Type"], "image/png")
+
+        # 3. Playlist edit action via handle_manage_plex_playlist
+        monitor._fetch_plex_items = AsyncMock(return_value=[{
+            "ratingKey": "77",
+            "type": "playlist",
+            "title": "Old Mix",
+        }])
+        fake_session.put.reset_mock()
+        pl_edit_out = await handle_manage_plex_playlist(
+            mock_bot,
+            {
+                "action": "edit",
+                "playlist_id": "#77",
+                "title": "Late Night Synth",
+                "summary": "Curated synthwave tracks",
+            },
+            "123456789",
+        )
+        self.assertIn("Successfully updated playlist **Late Night Synth** [#77]", pl_edit_out)
+        pl_put_url = fake_session.put.call_args[0][0]
+        self.assertIn("/playlists/77?", pl_put_url)
+        self.assertIn("title=Late+Night+Synth", pl_put_url)
+
+        await monitor.close()
+
+    async def test_fix_match_and_agent_association(self):
+        from tools.plex import handle_match_plex_media
+        from tools.registry import execute_tool
+
+        mock_bot = MagicMock()
+        mock_bot.owner_id = 123456789
+
+        monitor = PlexMusicMonitor(
+            plex_url="http://mock-plex:32400",
+            plex_token="valid_token",
+            state_file=self.state_file,
+        )
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.put = MagicMock(return_value=FakeResponse(status=200))
+        monitor._session = fake_session
+
+        monitor._fetch_plex_items = AsyncMock(return_value=[{
+            "ratingKey": "200",
+            "type": "album",
+            "title": "VARIETY",
+            "librarySectionID": "3",
+        }])
+
+        queried_containers = []
+        async def fake_container(path):
+            queried_containers.append(path)
+            if "/library/metadata/200/matches?" in path:
+                return {
+                    "SearchResult": [
+                        {
+                            "guid": "plex://album/5d07cd8e403c640290f12345",
+                            "name": "VARIETY (30th Anniversary Edition)",
+                            "year": 2014,
+                            "score": 98,
+                            "summary": "Mariya Takeuchi • Warner Music Japan",
+                        },
+                        {
+                            "guid": "plex://album/5d07cd8e403c640290f67890",
+                            "name": "VARIETY",
+                            "year": 1984,
+                            "score": 100,
+                            "summary": "Mariya Takeuchi • Moon Records",
+                        },
+                    ]
+                }
+            return {}
+
+        monitor._fetch_plex_container = fake_container
+
+        api_cog = API(mock_bot)
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        # 1. Search Fix Match candidates via AI tool with shorthand agent alias ('musicbrainz')
+        search_out = await execute_tool(
+            mock_bot,
+            "match_plex_media",
+            {
+                "action": "search",
+                "query_or_id": "#200",
+                "media_type": "album",
+                "search_title": "VARIETY",
+                "search_year": 1984,
+                "agent": "musicbrainz",
+                "language": "ja-JP",
+            },
+            "999999999",  # search is read-only
+        )
+        self.assertIn("Found 2 Fix Match candidate(s)", search_out)
+        self.assertIn("org.musicbrainz.agents.music", search_out)
+        self.assertIn("plex://album/5d07cd8e403c640290f67890", search_out)
+        self.assertTrue(any("agent=org.musicbrainz.agents.music" in p and "manual=1" in p for p in queried_containers))
+
+        # 2. Mutating 'match' action denied for unauthorized user
+        denied_match = await handle_match_plex_media(
+            mock_bot,
+            {"action": "match", "query_or_id": "#200", "match_index": 1},
+            "999999999",
+        )
+        self.assertIn("Permission Denied", denied_match)
+
+        # 3. Apply candidate by match_index=1 for authorized owner
+        fake_session.put.reset_mock()
+        match_out = await execute_tool(
+            mock_bot,
+            "match_plex_media",
+            {
+                "action": "match",
+                "query_or_id": "#200",
+                "media_type": "album",
+                "match_index": 1,
+                "agent": "plex_music",
+            },
+            "123456789",
+        )
+        self.assertIn("Successfully matched Plex Album [#200] to **VARIETY** (1984) [Score: 100%]", match_out)
+        self.assertIn("plex://album/5d07cd8e403c640290f67890", match_out)
+        match_put_url = fake_session.put.call_args[0][0]
+        self.assertIn("/library/metadata/200/match?", match_put_url)
+        self.assertIn("guid=plex%3A%2F%2Falbum%2F5d07cd8e403c640290f67890", match_put_url)
+        self.assertIn("name=VARIETY", match_put_url)
+        self.assertIn("year=1984", match_put_url)
+
+        # 4. Unmatch item via AI tool
+        fake_session.put.reset_mock()
+        unmatch_out = await execute_tool(
+            mock_bot,
+            "match_plex_media",
+            {
+                "action": "unmatch",
+                "query_or_id": "#200",
+                "media_type": "album",
+            },
+            "123456789",
+        )
+        self.assertIn("Successfully unmatched Plex Album [#200]", unmatch_out)
+        unmatch_put_url = fake_session.put.call_args[0][0]
+        self.assertTrue(unmatch_put_url.endswith("/library/metadata/200/unmatch"))
+
+        # 5. Direct match_guid inside update_plex_metadata
+        fake_session.put.reset_mock()
+        upd_match_out = await execute_tool(
+            mock_bot,
+            "update_plex_metadata",
+            {
+                "query_or_id": "#200",
+                "media_type": "album",
+                "match_guid": "plex://album/5d07cd8e403c640290f67890",
+                "match_name": "VARIETY",
+                "match_year": 1984,
+            },
+            "123456789",
+        )
+        self.assertIn("agent_match", upd_match_out)
+        self.assertIn("plex://album/5d07cd8e403c640290f67890", upd_match_out)
+
+        await monitor.close()
+
 
 if __name__ == "__main__":
     unittest.main()
