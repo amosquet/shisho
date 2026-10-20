@@ -113,6 +113,32 @@ GET_PLEX_LIBRARY_STATS_TOOL = types.FunctionDeclaration(
     ),
 )
 
+BROWSE_PLEX_DIRECTORY_TOOL = types.FunctionDeclaration(
+    name="browse_plex_directory",
+    description=(
+        "Browses and inspects the underlying file directory and folder structure of the Plex music library on the server's storage. "
+        "Can list root storage locations, navigate subdirectories, list audio files inside directories, "
+        "or inspect the folder and file paths for a specific album or artist."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "folder_key": types.Schema(
+                type=types.Type.STRING,
+                description="Plex folder key/ID to browse into (leave blank to start from library root).",
+            ),
+            "path_or_query": types.Schema(
+                type=types.Type.STRING,
+                description="Optional folder name, album title, artist name, or search filter to find specific directories or files.",
+            ),
+            "limit": types.Schema(
+                type=types.Type.INTEGER,
+                description="Maximum number of directories or files to return (default 30, max 60).",
+            ),
+        },
+    ),
+)
+
 MANAGE_PLEX_PLAYLIST_TOOL = types.FunctionDeclaration(
     name="manage_plex_playlist",
     description=(
@@ -712,9 +738,13 @@ async def handle_get_plex_status(bot, args: dict, user_id: str) -> str:
             lines.append(f"Plex Status: {state_label} on {player}{quality_str}")
             lines.append(f"Track: \"{title}\" by {artist}{album_str}")
             lines.append(f"Progress: {prog_str}")
+            if track.get("file_path"):
+                lines.append(f"File: `{track['file_path']}`")
         else:
             lines.append("Plex Status: Idle (nothing actively streaming right now)")
             lines.append(f"Last Played Track: \"{title}\" by {artist}{album_str}{quality_str}")
+            if track.get("file_path"):
+                lines.append(f"File: `{track['file_path']}`")
 
     if crate:
         top_albums = crate.get("top_albums") or []
@@ -770,13 +800,15 @@ async def handle_search_plex_music(bot, args: dict, user_id: str) -> str:
             quality = f" [{item['audio_quality']}]" if item.get("audio_quality") else ""
             plays = item.get("view_count", 0)
             alb_str = f" — *{album}*" if album else ""
-            lines.append(f"- [Track #{k}] **{title}** by {artist}{alb_str} ({dur}){quality} • {plays} plays")
+            file_str = f" • `{item['file_path']}`" if item.get("file_path") else ""
+            lines.append(f"- [Track #{k}] **{title}** by {artist}{alb_str} ({dur}){quality} • {plays} plays{file_str}")
         elif m_type == "album":
             title = item.get("title") or "Untitled Album"
             artist = item.get("artist") or "Unknown Artist"
             year = f" ({item['year']})" if item.get("year") else ""
             plays = item.get("view_count", 0)
-            lines.append(f"- [Album #{k}] **{title}** by {artist}{year} • {plays} plays")
+            folder_str = f" • `{item['folder_path']}`" if item.get("folder_path") else ""
+            lines.append(f"- [Album #{k}] **{title}** by {artist}{year} • {plays} plays{folder_str}")
         elif m_type == "artist":
             title = item.get("title") or "Unknown Artist"
             genres = f" ({', '.join(item['genres'][:3])})" if item.get("genres") else ""
@@ -813,6 +845,8 @@ async def handle_get_plex_album_details(bot, args: dict, user_id: str) -> str:
         f"**{title}** by {artist}{year}{quality}",
         f"Key: #{album.get('rating_key')} • Total Tracks: {len(tracks)} ({total_dur}) • Plays: {plays}",
     ]
+    if album.get("folder_path"):
+        lines.append(f"Folder: `{album['folder_path']}`")
     if album.get("studio"):
         lines.append(f"Studio: {album['studio']}")
     if album.get("genres"):
@@ -833,7 +867,8 @@ async def handle_get_plex_album_details(bot, args: dict, user_id: str) -> str:
         dur = format_duration_mmss(t.get("duration_ms") or 0)
         t_quality = f" [{t['audio_quality']}]" if t.get("audio_quality") else ""
         t_plays = f" • {t['view_count']} plays" if t.get("view_count") else ""
-        lines.append(f"{t.get('index', 0)}. \"{t.get('title')}\" ({dur}){t_quality}{t_plays} [#{t.get('rating_key')}]")
+        fn = f" • `{t['file_name']}`" if t.get("file_name") else ""
+        lines.append(f"{t.get('index', 0)}. \"{t.get('title')}\" ({dur}){t_quality}{t_plays} [#{t.get('rating_key')}]{fn}")
 
     return "\n".join(lines)
 
@@ -861,6 +896,10 @@ async def handle_get_plex_artist_details(bot, args: dict, user_id: str) -> str:
         lines.append(f"Genres: {', '.join(artist['genres'])}")
     if artist.get("countries"):
         lines.append(f"Origin: {', '.join(artist['countries'])}")
+
+    folder_paths = artist.get("folder_paths") or []
+    if folder_paths:
+        lines.append(f"Storage Folders: {', '.join(f'`{fp}`' for fp in folder_paths[:3])}")
 
     total_albums = artist.get("total_albums", 0)
     total_tracks = artist.get("total_tracks", 0)
@@ -918,6 +957,8 @@ async def handle_get_plex_library_stats(bot, args: dict, user_id: str) -> str:
         f"- Total Albums: {stats.get('total_albums', 0)}",
         f"- Total Tracks: {stats.get('total_tracks', 0)}",
     ]
+    if stats.get("locations"):
+        lines.append(f"- Storage Locations: {', '.join(f'`{loc}`' for loc in stats['locations'])}")
 
     top_artists = stats.get("top_artists") or []
     if top_artists:
@@ -935,6 +976,98 @@ async def handle_get_plex_library_stats(bot, args: dict, user_id: str) -> str:
             for a in recent[:5]:
                 year = f" ({a['year']})" if a.get("year") else ""
                 lines.append(f"- *{a.get('title')}* by {a.get('artist')}{year} [#{a.get('rating_key')}]")
+
+    return "\n".join(lines)
+
+
+async def handle_browse_plex_directory(bot, args: dict, user_id: str) -> str:
+    """Handler for the browse_plex_directory AI tool."""
+    raw = args or {}
+    folder_key = str(raw.get("folder_key") or "").strip() or None
+    path_or_query = str(raw.get("path_or_query") or "").strip()
+    try:
+        limit = max(1, min(int(raw.get("limit") or 30), 60))
+    except (ValueError, TypeError):
+        limit = 30
+
+    monitor, owns_monitor = _get_monitor(bot)
+    try:
+        # If user gave path_or_query and no folder_key, check if it's an album or artist
+        if path_or_query and not folder_key:
+            # Check if path_or_query is numeric (could be a folder key)
+            if path_or_query.isdigit():
+                folder_key = path_or_query
+            else:
+                album = await monitor.get_album_details(path_or_query)
+                if album and album.get("folder_path"):
+                    lines = [
+                        f"📁 **Album Directory: {album.get('title')}** by {album.get('artist')}",
+                        f"Path: `{album.get('folder_path')}`",
+                        f"Tracks ({len(album.get('tracks', []))}):",
+                    ]
+                    for t in (album.get("tracks") or [])[:limit]:
+                        dur = format_duration_mmss(t.get("duration_ms") or 0)
+                        quality = f" [{t['audio_quality']}]" if t.get("audio_quality") else ""
+                        fn = t.get("file_name") or t.get("title")
+                        lines.append(f"- `{fn}` ({dur}){quality}")
+                    return "\n".join(lines)
+
+        result = await monitor.browse_folders(folder_key=folder_key, limit=limit)
+    finally:
+        if owns_monitor:
+            await monitor.close()
+
+    if not result.get("configured"):
+        return "Plex is not configured yet (PLEX_URL and/or PLEX_TOKEN are missing from the environment)."
+
+    if result.get("error"):
+        return f"Error browsing Plex directory: {result['error']}"
+
+    lines: list[str] = []
+    locations = result.get("locations") or []
+    if locations:
+        loc_str = ", ".join(f"`{loc}`" for loc in locations)
+        lines.append(f"Root Storage Locations: {loc_str}")
+
+    curr_title = result.get("title2") or result.get("title1") or "Music Root"
+    key_info = f" [Folder Key: #{folder_key}]" if folder_key else " [Root]"
+    lines.append(f"Current Directory: **{curr_title}**{key_info}")
+
+    dirs = result.get("directories") or []
+    files = result.get("files") or []
+
+    # Apply search filter if provided
+    if path_or_query and not (path_or_query.isdigit() and path_or_query == folder_key):
+        q_low = path_or_query.lower()
+        dirs = [d for d in dirs if q_low in str(d.get("title", "")).lower()]
+        files = [
+            f for f in files
+            if q_low in str(f.get("file_name", "")).lower()
+            or q_low in str(f.get("title", "")).lower()
+            or q_low in str(f.get("file_path", "")).lower()
+        ]
+
+    if not dirs and not files:
+        if path_or_query:
+            return f"No folders or files matching '{path_or_query}' found in {curr_title}."
+        return f"Directory **{curr_title}** is empty (no subfolders or audio files found)."
+
+    if dirs:
+        lines.append(f"\nSubdirectories ({len(dirs)}):")
+        for d in dirs[:limit]:
+            lines.append(f"- 📁 **{d['title']}** (key: `{d['key']}`)")
+
+    if files:
+        lines.append(f"\nAudio Files ({len(files)}):")
+        for f in files[:limit]:
+            dur = format_duration_mmss(f.get("duration_ms") or 0)
+            quality = f" [{f['audio_quality']}]" if f.get("audio_quality") else ""
+            fn = f.get("file_name") or f.get("title") or "Unknown file"
+            fp = f" (`{f['file_path']}`)" if f.get("file_path") else ""
+            lines.append(f"- 🎵 {fn} ({dur}){quality}{fp}")
+
+    if dirs:
+        lines.append("\n*Tip: To browse into a subfolder, use `browse_plex_directory` with `folder_key='<key>'`.*")
 
     return "\n".join(lines)
 

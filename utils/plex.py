@@ -376,6 +376,8 @@ class PlexMusicMonitor:
         bit_depth: int | None = None
         sampling_rate: int | None = None
         bitrate_kbps: int | None = None
+        file_path: str | None = None
+        file_size: int | None = None
 
         media_list = raw.get("Media")
         if isinstance(media_list, dict):
@@ -395,6 +397,16 @@ class PlexMusicMonitor:
                 parts = [parts]
             if isinstance(parts, list) and parts:
                 p0 = parts[0] if isinstance(parts[0], dict) else {}
+                raw_file = p0.get("file") or m0.get("file")
+                if raw_file:
+                    file_path = str(raw_file).strip()
+                raw_size = p0.get("size") or m0.get("size")
+                if raw_size is not None:
+                    try:
+                        file_size = int(raw_size)
+                    except (TypeError, ValueError):
+                        pass
+
                 streams = p0.get("Stream")
                 if isinstance(streams, dict):
                     streams = [streams]
@@ -423,6 +435,14 @@ class PlexMusicMonitor:
                                     pass
                             break
 
+        if not file_path:
+            raw_f = raw.get("file") or raw.get("file_path")
+            if raw_f:
+                file_path = str(raw_f).strip()
+
+        file_name = os.path.basename(file_path) if file_path else None
+        folder_path = os.path.dirname(file_path) if file_path else None
+
         quality_label = self._format_audio_quality(codec, bit_depth, sampling_rate, bitrate_kbps)
         return {
             "audio_codec": codec.upper() if codec else None,
@@ -430,6 +450,10 @@ class PlexMusicMonitor:
             "sampling_rate": sampling_rate,
             "bitrate_kbps": bitrate_kbps,
             "audio_quality": quality_label or None,
+            "file_path": file_path,
+            "file_name": file_name,
+            "folder_path": folder_path,
+            "file_size": file_size,
         }
 
     def _extract_audio_stream_info_xml(self, elem: ET.Element) -> dict[str, Any]:
@@ -437,6 +461,8 @@ class PlexMusicMonitor:
         bit_depth: int | None = None
         sampling_rate: int | None = None
         bitrate_kbps: int | None = None
+        file_path: str | None = None
+        file_size: int | None = None
 
         media_elem = elem.find("Media")
         if media_elem is not None:
@@ -447,6 +473,24 @@ class PlexMusicMonitor:
                     bitrate_kbps = int(raw_br)
                 except (TypeError, ValueError):
                     pass
+
+            part_elem = media_elem.find(".//Part")
+            if part_elem is not None:
+                raw_file = part_elem.attrib.get("file")
+                if raw_file:
+                    file_path = str(raw_file).strip()
+                raw_size = part_elem.attrib.get("size")
+                if raw_size:
+                    try:
+                        file_size = int(raw_size)
+                    except (TypeError, ValueError):
+                        pass
+
+            if not file_path:
+                raw_file = media_elem.attrib.get("file")
+                if raw_file:
+                    file_path = str(raw_file).strip()
+
             for st in media_elem.findall(".//Stream"):
                 if st.attrib.get("streamType") in ("2", None) or st.attrib.get("samplingRate"):
                     if not codec:
@@ -463,6 +507,14 @@ class PlexMusicMonitor:
                             pass
                     break
 
+        if not file_path:
+            raw_f = elem.attrib.get("file") or elem.attrib.get("file_path")
+            if raw_f:
+                file_path = str(raw_f).strip()
+
+        file_name = os.path.basename(file_path) if file_path else None
+        folder_path = os.path.dirname(file_path) if file_path else None
+
         quality_label = self._format_audio_quality(codec, bit_depth, sampling_rate, bitrate_kbps)
         return {
             "audio_codec": codec.upper() if codec else None,
@@ -470,6 +522,10 @@ class PlexMusicMonitor:
             "sampling_rate": sampling_rate,
             "bitrate_kbps": bitrate_kbps,
             "audio_quality": quality_label or None,
+            "file_path": file_path,
+            "file_name": file_name,
+            "folder_path": folder_path,
+            "file_size": file_size,
         }
 
     def _parse_json_sessions(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -621,6 +677,10 @@ class PlexMusicMonitor:
             except (TypeError, ValueError):
                 last_viewed_at = None
 
+        raw_file = str(raw.get("file_path") or raw.get("file") or "").strip() or None
+        file_name = os.path.basename(raw_file) if raw_file else None
+        folder_path = os.path.dirname(raw_file) if raw_file else None
+
         return {
             "rating_key": rating_key,
             "parent_rating_key": parent_rating_key,
@@ -640,6 +700,9 @@ class PlexMusicMonitor:
             "player": player_name,
             "thumb_path": thumb_path,
             "cover_version": version_key,
+            "file_path": raw_file,
+            "file_name": file_name,
+            "folder_path": folder_path,
             "updated_at": time.time(),
         }
 
@@ -656,6 +719,8 @@ class PlexMusicMonitor:
                 year = int(raw_year)
             except (TypeError, ValueError):
                 year = None
+
+        raw_folder = str(raw.get("folder_path") or raw.get("folder") or "").strip() or None
 
         view_count = 0
         if raw.get("viewCount") is not None:
@@ -684,6 +749,7 @@ class PlexMusicMonitor:
             "title": title,
             "artist": artist,
             "year": year,
+            "folder_path": raw_folder,
             "view_count": view_count,
             "last_played_at": last_viewed_at,
             "thumb_path": thumb_path,
@@ -722,15 +788,37 @@ class PlexMusicMonitor:
                         root = ET.fromstring(text)
                         res: dict[str, Any] = dict(root.attrib)
                         children: list[dict[str, Any]] = []
+                        dirs: list[dict[str, Any]] = []
                         hubs: list[dict[str, Any]] = []
                         for elem in root:
-                            if elem.tag.lower() == "hub":
+                            tag_low = elem.tag.lower()
+                            if tag_low == "hub":
                                 hub_dict = dict(elem.attrib)
                                 hub_dict["Metadata"] = [dict(sub.attrib) for sub in elem]
                                 hubs.append(hub_dict)
+                            elif tag_low == "directory":
+                                d_dict = dict(elem.attrib)
+                                locs = [dict(loc.attrib) for loc in elem.findall("Location")]
+                                if locs:
+                                    d_dict["Location"] = locs
+                                dirs.append(d_dict)
+                                children.append(d_dict)
                             else:
-                                children.append(dict(elem.attrib))
+                                item_dict = dict(elem.attrib)
+                                media_elems = elem.findall("Media")
+                                if media_elems:
+                                    media_list = []
+                                    for m_el in media_elems:
+                                        m_dict = dict(m_el.attrib)
+                                        part_elems = m_el.findall("Part")
+                                        if part_elems:
+                                            m_dict["Part"] = [dict(p_el.attrib) for p_el in part_elems]
+                                        media_list.append(m_dict)
+                                    item_dict["Media"] = media_list
+                                children.append(item_dict)
                         res["Metadata"] = children
+                        if dirs:
+                            res["Directory"] = dirs
                         if hubs:
                             res["Hub"] = hubs
                         return res
@@ -798,6 +886,144 @@ class PlexMusicMonitor:
                 return self._music_section_id
 
             return None
+
+    async def get_music_section_locations(self) -> list[str]:
+        """Return the root storage paths (Location) configured for the Plex music library."""
+        if not self.is_configured:
+            return []
+        sec_id = await self.get_music_section_id()
+        container = await self._fetch_plex_container("/library/sections")
+        dirs = container.get("Directory") or container.get("Metadata") or []
+        if isinstance(dirs, dict):
+            dirs = [dirs]
+        elif not isinstance(dirs, list):
+            dirs = []
+
+        locations: list[str] = []
+        for d in dirs:
+            if not isinstance(d, dict):
+                continue
+            k = str(d.get("key") or "").strip()
+            title = str(d.get("title") or "").strip().lower()
+            if (sec_id and k == str(sec_id)) or (self.plex_music_library and title == self.plex_music_library.lower()):
+                raw_locs = d.get("Location") or []
+                if isinstance(raw_locs, dict):
+                    raw_locs = [raw_locs]
+                for loc in raw_locs:
+                    if isinstance(loc, dict) and loc.get("path"):
+                        locations.append(str(loc["path"]))
+                    elif isinstance(loc, str) and loc:
+                        locations.append(loc)
+        return locations
+
+    async def browse_folders(
+        self,
+        folder_key: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """
+        Browse the folder structure of the music library via Plex's /library/sections/{id}/folder endpoint.
+        Returns root locations, current folder title, subdirectories, and media files.
+        """
+        if not self.is_configured:
+            return {
+                "configured": False,
+                "error": "Plex is not configured.",
+                "locations": [],
+                "directories": [],
+                "files": [],
+            }
+
+        sec_id = await self.get_music_section_id()
+        if not sec_id:
+            return {
+                "configured": True,
+                "error": f"Music library section '{self.plex_music_library}' not found.",
+                "locations": [],
+                "directories": [],
+                "files": [],
+            }
+
+        locations = await self.get_music_section_locations()
+
+        query_path = f"/library/sections/{sec_id}/folder"
+        if folder_key:
+            fk_str = str(folder_key).strip()
+            if "parent=" in fk_str:
+                parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(fk_str).query)
+                fk_clean = parsed_qs.get("parent", [fk_str])[0]
+            else:
+                fk_clean = fk_str
+            clean_key = urllib.parse.quote(fk_clean)
+            query_path = f"{query_path}?parent={clean_key}"
+
+        container = await self._fetch_plex_container(query_path)
+        title1 = container.get("title1") or "Music"
+        title2 = container.get("title2") or ""
+
+        # Extract subdirectories
+        raw_dirs = container.get("Directory") or []
+        if isinstance(raw_dirs, dict):
+            raw_dirs = [raw_dirs]
+        elif not isinstance(raw_dirs, list):
+            raw_dirs = []
+
+        directories: list[dict[str, Any]] = []
+        for d in raw_dirs:
+            if not isinstance(d, dict):
+                continue
+            raw_k = str(d.get("key") or "")
+            if "parent=" in raw_k:
+                parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_k).query)
+                k_val = parsed_qs.get("parent", [raw_k])[0]
+            else:
+                k_val = raw_k
+            title = str(d.get("title") or "Untitled Folder")
+            fast_key = str(d.get("fastKey") or "")
+            directories.append({
+                "key": k_val,
+                "title": title,
+                "fast_key": fast_key or None,
+            })
+
+        # Extract files/tracks in this directory
+        raw_meta = container.get("Metadata") or []
+        if isinstance(raw_meta, dict):
+            raw_meta = [raw_meta]
+        elif not isinstance(raw_meta, list):
+            raw_meta = []
+
+        files: list[dict[str, Any]] = []
+        for m in raw_meta:
+            if not isinstance(m, dict):
+                continue
+            audio_info = self._extract_audio_stream_info_json(m)
+            track_dict = self._extract_track_dict(m, state="stopped")
+            track_dict.update(audio_info)
+            files.append({
+                "rating_key": track_dict.get("rating_key"),
+                "title": track_dict.get("title"),
+                "artist": track_dict.get("artist"),
+                "album": track_dict.get("album"),
+                "duration_ms": track_dict.get("duration_ms"),
+                "audio_quality": track_dict.get("audio_quality"),
+                "file_path": track_dict.get("file_path"),
+                "file_name": track_dict.get("file_name"),
+                "file_size": track_dict.get("file_size"),
+            })
+
+        return {
+            "configured": True,
+            "section_id": sec_id,
+            "title1": title1,
+            "title2": title2,
+            "folder_key": folder_key,
+            "locations": locations,
+            "directories": directories[:limit],
+            "total_directories": len(directories),
+            "files": files[:limit],
+            "total_files": len(files),
+        }
 
     async def _fetch_recent_track_from_plex(self) -> dict[str, Any] | None:
         """Fallback to fetch the most recently played track from Plex if no session is active."""
@@ -1177,6 +1403,8 @@ class PlexMusicMonitor:
             if audio_info.get("audio_quality"):
                 formats_set.add(audio_info["audio_quality"])
 
+            t_file = audio_info.get("file_path") or str(t_raw.get("file") or "").strip() or None
+
             tracks.append({
                 "rating_key": str(t_raw.get("ratingKey") or ""),
                 "index": t_num,
@@ -1186,9 +1414,19 @@ class PlexMusicMonitor:
                 "view_count": t_plays,
                 "audio_codec": audio_info.get("audio_codec"),
                 "audio_quality": audio_info.get("audio_quality"),
+                "file_path": t_file,
+                "file_name": os.path.basename(t_file) if t_file else None,
+                "folder_path": os.path.dirname(t_file) if t_file else None,
+                "file_size": audio_info.get("file_size"),
             })
 
         tracks.sort(key=lambda t: t.get("index", 0))
+
+        album_folder = None
+        for t in tracks:
+            if t.get("file_path"):
+                album_folder = os.path.dirname(t["file_path"])
+                break
 
         # Best overall audio format label
         best_quality = ""
@@ -1221,6 +1459,7 @@ class PlexMusicMonitor:
             "summary": summary,
             "genres": genres,
             "studio": studio,
+            "folder_path": album_folder,
             "view_count": view_count,
             "last_played_at": last_played_at,
             "cover_url": cover_url,
@@ -1377,6 +1616,7 @@ class PlexMusicMonitor:
             total_plays += t_plays
 
             audio_info = self._extract_audio_stream_info_json(t_raw)
+            t_file = audio_info.get("file_path") or str(t_raw.get("file") or "").strip() or None
             all_tracks.append({
                 "rating_key": t_key,
                 "title": t_title,
@@ -1386,11 +1626,23 @@ class PlexMusicMonitor:
                 "view_count": t_plays,
                 "audio_codec": audio_info.get("audio_codec"),
                 "audio_quality": audio_info.get("audio_quality"),
+                "file_path": t_file,
+                "file_name": os.path.basename(t_file) if t_file else None,
+                "folder_path": os.path.dirname(t_file) if t_file else None,
             })
 
         # Top Tracks sorted by plays descending
         all_tracks.sort(key=lambda t: t.get("view_count", 0), reverse=True)
         top_tracks = all_tracks[:10]
+
+        artist_folders = set()
+        for t in all_tracks:
+            fp = t.get("file_path")
+            if fp:
+                alb_dir = os.path.dirname(fp)
+                art_dir = os.path.dirname(alb_dir)
+                if art_dir:
+                    artist_folders.add(art_dir)
 
         # External Links
         youtube_music_url, qobuz_url = await asyncio.gather(
@@ -1404,6 +1656,7 @@ class PlexMusicMonitor:
             "summary": summary,
             "genres": genres,
             "countries": countries,
+            "folder_paths": sorted(list(artist_folders)),
             "avatar_url": avatar_url,
             "backdrop_url": backdrop_url,
             "_avatar_version": avatar_version,
@@ -1689,6 +1942,7 @@ class PlexMusicMonitor:
                 "configured": False,
                 "library_name": self.plex_music_library,
                 "section_id": None,
+                "locations": [],
                 "total_artists": 0,
                 "total_albums": 0,
                 "total_tracks": 0,
@@ -1763,10 +2017,13 @@ class PlexMusicMonitor:
 
             top_genres = sorted(genre_counts.keys(), key=lambda g: genre_counts[g], reverse=True)[:8]
 
+            locations = await self.get_music_section_locations()
+
             res = {
                 "configured": True,
                 "library_name": self.plex_music_library,
                 "section_id": sec_id,
+                "locations": locations,
                 "total_artists": total_artists,
                 "total_albums": total_albums,
                 "total_tracks": total_tracks,

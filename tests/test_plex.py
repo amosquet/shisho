@@ -1978,5 +1978,359 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
         await monitor.close()
 
 
+class TestPlexDirectoryAndFiles(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.state_file = os.path.join(self.tmp_dir.name, "plex_last_played.json")
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    async def test_track_file_path_extraction_json(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://plex.local:32400",
+            plex_token="secret_token",
+            plex_user="sadako",
+            state_file=self.state_file,
+        )
+
+        session_payload = {
+            "MediaContainer": {
+                "size": 1,
+                "Metadata": [
+                    {
+                        "type": "track",
+                        "ratingKey": "101",
+                        "title": "Airbag",
+                        "grandparentTitle": "Radiohead",
+                        "parentTitle": "OK Computer",
+                        "duration": 284000,
+                        "viewOffset": 50000,
+                        "User": {"title": "sadako", "id": "1"},
+                        "Player": {"state": "playing", "product": "Plexamp"},
+                        "Media": [
+                            {
+                                "audioCodec": "flac",
+                                "bitrate": 950,
+                                "Part": [
+                                    {
+                                        "file": "/music/Radiohead/OK Computer/01 Airbag.flac",
+                                        "size": 32000000,
+                                        "Stream": [
+                                            {
+                                                "streamType": "2",
+                                                "codec": "flac",
+                                                "bitDepth": 24,
+                                                "samplingRate": 96000,
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.get = MagicMock(
+            return_value=FakeResponse(
+                status=200,
+                json_data=session_payload,
+                headers={"Content-Type": "application/json"},
+            )
+        )
+        monitor._session = fake_session
+
+        res = await monitor.get_now_playing()
+        track = res["track"]
+        self.assertIsNotNone(track)
+        self.assertEqual(track["file_path"], "/music/Radiohead/OK Computer/01 Airbag.flac")
+        self.assertEqual(track["file_name"], "01 Airbag.flac")
+        self.assertEqual(track["folder_path"], "/music/Radiohead/OK Computer")
+        self.assertEqual(track["file_size"], 32000000)
+
+        # Test tool handler formatting
+        from tools.plex import handle_get_plex_status
+        mock_bot = MagicMock()
+        api_cog = MagicMock()
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        status_text = await handle_get_plex_status(mock_bot, {}, "123456789")
+        self.assertIn("Airbag", status_text)
+        self.assertIn("File: `/music/Radiohead/OK Computer/01 Airbag.flac`", status_text)
+
+        await monitor.close()
+
+    async def test_track_file_path_extraction_xml(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://plex.local:32400",
+            plex_token="secret_token",
+            state_file=self.state_file,
+        )
+
+        xml_response = """<?xml version="1.0" encoding="UTF-8"?>
+        <MediaContainer size="1">
+            <Track ratingKey="202" type="track" title="Paranoid Android" grandparentTitle="Radiohead" parentTitle="OK Computer" duration="383000">
+                <User id="1" title="sadako" />
+                <Player state="paused" product="Plex Web" />
+                <Media audioCodec="flac">
+                    <Part file="/storage/music/Radiohead/OK Computer/02 Paranoid Android.flac" size="45000000">
+                        <Stream streamType="2" codec="flac" bitDepth="16" samplingRate="44100" />
+                    </Part>
+                </Media>
+            </Track>
+        </MediaContainer>
+        """
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.get = MagicMock(
+            return_value=FakeResponse(
+                status=200,
+                text_data=xml_response,
+                headers={"Content-Type": "text/xml"},
+            )
+        )
+        monitor._session = fake_session
+
+        res = await monitor.get_now_playing()
+        track = res["track"]
+        self.assertIsNotNone(track)
+        self.assertEqual(track["file_path"], "/storage/music/Radiohead/OK Computer/02 Paranoid Android.flac")
+        self.assertEqual(track["file_name"], "02 Paranoid Android.flac")
+        self.assertEqual(track["folder_path"], "/storage/music/Radiohead/OK Computer")
+
+        await monitor.close()
+
+    async def test_album_details_folder_and_track_files(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://plex.local:32400",
+            plex_token="secret_token",
+            state_file=self.state_file,
+        )
+
+        album_payload = {
+            "MediaContainer": {
+                "size": 1,
+                "Metadata": [
+                    {
+                        "type": "album",
+                        "ratingKey": "300",
+                        "title": "Kid A",
+                        "parentTitle": "Radiohead",
+                        "year": 2000,
+                    }
+                ]
+            }
+        }
+        tracks_payload = {
+            "MediaContainer": {
+                "size": 2,
+                "Metadata": [
+                    {
+                        "type": "track",
+                        "ratingKey": "301",
+                        "index": 1,
+                        "title": "Everything in Its Right Place",
+                        "duration": 251000,
+                        "Media": [
+                            {
+                                "audioCodec": "flac",
+                                "Part": [
+                                    {
+                                        "file": "/music/Radiohead/Kid A/01 Everything in Its Right Place.flac",
+                                        "size": 28000000,
+                                        "Stream": [{"codec": "flac", "bitDepth": 24, "samplingRate": 48000}]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "track",
+                        "ratingKey": "302",
+                        "index": 2,
+                        "title": "Kid A",
+                        "duration": 284000,
+                        "Media": [
+                            {
+                                "audioCodec": "flac",
+                                "Part": [
+                                    {
+                                        "file": "/music/Radiohead/Kid A/02 Kid A.flac",
+                                        "size": 31000000,
+                                        "Stream": [{"codec": "flac", "bitDepth": 24, "samplingRate": 48000}]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        def fake_get(url, headers=None):
+            if "/children" in url:
+                return FakeResponse(status=200, json_data=tracks_payload, headers={"Content-Type": "application/json"})
+            return FakeResponse(status=200, json_data=album_payload, headers={"Content-Type": "application/json"})
+
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.get = MagicMock(side_effect=fake_get)
+        monitor._session = fake_session
+        monitor._lookup_youtube_music_url = AsyncMock(return_value="https://music.youtube.com/search?q=Kid+A")
+        monitor._lookup_qobuz_url = AsyncMock(return_value="https://open.qobuz.com/album/123")
+
+        album = await monitor.get_album_details("300")
+        self.assertIsNotNone(album)
+        self.assertEqual(album["folder_path"], "/music/Radiohead/Kid A")
+        self.assertEqual(len(album["tracks"]), 2)
+        self.assertEqual(album["tracks"][0]["file_name"], "01 Everything in Its Right Place.flac")
+        self.assertEqual(album["tracks"][0]["file_path"], "/music/Radiohead/Kid A/01 Everything in Its Right Place.flac")
+        self.assertEqual(album["tracks"][1]["file_name"], "02 Kid A.flac")
+
+        # Test handle_get_plex_album_details
+        from tools.plex import handle_get_plex_album_details
+        mock_bot = MagicMock()
+        api_cog = MagicMock()
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        album_text = await handle_get_plex_album_details(mock_bot, {"query_or_id": "300"}, "123456789")
+        self.assertIn("Folder: `/music/Radiohead/Kid A`", album_text)
+        self.assertIn("`01 Everything in Its Right Place.flac`", album_text)
+
+        await monitor.close()
+
+    async def test_get_music_section_locations_and_browse_folders(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://plex.local:32400",
+            plex_token="secret_token",
+            plex_music_library="Music",
+            state_file=self.state_file,
+        )
+
+        sections_payload = {
+            "MediaContainer": {
+                "Directory": [
+                    {
+                        "key": "1",
+                        "title": "Music",
+                        "type": "artist",
+                        "Location": [
+                            {"id": 1, "path": "/volume1/Music"},
+                            {"id": 2, "path": "/volume2/LosslessAudio"},
+                        ]
+                    }
+                ]
+            }
+        }
+
+        root_folder_payload = {
+            "MediaContainer": {
+                "size": 2,
+                "title1": "Music",
+                "Directory": [
+                    {"key": "10", "title": "Electronic"},
+                    {"key": "20", "title": "Rock"},
+                ],
+                "Metadata": []
+            }
+        }
+
+        subfolder_payload = {
+            "MediaContainer": {
+                "size": 2,
+                "title1": "Music",
+                "title2": "Rock",
+                "Directory": [
+                    {"key": "21", "title": "Radiohead"},
+                ],
+                "Metadata": [
+                    {
+                        "type": "track",
+                        "ratingKey": "999",
+                        "title": "Bonus Song",
+                        "duration": 180000,
+                        "Media": [
+                            {
+                                "audioCodec": "flac",
+                                "Part": [
+                                    {"file": "/volume1/Music/Rock/Bonus Song.flac", "size": 15000000}
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        def fake_get(url, headers=None):
+            if "/library/sections" in url and "/folder" not in url:
+                return FakeResponse(status=200, json_data=sections_payload, headers={"Content-Type": "application/json"})
+            if "/folder?parent=20" in url:
+                return FakeResponse(status=200, json_data=subfolder_payload, headers={"Content-Type": "application/json"})
+            if "/folder" in url:
+                return FakeResponse(status=200, json_data=root_folder_payload, headers={"Content-Type": "application/json"})
+            return FakeResponse(status=404)
+
+        fake_session = MagicMock()
+        fake_session.closed = False
+        fake_session.close = AsyncMock()
+        fake_session.get = MagicMock(side_effect=fake_get)
+        monitor._session = fake_session
+
+        locations = await monitor.get_music_section_locations()
+        self.assertEqual(locations, ["/volume1/Music", "/volume2/LosslessAudio"])
+
+        # Test root browsing
+        root_res = await monitor.browse_folders()
+        self.assertTrue(root_res["configured"])
+        self.assertEqual(root_res["locations"], ["/volume1/Music", "/volume2/LosslessAudio"])
+        self.assertEqual(len(root_res["directories"]), 2)
+        self.assertEqual(root_res["directories"][0]["title"], "Electronic")
+        self.assertEqual(root_res["directories"][1]["title"], "Rock")
+
+        # Test subfolder browsing
+        sub_res = await monitor.browse_folders(folder_key="20")
+        self.assertEqual(sub_res["title2"], "Rock")
+        self.assertEqual(len(sub_res["directories"]), 1)
+        self.assertEqual(sub_res["directories"][0]["title"], "Radiohead")
+        self.assertEqual(len(sub_res["files"]), 1)
+        self.assertEqual(sub_res["files"][0]["file_name"], "Bonus Song.flac")
+        self.assertEqual(sub_res["files"][0]["file_path"], "/volume1/Music/Rock/Bonus Song.flac")
+
+        # Test browse_plex_directory tool handler
+        from tools.plex import handle_browse_plex_directory
+        from tools.registry import execute_tool
+
+        mock_bot = MagicMock()
+        api_cog = MagicMock()
+        api_cog.plex_monitor = monitor
+        mock_bot.get_cog = MagicMock(return_value=api_cog)
+
+        out_root = await handle_browse_plex_directory(mock_bot, {}, "123456789")
+        self.assertIn("Root Storage Locations: `/volume1/Music`, `/volume2/LosslessAudio`", out_root)
+        self.assertIn("📁 **Electronic**", out_root)
+        self.assertIn("📁 **Rock**", out_root)
+
+        out_sub = await handle_browse_plex_directory(mock_bot, {"folder_key": "20"}, "123456789")
+        self.assertIn("Rock", out_sub)
+        self.assertIn("📁 **Radiohead**", out_sub)
+        self.assertIn("Bonus Song.flac", out_sub)
+
+        # Test registry dispatch
+        reg_out = await execute_tool(mock_bot, "browse_plex_directory", {"folder_key": "20"}, "123456789")
+        self.assertIn("Radiohead", reg_out)
+
+        await monitor.close()
+
+
 if __name__ == "__main__":
     unittest.main()
