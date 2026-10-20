@@ -21,6 +21,7 @@ from utils.db import (
     run_in_executor,
 )
 from utils.discord_helpers import UNLINKED_ACCOUNT_MESSAGE
+from utils.gemini_files import stage_or_inline_part
 from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
 STOP_WORDS = {
@@ -182,13 +183,16 @@ class Notes(commands.Cog):
                             else:
                                 prompt = "Analyze and extract all relevant text and key information from this image accurately for a personal note. Also generate a short, concise title for this note. Return ONLY a valid JSON object with 'title' and 'text' keys."
                             model_name = get_gemini_model()
+                            part = await stage_or_inline_part(
+                                client,
+                                filename=attachment_filename,
+                                file_bytes=attachment_bytes,
+                                mime_type=mime_type,
+                            )
                             response = await generate_content_with_retry(
                                 client,
                                 model=model_name,
-                                contents=[
-                                    types.Part.from_bytes(data=attachment_bytes, mime_type=mime_type),
-                                    prompt
-                                ]
+                                contents=[part, prompt],
                             )
                             
                             res_text = response.text.strip()

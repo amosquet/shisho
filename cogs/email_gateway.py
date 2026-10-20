@@ -15,7 +15,9 @@ from imapclient import IMAPClient
 from imapclient.exceptions import IMAPClientAbortError, IMAPClientError
 import sentry_sdk
 
-from tools.registry import AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+from tools.anki import CREATE_ANKI_DECK_TOOL
+from tools.registry import TOOL_HANDLERS, execute_tool
+from utils.gemini_files import stage_or_inline_part
 from utils.llm import get_gemini_client, get_gemini_model, generate_content_with_retry
 
 
@@ -429,7 +431,13 @@ class EmailGateway(commands.Cog):
 
         for filename, att_bytes in (attachments or []):
             mime = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
-            parts.append(types.Part.from_bytes(data=att_bytes, mime_type=mime))
+            part = await stage_or_inline_part(
+                client,
+                filename=filename,
+                file_bytes=att_bytes,
+                mime_type=mime,
+            )
+            parts.append(part)
             if not subject or subject.lower().startswith("re:"):
                 deck_name = os.path.splitext(filename)[0].replace("_", " ").title()
 
@@ -445,7 +453,8 @@ class EmailGateway(commands.Cog):
 
         try:
             model_name = get_gemini_model()
-            config = types.GenerateContentConfig(tools=AI_CHAT_TOOLS)
+            flashcard_tools = [types.Tool(function_declarations=[CREATE_ANKI_DECK_TOOL])]
+            config = types.GenerateContentConfig(tools=flashcard_tools)
             contents_list = [types.Content(role="user", parts=parts)]
 
             response = await generate_content_with_retry(

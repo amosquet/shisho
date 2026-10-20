@@ -193,9 +193,12 @@ async def validate_gemini_model(
         return False, canonical, f"Failed to verify model '{canonical}': {err_str}"
 
 
+_CLIENT_CACHE: dict[str, genai.Client] = {}
+
+
 def get_gemini_client(api_key: Optional[str] = None) -> Optional[genai.Client]:
     """
-    Initialize and return a Google Gemini client.
+    Initialize and return a Google Gemini client, caching clients by API key to reuse connections.
 
     Args:
         api_key: Optional API key override. If not provided, reads GEMINI_API_KEY from environment.
@@ -206,7 +209,12 @@ def get_gemini_client(api_key: Optional[str] = None) -> Optional[genai.Client]:
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
         return None
-    return genai.Client(api_key=key)
+    cached = _CLIENT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    client = genai.Client(api_key=key)
+    _CLIENT_CACHE[key] = client
+    return client
 
 
 def is_transient_error(error: Exception) -> bool:
@@ -287,10 +295,24 @@ def is_tool_combination_error(error: Exception) -> bool:
 
 
 
+_UNSUPPORTED_COMBINATION_MODELS: set[str] = set()
+
+
+def is_combination_unsupported(model_name: str) -> bool:
+    """Returns True if the model is known to not support combining google_search with function_declarations."""
+    return bool(model_name and model_name in _UNSUPPORTED_COMBINATION_MODELS)
+
+
+def mark_combination_unsupported(model_name: str) -> None:
+    """Records that a model does not support combining google_search with function_declarations."""
+    if model_name:
+        _UNSUPPORTED_COMBINATION_MODELS.add(model_name)
+
+
 def query_targets_bot_tools(text: str) -> bool:
     """
     Determine if a prompt explicitly targets Shisho's bot tools (reading list,
-    reminders, notes, vault, printing, channels, anki).
+    reminders, notes, vault, printing, channels, anki, plex, spreadsheets).
     """
     if not text or not isinstance(text, str):
         return False
@@ -318,6 +340,28 @@ def query_targets_bot_tools(text: str) -> bool:
         "ai model",
         "switch model",
         "change model",
+        "plex",
+        "playlist",
+        "track",
+        "album",
+        "artist",
+        "music",
+        "song",
+        "now playing",
+        "excel",
+        "spreadsheet",
+        "workbook",
+        "sheet",
+        "export pdf",
+        "make a pdf",
+        "ical",
+        "calendar",
+        "todo",
+        "event",
+        "pacer",
+        "reading plan",
+        "preference",
+        "prefer",
     ]
     return any(k in t for k in tool_keywords)
 

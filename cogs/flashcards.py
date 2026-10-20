@@ -22,14 +22,37 @@ from utils.llm import (
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    is_combination_unsupported,
     is_tool_combination_error,
+    mark_combination_unsupported,
     user_requested_sources,
 )
 
 from utils import anki as anki_utils
 from utils import obsidian as vault_utils
-from tools.anki import handle_create_anki_deck, handle_vault_export_anki_deck
-from tools.registry import AI_CHAT_TOOLS, GENERAL_AI_CHAT_TOOLS, TOOL_HANDLERS, execute_tool
+from tools.anki import (
+    CREATE_ANKI_DECK_TOOL,
+    VAULT_EXPORT_ANKI_DECK_TOOL,
+    handle_create_anki_deck,
+    handle_vault_export_anki_deck,
+)
+from tools.registry import TOOL_HANDLERS, execute_tool
+
+FLASHCARD_FUNCTION_DECLARATIONS = [
+    CREATE_ANKI_DECK_TOOL,
+    VAULT_EXPORT_ANKI_DECK_TOOL,
+]
+
+FLASHCARD_TOOLS: list[types.Tool] = [
+    types.Tool(function_declarations=FLASHCARD_FUNCTION_DECLARATIONS)
+]
+
+GENERAL_FLASHCARD_TOOLS: list[types.Tool] = [
+    types.Tool(
+        function_declarations=FLASHCARD_FUNCTION_DECLARATIONS,
+        google_search=types.GoogleSearch(),
+    )
+]
 
 
 
@@ -200,20 +223,21 @@ class Flashcards(commands.Cog):
                 "out_files": [],
             }
 
+            model_name = get_gemini_model()
             has_source_material = bool(file or vault_note)
             wants_sources = user_requested_sources(prompt)
             enable_grounding = (
                 not has_source_material
+                and not is_combination_unsupported(model_name)
                 and os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
             )
-            active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+            active_tools = GENERAL_FLASHCARD_TOOLS if enable_grounding else FLASHCARD_TOOLS
             tool_config = (
                 types.ToolConfig(include_server_side_tool_invocations=True)
                 if enable_grounding
                 else None
             )
 
-            model_name = get_gemini_model()
             config = types.GenerateContentConfig(
                 tools=active_tools,
                 tool_config=tool_config,
@@ -229,7 +253,8 @@ class Flashcards(commands.Cog):
                 )
             except Exception as e:
                 if enable_grounding and is_tool_combination_error(e):
-                    active_tools = AI_CHAT_TOOLS
+                    mark_combination_unsupported(model_name)
+                    active_tools = FLASHCARD_TOOLS
                     config = types.GenerateContentConfig(tools=active_tools)
                     response = await generate_content_with_retry(
                         self.client,
@@ -411,11 +436,13 @@ class Flashcards(commands.Cog):
         clean_prompt = prompt.strip() or "Generate study flashcards"
         has_source_material = bool(parts)
         wants_sources = user_requested_sources(prompt)
+        model_name = get_gemini_model()
         enable_grounding = (
             not has_source_material
+            and not is_combination_unsupported(model_name)
             and os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
         )
-        active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+        active_tools = GENERAL_FLASHCARD_TOOLS if enable_grounding else FLASHCARD_TOOLS
 
         parts.append(
             types.Part.from_text(
@@ -439,7 +466,6 @@ class Flashcards(commands.Cog):
                     else None
                 )
 
-                model_name = get_gemini_model()
                 config = types.GenerateContentConfig(
                     tools=active_tools,
                     tool_config=tool_config,
@@ -455,7 +481,8 @@ class Flashcards(commands.Cog):
                     )
                 except Exception as e:
                     if enable_grounding and is_tool_combination_error(e):
-                        active_tools = AI_CHAT_TOOLS
+                        mark_combination_unsupported(model_name)
+                        active_tools = FLASHCARD_TOOLS
                         config = types.GenerateContentConfig(tools=active_tools)
                         response = await generate_content_with_retry(
                             self.client,

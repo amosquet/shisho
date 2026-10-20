@@ -231,6 +231,97 @@ ALL_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
     DELETE_MUSIC_SUGGESTION_TOOL,
 ]
 
+# Categorized Declarations for Dynamic Tool Scoping
+CORE_FUNCTION_DECLARATIONS: list[types.FunctionDeclaration] = [
+    UPDATE_USER_PREFERENCE_TOOL,
+    SET_AI_MODEL_TOOL,
+    GET_AI_MODEL_TOOL,
+    SEND_CHANNEL_MESSAGE_TOOL,
+    LIST_CHANNELS_TOOL,
+]
+
+READING_LIST_DECLARATIONS: list[types.FunctionDeclaration] = [
+    ADD_BOOK_TOOL,
+    GET_READING_LIST_TOOL,
+    UPDATE_BOOK_TOOL,
+    DELETE_BOOK_TOOL,
+    GET_RECOMMENDATIONS_TOOL,
+    ADD_RECOMMENDATION_TOOL,
+    DELETE_RECOMMENDATION_TOOL,
+    GENERATE_READING_PLAN_TOOL,
+]
+
+REMINDER_DECLARATIONS: list[types.FunctionDeclaration] = [
+    SET_REMINDER_TOOL,
+    BATCH_SET_REMINDERS_TOOL,
+    LIST_REMINDERS_TOOL,
+    UPDATE_REMINDER_TOOL,
+    DELETE_REMINDER_TOOL,
+    CREATE_ICAL_EVENT_TOOL,
+    CREATE_ICAL_TODO_TOOL,
+    EXPORT_REMINDERS_ICAL_TOOL,
+]
+
+NOTE_DECLARATIONS: list[types.FunctionDeclaration] = [
+    ADD_NOTE_TOOL,
+    GET_NOTES_TOOL,
+    DELETE_NOTE_TOOL,
+    DELETE_ARCHIVED_NOTES_TOOL,
+    ARCHIVE_NOTE_TOOL,
+    UNARCHIVE_NOTE_TOOL,
+    UPDATE_NOTE_TOOL,
+]
+
+PRINTING_DECLARATIONS: list[types.FunctionDeclaration] = [
+    PRINT_DOCUMENT_TOOL,
+    LIST_PRINT_JOBS_TOOL,
+    CANCEL_PRINT_JOB_TOOL,
+    EXPORT_PDF_TOOL,
+]
+
+VAULT_DECLARATIONS: list[types.FunctionDeclaration] = [
+    VAULT_LIST_FILES_TOOL,
+    VAULT_READ_NOTE_TOOL,
+    VAULT_WRITE_NOTE_TOOL,
+    VAULT_PATCH_NOTE_TOOL,
+    VAULT_APPEND_NOTE_TOOL,
+    VAULT_SEARCH_TOOL,
+    VAULT_DELETE_NOTE_TOOL,
+    VAULT_MOVE_NOTE_TOOL,
+    VAULT_GET_BACKLINKS_TOOL,
+]
+
+ANKI_DECLARATIONS: list[types.FunctionDeclaration] = [
+    CREATE_ANKI_DECK_TOOL,
+    VAULT_EXPORT_ANKI_DECK_TOOL,
+]
+
+EXCEL_DECLARATIONS: list[types.FunctionDeclaration] = [
+    EXCEL_CREATE_WORKBOOK_TOOL,
+    EXCEL_READ_RANGE_TOOL,
+    EXCEL_UPDATE_CELLS_TOOL,
+    EXCEL_MANAGE_SHEET_TOOL,
+    EXCEL_EXPORT_WORKBOOK_TOOL,
+    EXCEL_LIST_WORKBOOKS_TOOL,
+]
+
+PLEX_DECLARATIONS: list[types.FunctionDeclaration] = [
+    GET_PLEX_STATUS_TOOL,
+    SEARCH_PLEX_MUSIC_TOOL,
+    GET_PLEX_ALBUM_DETAILS_TOOL,
+    GET_PLEX_ARTIST_DETAILS_TOOL,
+    GET_PLEX_LIBRARY_STATS_TOOL,
+    BROWSE_PLEX_DIRECTORY_TOOL,
+    MANAGE_PLEX_PLAYLIST_TOOL,
+    RATE_PLEX_MUSIC_TOOL,
+    UPDATE_PLEX_METADATA_TOOL,
+    MATCH_PLEX_MEDIA_TOOL,
+    GET_PLEX_SONIC_SIMILAR_TOOL,
+    GET_MUSIC_SUGGESTIONS_TOOL,
+    ADD_MUSIC_SUGGESTION_TOOL,
+    DELETE_MUSIC_SUGGESTION_TOOL,
+]
+
 GOOGLE_SEARCH_TOOL: types.Tool = types.Tool(google_search=types.GoogleSearch())
 
 AI_CHAT_TOOLS: list[types.Tool] = [
@@ -243,6 +334,73 @@ GENERAL_AI_CHAT_TOOLS: list[types.Tool] = [
         google_search=types.GoogleSearch(),
     )
 ]
+
+
+def select_tools_for_query(
+    text: str,
+    has_attachments: bool = False,
+    has_history_tool_calls: bool = False,
+    enable_grounding: bool = True,
+) -> list[types.Tool]:
+    """
+    Dynamically select the minimal necessary tool declarations for a given request.
+    If the request has attachments, active tool history, or targets multiple bot domains,
+    returns full tool definitions.
+    For pure conversational or general knowledge queries without tool intent,
+    avoids sending all 62 function declarations (~13,800 tokens).
+    """
+    if has_attachments or has_history_tool_calls:
+        return GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+
+    t = (text or "").lower()
+
+    selected_decls: list[types.FunctionDeclaration] = list(CORE_FUNCTION_DECLARATIONS)
+    matched_domains = 0
+
+    if any(k in t for k in ["read", "book", "recommend", "suggestion", "author", "isbn", "pacer"]):
+        selected_decls.extend(READING_LIST_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["remind", "alarm", "schedule", "calendar", "event", "todo", "ical"]):
+        selected_decls.extend(REMINDER_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["note", "memo"]):
+        selected_decls.extend(NOTE_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["print", "printer", "pdf", "export"]):
+        selected_decls.extend(PRINTING_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["vault", "obsidian", "markdown", "backlink"]):
+        selected_decls.extend(VAULT_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["anki", "flashcard", "deck"]):
+        selected_decls.extend(ANKI_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["excel", "spreadsheet", "workbook", "sheet", "cell", "xlsx"]):
+        selected_decls.extend(EXCEL_DECLARATIONS)
+        matched_domains += 1
+
+    if any(k in t for k in ["plex", "music", "song", "track", "album", "artist", "playlist", "playing"]):
+        selected_decls.extend(PLEX_DECLARATIONS)
+        matched_domains += 1
+
+    # If 3 or more domains matched or broad request, return full AI_CHAT_TOOLS to be completely safe
+    if matched_domains >= 3:
+        return GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+
+    if enable_grounding:
+        return [
+            types.Tool(
+                function_declarations=selected_decls,
+                google_search=types.GoogleSearch(),
+            )
+        ]
+    return [types.Tool(function_declarations=selected_decls)]
 
 
 # Dispatch Table mapping tool names to async execution handlers

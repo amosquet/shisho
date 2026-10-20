@@ -13,6 +13,7 @@ from tools.registry import (
     GOOGLE_SEARCH_TOOL,
     TOOL_HANDLERS,
     execute_tool,
+    select_tools_for_query,
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "UPDATE_USER_PREFERENCE_TOOL",
     "execute_tool",
     "handle_update_user_preference",
+    "select_tools_for_query",
 ]
 

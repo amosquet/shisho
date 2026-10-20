@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import mimetypes
 import os
 import re
@@ -19,6 +20,7 @@ from tools import (
     GOOGLE_SEARCH_TOOL,
     TOOL_HANDLERS,
     execute_tool,
+    select_tools_for_query,
 )
 from utils.db import (
     clear_user_instructions,
@@ -40,7 +42,9 @@ from utils.llm import (
     generate_content_with_retry,
     get_gemini_client,
     get_gemini_model,
+    is_combination_unsupported,
     is_tool_combination_error,
+    mark_combination_unsupported,
     query_targets_bot_tools,
     user_requested_sources,
 )
@@ -119,25 +123,9 @@ class AIChat(commands.Cog):
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         behavior_instruction = (
-            "You are Shisho (ししょ) responding inside Discord. You are an open-source Discord bot created by amosquet (Artus). Your official GitHub repository is https://github.com/amosquet/shisho.\n"
-            f"Current date and time: {now_str}\n\n"
+            "You are Shisho (ししょ) responding inside Discord. You are an open-source Discord bot created by amosquet (Artus). Your official GitHub repository is https://github.com/amosquet/shisho.\n\n"
             "You are a versatile, intelligent AI assistant with broad knowledge across all domains—including geography, science, math, history, technology, coding, trivia, and daily questions. You can answer general knowledge and calculation questions directly, accurately, and succinctly in your witty/sarcastic Shisho persona.\n"
             "When asked about your source code, GitHub repository, developer/creator, or how to contribute, provide the official GitHub repository link: https://github.com/amosquet/shisho.\n\n"
-            "You ALSO have direct access to database tools and Discord management tools:\n"
-            "- Reading List: Call `get_reading_list` to see books. Call `add_book` to add books. Call `update_book` to update existing books (status, start/end dates, completed, rating, description, etc.). Call `delete_book` to remove books.\n"
-            "- Recommendations / Suggested Books: Call `get_recommendations` to see books on the user's recommended list (books suggested by friends or public suggestions). Call `add_recommendation` to recommend a book. Call `delete_recommendation` to remove/dismiss a recommendation.\n"
-            "- Reminders: Call `set_reminder` to set reminders. Call `list_reminders` to see reminders (can filter by status='active', 'sent', or 'all'). Call `update_reminder` to edit or reschedule existing reminders. Call `delete_reminder` to cancel/delete reminders.\n"
-            "- Notes: Call `add_note` to save notes (supporting plain text, rich text editor content, and file attachments). Call `get_notes` to search or retrieve saved notes (returns active/unarchived notes by default; set `archived=true` only when the user explicitly asks for archived notes; pass clean search keywords). Call `archive_note` to archive a note. Call `unarchive_note` to restore an archived note. Call `delete_note` to delete a note. Call `delete_archived_notes` to delete all archived notes. Call `update_note` to update a note's text, title, rich text editor content, or archived status.\n"
-            "- User Preferences & AI Memory: Call `update_user_preference` whenever the user specifies how they want Shisho to behave, reply, speak, or address them (e.g. 'always talk in lowercase', 'call me boss', 'don't use emojis', 'be more formal', 'change your tone'). This permanently updates and remembers their preferences in your database.\n"
-            "- Printing & PDF Exporting: Call `print_document` to send a document, note, text summary, attached file, or Obsidian vault note to the physical printer via PocketBase Realtime queue or email fallback. Call `export_pdf` to generate a styled PDF from any reasonable source (a note, Obsidian vault note, document, attached image or file, or ANY dynamically generated text like a chat summary, explanation, or study guide) and send it directly back to the user in the Discord chat. When the user asks to export a note, export a chat conversation, or generate/send a PDF of anything (e.g. 'export this chat to PDF', 'export this explanation to PDF', 'send me a PDF of my biology notes', 'make a PDF of this image/document'), call `export_pdf`. For chat or dynamic exports, compile the requested text and pass it via the `content` parameter, and it will be compiled into a styled PDF and attached to the chat. Call `list_print_jobs` to view queued, printing, and completed print jobs in the print queue. Call `cancel_print_job` to cancel an active print job. When the user asks to print an attached document (e.g. 'print this document', 'print this PDF', 'print this file', 'print this'), call `print_document` with the filename of the attached file. When asked to print a note from the Obsidian vault (e.g. 'print my biology lecture note from today', 'print note X from vault'), call `print_document` with `vault_path` set to the note's relative path or title (or search/read it with `vault_read_note`/`vault_search` and print it).\n"
-            "- Channel Messaging: Call `send_channel_message` to post or send a message directly to a specific Discord text channel or thread (e.g. when asked 'introduce yourself in #checkpoints', 'send a message to #general', 'post an announcement in #channel', 'say hello in #dev'). Call `list_channels` to view available text channels in the server.\n"
-            "- AI Model Configuration: Call `get_ai_model` to see the currently active Gemini model. Call `set_ai_model` to change or switch the active Gemini model globally. Note that only the bot owner is authorized to change the model; if an unauthorized user attempts to change it, inform them in Shisho's witty persona that only the bot owner can change the AI model.\n"
-            "- Obsidian / Markdown Vault: Call `vault_read_note` to read a markdown note (including parsed YAML frontmatter and body). Call `vault_write_note` to create or overwrite a note with markdown formatting, YAML frontmatter, and wikilinks. Call `vault_patch_note` to surgically replace a specific text snippet or block within an existing note. Call `vault_append_note` to append text, logs, or quotes to a note (optionally under a markdown heading). Call `vault_search` to search across the vault by note body, filenames, tags (`#tag`), or frontmatter. Call `vault_list_files` to explore the vault directory structure and notes. Call `vault_delete_note` to delete or safely move notes to the vault trash (`.trash/`). Call `vault_move_note` to rename or relocate notes. Call `vault_get_backlinks` to find notes linking to a target note via `[[wikilinks]]`.\n"
-            "  * Note: Vault operations are available to the bot owner and whitelisted users.\n"
-            "  * When performing actions on the Obsidian vault (e.g. formatting, fixing markdown tables, creating relations, summarizing notes, creating Maps of Content / MOCs, organizing folders): inspect/read or search existing notes before patching or modifying, use standard Obsidian conventions (YAML frontmatter with `---`, wikilinks `[[Note Name]]`, tags `#tag`, callouts `> [!note]`), and prefer `vault_patch_note` or `vault_append_note` for incremental edits.\n"
-            "- Anki Flashcards: Call `create_anki_deck` to generate a downloadable Anki flashcard deck (`.apkg` package) and optional Obsidian Spaced Repetition markdown note from a list of structured cards. Call `vault_export_anki_deck` to export flashcards from an existing Obsidian vault note. When asked to create flashcards from an uploaded PDF, document, study guide, note, or prompt (e.g. 'create flashcards for this PDF', 'generate 10 flashcards from my biology notes in the vault', 'make an anki deck on calculus'), extract the core concepts and call `create_anki_deck` with a descriptive `deck_name` and high-yield atomic flashcards (with front/back, extra hints, tags, or cloze deletions). If the user asks to save to their Obsidian vault, set `save_to_vault=true`.\n"
-            "- Spreadsheets: Call Excel tools to create, view, edit, and export spreadsheets (.xlsx) stored in data/excel/. Call `excel_create_workbook` to create workbooks (blank, templated, or with data). Call `excel_read_range` to inspect cell ranges or sheets formatted as Markdown tables. Call `excel_update_cells` to update cells or formulas (starting with '='). Call `excel_manage_sheet` to add, rename, delete, or list sheets. Call `excel_list_workbooks` to list stored workbooks. Call `excel_export_workbook` to attach and send a workbook to the user in Discord chat. When a user uploads a spreadsheet, its structure and metadata are provided in context—use spreadsheet tools to inspect or edit it.\n"
-            "- Plex Media Server: Call `get_plex_status` to check Now Playing status and recent tracks (including audio quality and underlying file paths). Call `search_plex_music` to search the library. Call `get_plex_album_details` or `get_plex_artist_details` to inspect albums or artists (including folder paths and track filenames). Call `get_plex_library_stats` for library statistics and root storage locations. Call `browse_plex_directory` to explore and browse the underlying file directory and folder structure on the server's storage (root locations, subdirectories, audio files, and album/artist folder contents). Call `manage_plex_playlist` to list, view, create, add tracks to, edit, or delete playlists. Call `rate_plex_music` to rate tracks or albums. Call `update_plex_metadata` to modify metadata (title, sort title, artist, album artist, album, summary/bio, tagline, year, release date, studio/record label, track/disc number, content rating, user rating), tags (genres, styles, moods, collections, labels, countries, similar artists, directors, writers, producers—adding, removing, or replacing tags), artwork (custom cover/poster or background art via URL or attached Discord image), field locks, or trigger a metadata refresh on Plex. Call `match_plex_media` to search for Fix Match candidates from metadata agents (Plex Music, MusicBrainz, Last.fm, TMDb, IMDb, TheTVDB), apply/bind an agent match (by GUID or candidate index, or auto-match), or unmatch an item.\n\n"
             "CRITICAL SCOPING & TOOL USAGE RULES:\n"
             "1. GENERAL QUESTIONS & TOPICS: When the user asks a general knowledge, factual, geographical, scientific, math, technical question, or recent events/news, answer DIRECTLY and succinctly. You have real-time Google Search grounding enabled to verify facts, schedules, breaking news, or information beyond your training cutoff. DO NOT include raw source URLs, citation links, or references in your response text unless the user explicitly asks for sources or links. DO NOT call database tools (`get_reading_list`, `get_notes`, `list_reminders`, etc.) for general queries. DO NOT give unsolicited book recommendations unless the user explicitly asks for reading suggestions.\n"
             "2. NEVER claim you are only designed or limited to managing reading lists, notes, or reminders. You have full general AI capabilities and reasoning.\n"
@@ -153,7 +141,7 @@ class AIChat(commands.Cog):
             "   - When asked to change, switch, or set the AI model (e.g. 'switch to Gemini 2.5 Pro', 'change model to gemini-2.5-flash-lite', 'use flash'), call `set_ai_model`.\n"
             "   - When asked about Obsidian vault, markdown files, or local vault notes (e.g. 'search my vault', 'format note in vault', 'create a note in Projects/Y', 'summarize my vault notes on Z', 'show backlinks to A', 'fix frontmatter'): call the appropriate vault tool (`vault_read_note`, `vault_write_note`, `vault_patch_note`, `vault_search`, `vault_list_files`, `vault_append_note`, `vault_get_backlinks`, etc.) and respond concisely with the outcome or requested content.\n"
             "   - When asked to create or export Anki flashcards (e.g. 'create flashcards for this PDF', 'generate an anki deck', 'turn my note into flashcards', 'make flashcards on X'): call `create_anki_deck` or `vault_export_anki_deck` and respond with the deck summary and preview.\n"
-            "   - When asked to create, read, view, edit, update, or export an Excel spreadsheet (e.g. 'read this spreadsheet', 'what is in cell B2', 'update cell A1', 'add a new sheet', 'export this sheet', 'send me the spreadsheet', 'create a budget spreadsheet'): call the appropriate Excel tool (`excel_read_range`, `excel_update_cells`, `excel_create_workbook`, `excel_manage_sheet`, `excel_list_workbooks`, `excel_export_workbook`) and respond concisely with the outcome or requested data. When asked to export, send, or download a spreadsheet, call `excel_export_workbook` with the filename.\n"
+            "   - When asked to create, read, view, edit, update, or export an Excel spreadsheet stored in data/excel/ (e.g. 'read this spreadsheet', 'what is in cell B2', 'update cell A1', 'add a new sheet', 'export this sheet', 'send me the spreadsheet', 'create a budget spreadsheet'): call the appropriate Excel tool (`excel_read_range`, `excel_update_cells`, `excel_create_workbook`, `excel_manage_sheet`, `excel_list_workbooks`, `excel_export_workbook`) and respond concisely with the outcome or requested data. When asked to export, send, or download a spreadsheet, call `excel_export_workbook` with the filename.\n"
             "   - When asked if pictures/images/files are uploaded or saved to the database: confirm that image and file attachments are indeed uploaded and attached directly to the note record in PocketBase.\n"
             "   - NEVER output a multi-category 'status update' or dashboard unless the user explicitly commands you to give an overall summary of everything.\n"
             "4. When the user explicitly asks for NEW book recommendations from you (the AI) (e.g. 'recommend me some books', 'what should I read next?'), first check the user's reading list (by calling `get_reading_list`) to see what books they have already read, are reading, or have planned/dropped. NEVER recommend books that are already on the user's reading list. Provide creative, engaging recommendations of new books tailored to their tastes.\n"
@@ -187,6 +175,8 @@ class AIChat(commands.Cog):
             final_prompt = f"{base_prompt}\n\n{behavior_instruction}"
         else:
             final_prompt = behavior_instruction
+
+        final_prompt += f"\n\nCurrent date and time: {now_str}"
 
         if user_id:
             rules = self.get_cached_user_instructions(user_id)
@@ -351,6 +341,18 @@ class AIChat(commands.Cog):
     ) -> bool:
         return self._get_excel_mime(filename, content_type) is not None
 
+    async def _read_attachment_bytes(self, att: discord.Attachment) -> bytes:
+        """Reads attachment bytes, caching them on the attachment instance to avoid duplicate downloads."""
+        cached = getattr(att, "_cached_bytes", None)
+        if isinstance(cached, bytes):
+            return cached
+        raw = await att.read()
+        try:
+            att._cached_bytes = raw
+        except Exception:
+            pass
+        return raw
+
     async def _extract_message_parts(
         self,
         message: discord.Message,
@@ -402,7 +404,7 @@ class AIChat(commands.Cog):
                     continue
 
                 try:
-                    raw_bytes = await att.read()
+                    raw_bytes = await self._read_attachment_bytes(att)
                 except Exception as e:
                     print(f"Failed to read excel attachment {att.filename}: {e}")
                     sentry_sdk.capture_exception(e)
@@ -490,7 +492,7 @@ class AIChat(commands.Cog):
             audio_mime = self._get_audio_mime(att.filename, att.content_type)
             if audio_mime:
                 try:
-                    audio_bytes = await att.read()
+                    audio_bytes = await self._read_attachment_bytes(att)
                     if audio_bytes:
                         if attachments_out is not None:
                             attachments_out.append(
@@ -518,7 +520,7 @@ class AIChat(commands.Cog):
             image_mime = self._get_image_mime(att.filename, att.content_type)
             if image_mime:
                 try:
-                    image_bytes = await att.read()
+                    image_bytes = await self._read_attachment_bytes(att)
                     if image_bytes:
                         if attachments_out is not None:
                             attachments_out.append(
@@ -546,7 +548,7 @@ class AIChat(commands.Cog):
             doc_mime = self._get_document_mime(att.filename, att.content_type)
             if doc_mime:
                 try:
-                    doc_bytes = await att.read()
+                    doc_bytes = await self._read_attachment_bytes(att)
                     if doc_bytes:
                         if attachments_out is not None:
                             attachments_out.append(
@@ -572,7 +574,7 @@ class AIChat(commands.Cog):
 
             # Fallback for any other attachment: still register bytes in attachments_out for printing/tools
             try:
-                raw_bytes = await att.read()
+                raw_bytes = await self._read_attachment_bytes(att)
                 if raw_bytes and attachments_out is not None:
                     attachments_out.append(
                         {
@@ -639,7 +641,7 @@ class AIChat(commands.Cog):
         results: list[dict] = []
         for att in getattr(message, "attachments", []):
             try:
-                raw_bytes = await att.read()
+                raw_bytes = await self._read_attachment_bytes(att)
                 if not raw_bytes:
                     continue
                 ctype = (
@@ -671,6 +673,7 @@ class AIChat(commands.Cog):
         channel: discord.abc.Messageable | None = None,
         explicit_attachments: list[dict] | None = None,
         history_limit: int = 15,
+        cached_history: list[discord.Message] | None = None,
     ) -> dict[str, list[dict]]:
         """
         Gather attachments prioritized by recency and relevance:
@@ -725,7 +728,21 @@ class AIChat(commands.Cog):
             excluded_ids.add(ref_msg.id)
 
         target_channel = channel or (getattr(current_message, "channel", None))
-        if target_channel and hasattr(target_channel, "history"):
+        if cached_history is not None:
+            for h_msg in cached_history:
+                if getattr(h_msg, "id", None) in excluded_ids:
+                    continue
+                if getattr(h_msg.author, "bot", False):
+                    continue
+                if getattr(h_msg, "attachments", None):
+                    msg_atts = await self._extract_attachments_from_message(h_msg)
+                    for a in msg_atts:
+                        history_attachments.append(a)
+                        if len(history_attachments) >= 10:
+                            break
+                if len(history_attachments) >= 10:
+                    break
+        elif target_channel and hasattr(target_channel, "history"):
             try:
                 # In discord.py, channel.history yields newest to oldest
                 async for h_msg in target_channel.history(limit=history_limit):
@@ -821,7 +838,10 @@ class AIChat(commands.Cog):
         return contents
 
     async def _build_reply_chain_contents(
-        self, message: discord.Message, attachments_out: list[dict] | None = None
+        self,
+        message: discord.Message,
+        attachments_out: list[dict] | None = None,
+        cached_history: list[discord.Message] | None = None,
     ) -> list[types.Content]:
         """Builds multi-turn Content list by gathering the reply chain and recent channel conversation history."""
         chain: list[discord.Message] = [message]
@@ -880,7 +900,11 @@ class AIChat(commands.Cog):
 
         # Fetch recent channel/thread conversation history for broader context
         recent_history: list[discord.Message] = []
-        if hasattr(message.channel, "history"):
+        if cached_history is not None:
+            recent_history = [
+                m for m in cached_history if getattr(m, "id", None) != message.id
+            ][:15]
+        elif hasattr(message.channel, "history"):
             try:
                 history_msgs = [
                     m async for m in message.channel.history(limit=15, before=message)
@@ -1043,6 +1067,7 @@ class AIChat(commands.Cog):
         additional_parts: list[types.Part] | str | None = None,
         limit: int = 15,
         attachments_out: list[dict] | None = None,
+        cached_history: list[discord.Message] | None = None,
     ) -> list[types.Content]:
         raw_turns: list[dict] = []
 
@@ -1108,7 +1133,10 @@ class AIChat(commands.Cog):
                         raw_turns.append({"role": "user", "parts": formatted_parts})
 
         try:
-            recent_msgs = [m async for m in channel.history(limit=limit)]
+            if cached_history is not None:
+                recent_msgs = list(cached_history[:limit])
+            else:
+                recent_msgs = [m async for m in channel.history(limit=limit)]
             recent_msgs.reverse()
             for msg in recent_msgs:
                 if getattr(msg.author, "bot", False):
@@ -1411,10 +1439,39 @@ class AIChat(commands.Cog):
                         break
         wants_sources = user_requested_sources(user_prompt_text)
 
+        model_name = get_gemini_model()
         enable_grounding = (
             os.getenv("ENABLE_SEARCH_GROUNDING", "true").lower() != "false"
         )
-        active_tools = GENERAL_AI_CHAT_TOOLS if enable_grounding else AI_CHAT_TOOLS
+        if enable_grounding:
+            if is_combination_unsupported(model_name):
+                enable_grounding = False
+            elif query_targets_bot_tools(user_prompt_text) and not wants_sources:
+                enable_grounding = False
+
+        has_attachments = bool(
+            context
+            and (
+                context.get("attachments")
+                or context.get("current_attachments")
+                or context.get("reply_attachments")
+            )
+        )
+        has_history_tool_calls = any(
+            any(
+                getattr(p, "function_call", None) is not None
+                or getattr(p, "function_response", None) is not None
+                for p in c.parts
+            )
+            for c in contents_list
+            if isinstance(c, types.Content) and c.parts
+        )
+        active_tools = select_tools_for_query(
+            text=user_prompt_text,
+            has_attachments=has_attachments,
+            has_history_tool_calls=has_history_tool_calls,
+            enable_grounding=enable_grounding,
+        )
         tool_config = (
             types.ToolConfig(include_server_side_tool_invocations=True)
             if enable_grounding
@@ -1428,8 +1485,8 @@ class AIChat(commands.Cog):
             tool_config=tool_config,
         )
 
-        model_name = get_gemini_model()
-        max_tool_turns = 50
+        max_tool_turns = 15
+        executed_tool_calls_history: list[tuple[str, str]] = []
         response_text = ""
         last_response = None
         grounding_metadata = None
@@ -1448,9 +1505,15 @@ class AIChat(commands.Cog):
                         file=sys.stderr,
                         flush=True,
                     )
+                    mark_combination_unsupported(model_name)
                     enable_grounding = False
                     if query_targets_bot_tools(user_prompt_text):
-                        active_tools = AI_CHAT_TOOLS
+                        active_tools = select_tools_for_query(
+                            text=user_prompt_text,
+                            has_attachments=has_attachments,
+                            has_history_tool_calls=has_history_tool_calls,
+                            enable_grounding=False,
+                        )
                     else:
                         active_tools = [GOOGLE_SEARCH_TOOL]
 
@@ -1505,7 +1568,15 @@ class AIChat(commands.Cog):
                 candidate_parts = response.candidates[0].content.parts
             else:
                 candidate_parts = [
-                    types.Part(function_call=fc) for fc in valid_function_calls
+                    types.Part(function_call=fc)
+                    if isinstance(fc, types.FunctionCall)
+                    else types.Part(
+                        function_call=types.FunctionCall(
+                            name=fc.name,
+                            args=fc.args if isinstance(fc.args, dict) else {},
+                        )
+                    )
+                    for fc in valid_function_calls
                 ]
             contents_list.append(types.Content(role="model", parts=candidate_parts))
 
@@ -1515,24 +1586,45 @@ class AIChat(commands.Cog):
                 # We continue the loop to let the model synthesize the final text.
                 continue
 
+            # Loop detection: check if identical (tool, args) calls are repeating
+            current_turn_sigs: list[tuple[str, str]] = []
+            for fc in valid_function_calls:
+                try:
+                    args_str = json.dumps(
+                        fc.args if isinstance(fc.args, dict) else {}, sort_keys=True
+                    )
+                except Exception:
+                    args_str = str(fc.args)
+                current_turn_sigs.append((fc.name, args_str))
+
+            if any(executed_tool_calls_history.count(sig) >= 2 for sig in current_turn_sigs):
+                print(
+                    f"[AIChat] Repeated identical tool call loop detected ({current_turn_sigs}). Terminating tool loop to prevent runaway token usage.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+            executed_tool_calls_history.extend(current_turn_sigs)
+
             tool_calls_count += len(valid_function_calls)
 
-            # Execute tool calls and collect responses
-            tool_response_parts = []
-            for fc in valid_function_calls:
+            # Execute tool calls concurrently and collect responses
+            async def _run_single_tool(fc):
                 args = fc.args if isinstance(fc.args, dict) else {}
                 result_str = await self._execute_tool(
                     fc.name, args, user_id, context=context
                 )
-                tool_response_parts.append(
-                    types.Part.from_function_response(
-                        name=fc.name,
-                        response={"result": result_str},
-                    )
+                return types.Part.from_function_response(
+                    name=fc.name,
+                    response={"result": result_str},
                 )
 
+            tool_response_parts = await asyncio.gather(
+                *[_run_single_tool(fc) for fc in valid_function_calls]
+            )
+
             # Append the tool response turn (Gemini API requires role='user' for function responses)
-            contents_list.append(types.Content(role="user", parts=tool_response_parts))
+            contents_list.append(types.Content(role="user", parts=list(tool_response_parts)))
 
         if not response_text and last_response is not None:
             raw_text = last_response.text or ""
@@ -1615,10 +1707,18 @@ class AIChat(commands.Cog):
                 except Exception:
                     ack_msg = None
 
+        cached_history = None
+        if hasattr(ctx.channel, "history"):
+            try:
+                cached_history = [m async for m in ctx.channel.history(limit=15)]
+            except Exception:
+                cached_history = None
+
         att_context = await self._gather_context_attachments(
             current_message=ctx.message,
             channel=ctx.channel,
             explicit_attachments=attachments_out,
+            cached_history=cached_history,
         )
 
         user_id_str = str(ctx.author.id)
@@ -1641,7 +1741,7 @@ class AIChat(commands.Cog):
                 async with ctx.typing():
                     try:
                         contents = await self._build_thread_contents(
-                            ctx.channel, attachments_out=None
+                            ctx.channel, attachments_out=None, cached_history=cached_history
                         )
                         if not contents:
                             contents = [types.Content(role="user", parts=parts)]
@@ -1710,7 +1810,7 @@ class AIChat(commands.Cog):
                 contents = None
                 if ctx.message.reference and ctx.message.reference.message_id:
                     contents = await self._build_reply_chain_contents(
-                        ctx.message, attachments_out=None
+                        ctx.message, attachments_out=None, cached_history=cached_history
                     )
                 if not contents:
                     contents = [types.Content(role="user", parts=parts)]
@@ -1812,7 +1912,7 @@ class AIChat(commands.Cog):
             mime = self._get_image_mime(image.filename, image.content_type)
             if mime:
                 try:
-                    img_bytes = await image.read()
+                    img_bytes = await self._read_attachment_bytes(image)
                     if img_bytes:
                         attachments_out.append(
                             {
@@ -1838,7 +1938,7 @@ class AIChat(commands.Cog):
             mime = self._get_audio_mime(audio.filename, audio.content_type)
             if mime:
                 try:
-                    audio_bytes = await audio.read()
+                    audio_bytes = await self._read_attachment_bytes(audio)
                     if audio_bytes:
                         attachments_out.append(
                             {
@@ -1868,7 +1968,7 @@ class AIChat(commands.Cog):
                 or "application/octet-stream"
             )
             try:
-                file_bytes = await file.read()
+                file_bytes = await self._read_attachment_bytes(file)
                 if file_bytes:
                     attachments_out.append(
                         {
@@ -1902,10 +2002,18 @@ class AIChat(commands.Cog):
             )
             return
 
+        cached_history = None
+        if hasattr(interaction.channel, "history"):
+            try:
+                cached_history = [m async for m in interaction.channel.history(limit=15)]
+            except Exception:
+                cached_history = None
+
         user_id_str = str(interaction.user.id)
         att_context = await self._gather_context_attachments(
             channel=interaction.channel,
             explicit_attachments=attachments_out,
+            cached_history=cached_history,
         )
         exec_context = {
             "attachments": att_context["attachments"],
@@ -1931,6 +2039,7 @@ class AIChat(commands.Cog):
                         interaction.channel,
                         additional_parts=parts,
                         attachments_out=None,
+                        cached_history=cached_history,
                     )
                     if not contents:
                         contents = [types.Content(role="user", parts=parts)]
@@ -2306,9 +2415,17 @@ class AIChat(commands.Cog):
                 except Exception:
                     ack_msg = None
 
+        cached_history = None
+        if hasattr(message.channel, "history"):
+            try:
+                cached_history = [m async for m in message.channel.history(limit=15)]
+            except Exception:
+                cached_history = None
+
         att_context = await self._gather_context_attachments(
             current_message=message,
             channel=message.channel,
+            cached_history=cached_history,
         )
         exec_context = {
             "attachments": att_context["attachments"],
@@ -2330,11 +2447,11 @@ class AIChat(commands.Cog):
                     try:
                         if is_reply:
                             contents = await self._build_reply_chain_contents(
-                                message, attachments_out=None
+                                message, attachments_out=None, cached_history=cached_history
                             )
                         else:
                             contents = await self._build_channel_contents(
-                                message.channel, attachments_out=None
+                                message.channel, attachments_out=None, cached_history=cached_history
                             )
                         if not contents:
                             parts = await self._extract_message_parts(
@@ -2387,11 +2504,11 @@ class AIChat(commands.Cog):
                 try:
                     if is_reply:
                         contents = await self._build_reply_chain_contents(
-                            message, attachments_out=None
+                            message, attachments_out=None, cached_history=cached_history
                         )
                     else:
                         contents = await self._build_channel_contents(
-                            message.channel, attachments_out=None
+                            message.channel, attachments_out=None, cached_history=cached_history
                         )
                     if not contents:
                         parts = await self._extract_message_parts(
@@ -2439,7 +2556,7 @@ class AIChat(commands.Cog):
                 contents = None
                 if is_reply:
                     contents = await self._build_reply_chain_contents(
-                        message, attachments_out=None
+                        message, attachments_out=None, cached_history=cached_history
                     )
                 else:
                     parts = await self._extract_message_parts(
