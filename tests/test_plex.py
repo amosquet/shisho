@@ -2331,6 +2331,30 @@ class TestPlexDirectoryAndFiles(unittest.IsolatedAsyncioTestCase):
 
         await monitor.close()
 
+    def test_listening_query_tool_selection(self):
+        from tools.registry import select_tools_for_query
+        from utils.llm import query_targets_bot_tools
+
+        queries = [
+            "What am I currently listening to",
+            "what am i listening to",
+            "what is playing right now?",
+            "what song is this",
+            "check my music playback",
+            "what tune is playing",
+            "who is playing",
+        ]
+        for q in queries:
+            self.assertTrue(query_targets_bot_tools(q), f"Failed query_targets_bot_tools for: {q}")
+            tools = select_tools_for_query(q)
+            names = [
+                fn.name
+                for t in tools
+                if hasattr(t, "function_declarations") and t.function_declarations
+                for fn in t.function_declarations
+            ]
+            self.assertIn("get_plex_status", names, f"get_plex_status missing for query: {q}")
+
 
 if __name__ == "__main__":
     unittest.main()

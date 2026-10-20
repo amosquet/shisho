@@ -385,7 +385,11 @@ def select_tools_for_query(
         selected_decls.extend(EXCEL_DECLARATIONS)
         matched_domains += 1
 
-    if any(k in t for k in ["plex", "music", "song", "track", "album", "artist", "playlist", "playing"]):
+    if any(k in t for k in [
+        "plex", "music", "song", "track", "album", "artist", "playlist",
+        "playing", "played", "listen", "listening", "audio", "tune", "tunes",
+        "hear", "heard", "soundtrack", "playback", "now playing", "nowplaying"
+    ]):
         selected_decls.extend(PLEX_DECLARATIONS)
         matched_domains += 1
 
