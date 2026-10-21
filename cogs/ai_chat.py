@@ -327,7 +327,9 @@ class AIChat(commands.Cog):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "application/wps-office.xlsx",
             ):
-                return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                return (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
         ext = os.path.splitext(filename.lower())[1]
         if ext == ".xlsx":
@@ -430,9 +432,14 @@ class AIChat(commands.Cog):
                     continue
 
                 # Sanitize filename (prevent path traversal)
-                safe_name = os.path.basename(att.filename or "").strip() or "spreadsheet.xlsx"
                 safe_name = (
-                    safe_name.replace("/", "").replace("\\", "").replace("\0", "").strip()
+                    os.path.basename(att.filename or "").strip() or "spreadsheet.xlsx"
+                )
+                safe_name = (
+                    safe_name.replace("/", "")
+                    .replace("\\", "")
+                    .replace("\0", "")
+                    .strip()
                 )
                 if not safe_name.lower().endswith(".xlsx"):
                     safe_name += ".xlsx"
@@ -1487,7 +1494,7 @@ class AIChat(commands.Cog):
             tool_config=tool_config,
         )
 
-        max_tool_turns = 15
+        max_tool_turns = 50
         executed_tool_calls_history: list[tuple[str, str]] = []
         response_text = ""
         last_response = None
@@ -1599,7 +1606,9 @@ class AIChat(commands.Cog):
                     args_str = str(fc.args)
                 current_turn_sigs.append((fc.name, args_str))
 
-            if any(executed_tool_calls_history.count(sig) >= 2 for sig in current_turn_sigs):
+            if any(
+                executed_tool_calls_history.count(sig) >= 2 for sig in current_turn_sigs
+            ):
                 print(
                     f"[AIChat] Repeated identical tool call loop detected ({current_turn_sigs}). Terminating tool loop to prevent runaway token usage.",
                     file=sys.stderr,
@@ -1626,7 +1635,9 @@ class AIChat(commands.Cog):
             )
 
             # Append the tool response turn (Gemini API requires role='user' for function responses)
-            contents_list.append(types.Content(role="user", parts=list(tool_response_parts)))
+            contents_list.append(
+                types.Content(role="user", parts=list(tool_response_parts))
+            )
 
         if not response_text and last_response is not None:
             raw_text = last_response.text or ""
@@ -1743,7 +1754,9 @@ class AIChat(commands.Cog):
                 async with ctx.typing():
                     try:
                         contents = await self._build_thread_contents(
-                            ctx.channel, attachments_out=None, cached_history=cached_history
+                            ctx.channel,
+                            attachments_out=None,
+                            cached_history=cached_history,
                         )
                         if not contents:
                             contents = [types.Content(role="user", parts=parts)]
@@ -2007,7 +2020,9 @@ class AIChat(commands.Cog):
         cached_history = None
         if hasattr(interaction.channel, "history"):
             try:
-                cached_history = [m async for m in interaction.channel.history(limit=15)]
+                cached_history = [
+                    m async for m in interaction.channel.history(limit=15)
+                ]
             except Exception:
                 cached_history = None
 
@@ -2449,11 +2464,15 @@ class AIChat(commands.Cog):
                     try:
                         if is_reply:
                             contents = await self._build_reply_chain_contents(
-                                message, attachments_out=None, cached_history=cached_history
+                                message,
+                                attachments_out=None,
+                                cached_history=cached_history,
                             )
                         else:
                             contents = await self._build_channel_contents(
-                                message.channel, attachments_out=None, cached_history=cached_history
+                                message.channel,
+                                attachments_out=None,
+                                cached_history=cached_history,
                             )
                         if not contents:
                             parts = await self._extract_message_parts(
@@ -2510,7 +2529,9 @@ class AIChat(commands.Cog):
                         )
                     else:
                         contents = await self._build_channel_contents(
-                            message.channel, attachments_out=None, cached_history=cached_history
+                            message.channel,
+                            attachments_out=None,
+                            cached_history=cached_history,
                         )
                     if not contents:
                         parts = await self._extract_message_parts(
