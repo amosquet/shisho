@@ -1,5 +1,5 @@
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import hashlib
 import json
 import os
@@ -1515,15 +1515,38 @@ class PlexMusicMonitor:
                             ac["cover_url"] = f"{prefix}/api/plex/cover?v={aver}"
                         formatted_albums.append(ac)
                     data_copy["albums"] = formatted_albums
+                if "singles" in data_copy:
+                    formatted_singles = []
+                    for s in data_copy["singles"]:
+                        sc = dict(s)
+                        sver = sc.get("_cover_version")
+                        if sver:
+                            sc["cover_url"] = f"{prefix}/api/plex/cover?v={sver}"
+                        formatted_singles.append(sc)
+                    data_copy["singles"] = formatted_singles
                 return data_copy
 
-        artist_items, album_items, track_items = await asyncio.gather(
+        sec_id = await self.get_music_section_id()
+
+        gather_coros = [
             self._fetch_plex_items(f"/library/metadata/{clean_key}"),
             self._fetch_plex_items(f"/library/metadata/{clean_key}/children"),
             self._fetch_plex_items(f"/library/metadata/{clean_key}/allLeaves"),
-        )
+            self._fetch_plex_container(f"/library/metadata/{clean_key}/hubs"),
+        ]
+        if sec_id:
+            gather_coros.append(
+                self._fetch_plex_items(f"/library/sections/{sec_id}/all?type=9&artist.id={clean_key}")
+            )
 
-        if not artist_items and not album_items and not track_items:
+        gathered = await asyncio.gather(*gather_coros)
+        artist_items = gathered[0]
+        album_items = gathered[1]
+        track_items = gathered[2]
+        hubs_container = gathered[3] if len(gathered) > 3 and isinstance(gathered[3], dict) else {}
+        section_album_items = gathered[4] if len(gathered) > 4 and isinstance(gathered[4], list) else []
+
+        if not artist_items and not album_items and not track_items and not section_album_items:
             return None
 
         artist_raw = artist_items[0] if artist_items else {}
@@ -1578,30 +1601,11 @@ class PlexMusicMonitor:
             self._register_thumb(art_version, art_path)
         backdrop_url = f"{prefix}/api/plex/cover?v={art_version}" if art_version else None
 
-        # Albums formatting
-        albums: list[dict[str, Any]] = []
-        for alb in album_items:
-            a_key = str(alb.get("ratingKey") or "")
-            a_thumb = self._sanitize_thumb_path(str(alb.get("thumb") or ""))
-            a_ver = self._cover_version_key(a_key, a_thumb) if a_thumb else ""
-            if a_ver and a_thumb:
-                self._register_thumb(a_ver, a_thumb)
-            a_cover = f"{prefix}/api/plex/cover?v={a_ver}" if a_ver else None
-
-            albums.append({
-                "rating_key": a_key,
-                "title": alb.get("title") or "Untitled Album",
-                "year": alb.get("year"),
-                "view_count": int(alb.get("viewCount") or 0),
-                "track_count": int(alb.get("leafCount") or 0),
-                "cover_url": a_cover,
-                "_cover_version": a_ver,
-            })
-
-        albums.sort(key=lambda a: (a.get("year") or 0, a.get("view_count") or 0), reverse=True)
-
         # Tracks & Statistics
         all_tracks: list[dict[str, Any]] = []
+        track_count_by_album: dict[str, int] = defaultdict(int)
+        plays_by_album: dict[str, int] = defaultdict(int)
+        album_meta_from_tracks: dict[str, dict[str, Any]] = {}
         total_plays = 0
         total_duration_ms = 0
 
@@ -1614,6 +1618,17 @@ class PlexMusicMonitor:
             total_duration_ms += dur
             t_plays = int(t_raw.get("viewCount") or 0)
             total_plays += t_plays
+
+            if t_album_key:
+                track_count_by_album[t_album_key] += 1
+                plays_by_album[t_album_key] += t_plays
+                if t_album_key not in album_meta_from_tracks:
+                    album_meta_from_tracks[t_album_key] = {
+                        "ratingKey": t_album_key,
+                        "title": t_album or "Untitled Release",
+                        "year": t_raw.get("parentYear") or t_raw.get("year"),
+                        "thumb": t_raw.get("parentThumb"),
+                    }
 
             audio_info = self._extract_audio_stream_info_json(t_raw)
             t_file = audio_info.get("file_path") or str(t_raw.get("file") or "").strip() or None
@@ -1644,6 +1659,153 @@ class PlexMusicMonitor:
                 if art_dir:
                     artist_folders.add(art_dir)
 
+        # Parse Hubs if available
+        hub_albums: list[dict[str, Any]] = []
+        hub_singles: list[dict[str, Any]] = []
+        hubs = hubs_container.get("Hub") or []
+        if isinstance(hubs, dict):
+            hubs = [hubs]
+        for hub in hubs:
+            if not isinstance(hub, dict):
+                continue
+            h_id = str(hub.get("hubIdentifier") or hub.get("context") or "").lower()
+            h_title = str(hub.get("title") or "").lower()
+            meta = hub.get("Metadata") or []
+            if isinstance(meta, dict):
+                meta = [meta]
+            if not isinstance(meta, list):
+                continue
+            valid_items = [m for m in meta if isinstance(m, dict)]
+            if any(term in h_id or term in h_title for term in ("single", "ep")):
+                hub_singles.extend(valid_items)
+            elif any(term in h_id or term in h_title for term in ("album", "discography")):
+                hub_albums.extend(valid_items)
+
+        def _is_single_or_ep(t_title: str) -> bool:
+            low = t_title.lower().strip()
+            return (
+                low.endswith(" - ep")
+                or low.endswith(" (ep)")
+                or low.endswith(" [ep]")
+                or low.endswith(" ep")
+                or low == "ep"
+                or low.endswith(" - single")
+                or low.endswith(" (single)")
+                or low.endswith(" [single]")
+                or low.endswith(" single")
+                or low == "single"
+                or " - ep - " in low
+                or " - single - " in low
+                or " [single]" in low
+                or " (single)" in low
+            )
+
+        # Separate items into Albums vs Singles & EPs
+        seen_album_keys: set[str] = set()
+        seen_single_keys: set[str] = set()
+        resolved_albums: list[dict[str, Any]] = []
+        resolved_singles: list[dict[str, Any]] = []
+
+        # 1. Process hub singles first (authoritative from Plex)
+        for s in hub_singles:
+            k = str(s.get("ratingKey") or "")
+            if k and k not in seen_single_keys:
+                seen_single_keys.add(k)
+                resolved_singles.append(s)
+
+        # 2. Process album_items (from /children) & hub_albums
+        for alb in (hub_albums + album_items):
+            k = str(alb.get("ratingKey") or "")
+            if not k or k in seen_album_keys or k in seen_single_keys:
+                continue
+            title = str(alb.get("title") or "")
+            if _is_single_or_ep(title):
+                seen_single_keys.add(k)
+                resolved_singles.append(alb)
+            else:
+                seen_album_keys.add(k)
+                resolved_albums.append(alb)
+
+        # 3. Process section_album_items and album_meta_from_tracks
+        additional_candidates: list[dict[str, Any]] = []
+        cand_keys: set[str] = set()
+        for cand in section_album_items + list(album_meta_from_tracks.values()):
+            k = str(cand.get("ratingKey") or "")
+            if k and k not in cand_keys and k not in seen_album_keys and k not in seen_single_keys:
+                cand_keys.add(k)
+                additional_candidates.append(cand)
+
+        had_studio_albums = bool(resolved_albums)
+        for cand in additional_candidates:
+            k = str(cand.get("ratingKey") or "")
+            title = str(cand.get("title") or "")
+            t_count = int(cand.get("leafCount") or 0) or track_count_by_album.get(k, 0)
+            if _is_single_or_ep(title):
+                seen_single_keys.add(k)
+                resolved_singles.append(cand)
+            elif had_studio_albums:
+                # Plex /children only returns studio albums; missing ones are Singles/EPs
+                seen_single_keys.add(k)
+                resolved_singles.append(cand)
+            else:
+                # If no studio albums were returned by /children, releases with 6+ tracks may be albums
+                if t_count >= 6:
+                    seen_album_keys.add(k)
+                    resolved_albums.append(cand)
+                else:
+                    seen_single_keys.add(k)
+                    resolved_singles.append(cand)
+
+        # Albums formatting
+        albums: list[dict[str, Any]] = []
+        for alb in resolved_albums:
+            a_key = str(alb.get("ratingKey") or "")
+            a_thumb = self._sanitize_thumb_path(str(alb.get("thumb") or ""))
+            a_ver = self._cover_version_key(a_key, a_thumb) if a_thumb else ""
+            if a_ver and a_thumb:
+                self._register_thumb(a_ver, a_thumb)
+            a_cover = f"{prefix}/api/plex/cover?v={a_ver}" if a_ver else None
+
+            a_track_count = int(alb.get("leafCount") or 0) or track_count_by_album.get(a_key, 0)
+            a_plays = max(int(alb.get("viewCount") or 0), plays_by_album.get(a_key, 0))
+
+            albums.append({
+                "rating_key": a_key,
+                "title": alb.get("title") or "Untitled Album",
+                "year": alb.get("year"),
+                "view_count": a_plays,
+                "track_count": a_track_count,
+                "cover_url": a_cover,
+                "_cover_version": a_ver,
+            })
+
+        albums.sort(key=lambda a: (a.get("year") or 0, a.get("view_count") or 0), reverse=True)
+
+        # Singles & EPs formatting
+        singles: list[dict[str, Any]] = []
+        for s in resolved_singles:
+            s_key = str(s.get("ratingKey") or "")
+            s_thumb = self._sanitize_thumb_path(str(s.get("thumb") or ""))
+            s_ver = self._cover_version_key(s_key, s_thumb) if s_thumb else ""
+            if s_ver and s_thumb:
+                self._register_thumb(s_ver, s_thumb)
+            s_cover = f"{prefix}/api/plex/cover?v={s_ver}" if s_ver else None
+
+            s_track_count = int(s.get("leafCount") or 0) or track_count_by_album.get(s_key, 0)
+            s_plays = max(int(s.get("viewCount") or 0), plays_by_album.get(s_key, 0))
+
+            singles.append({
+                "rating_key": s_key,
+                "title": s.get("title") or "Untitled Single",
+                "year": s.get("year"),
+                "view_count": s_plays,
+                "track_count": s_track_count,
+                "cover_url": s_cover,
+                "_cover_version": s_ver,
+            })
+
+        singles.sort(key=lambda s: (s.get("year") or 0, s.get("view_count") or 0), reverse=True)
+
         # External Links
         youtube_music_url, qobuz_url = await asyncio.gather(
             self._lookup_youtube_music_artist_url(name),
@@ -1662,6 +1824,7 @@ class PlexMusicMonitor:
             "_avatar_version": avatar_version,
             "_backdrop_version": art_version,
             "total_albums": len(albums),
+            "total_singles": len(singles),
             "total_tracks": len(all_tracks),
             "total_duration_ms": total_duration_ms,
             "total_plays": total_plays,
@@ -1669,6 +1832,7 @@ class PlexMusicMonitor:
             "qobuz_url": qobuz_url,
             "top_tracks": top_tracks,
             "albums": albums,
+            "singles": singles,
         }
 
         self._artist_cache[clean_key] = (time.time(), result)

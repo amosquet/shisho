@@ -647,8 +647,122 @@ class TestPlexMusicMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(data["top_tracks"]), 2)
         self.assertEqual(data["top_tracks"][0]["title"], "Get Lucky")
         self.assertEqual(data["albums"][0]["title"], "Random Access Memories")
+        self.assertEqual(data["total_singles"], 0)
+        self.assertEqual(data["singles"], [])
         self.assertIn("avatar_url", data)
         self.assertIn("backdrop_url", data)
+
+        await monitor.close()
+
+    async def test_get_artist_details_with_singles_and_eps(self):
+        monitor = PlexMusicMonitor(
+            plex_url="http://plex.local:32400",
+            plex_token="secret_token",
+            state_file=self.state_file,
+        )
+
+        artist_payload = [{
+            "ratingKey": "2313",
+            "title": "YOASOBI",
+            "summary": "Japanese music duo.",
+            "Genre": [{"tag": "J-Pop"}],
+            "Country": [{"tag": "Japan"}],
+        }]
+
+        # /children returns NO studio albums for YOASOBI
+        albums_payload = []
+
+        # /allLeaves returns tracks from EPs and singles
+        tracks_payload = [
+            {
+                "ratingKey": "3955",
+                "title": "勇者",
+                "parentTitle": "THE BOOK 3",
+                "parentRatingKey": "3954",
+                "parentYear": 2023,
+                "parentThumb": "/thumb/3954",
+                "duration": 194000,
+                "viewCount": 50,
+                "Media": [{"audioCodec": "flac"}],
+            },
+            {
+                "ratingKey": "2368",
+                "title": "ハルカ",
+                "parentTitle": "ハルカ - Single",
+                "parentRatingKey": "2367",
+                "parentYear": 2020,
+                "parentThumb": "/thumb/2367",
+                "duration": 243000,
+                "viewCount": 88,
+                "Media": [{"audioCodec": "flac"}],
+            },
+        ]
+
+        hubs_payload = {
+            "Hub": [
+                {
+                    "hubIdentifier": "artist.singles",
+                    "title": "Singles and EPs",
+                    "Metadata": [
+                        {
+                            "ratingKey": "3954",
+                            "title": "THE BOOK 3",
+                            "year": 2023,
+                            "viewCount": 200,
+                            "leafCount": 10,
+                            "thumb": "/thumb/3954",
+                        },
+                        {
+                            "ratingKey": "2367",
+                            "title": "ハルカ - Single",
+                            "year": 2020,
+                            "viewCount": 88,
+                            "leafCount": 1,
+                            "thumb": "/thumb/2367",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        async def fake_fetch_items(endpoint):
+            if endpoint == "/library/metadata/2313":
+                return artist_payload
+            if endpoint == "/library/metadata/2313/children":
+                return albums_payload
+            if endpoint == "/library/metadata/2313/allLeaves":
+                return tracks_payload
+            return []
+
+        async def fake_fetch_container(endpoint):
+            if endpoint == "/library/metadata/2313/hubs":
+                return hubs_payload
+            if endpoint == "/library/sections":
+                return {"Directory": [{"key": "1", "type": "artist", "title": "Music"}]}
+            return {}
+
+        monitor._fetch_plex_items = fake_fetch_items
+        monitor._fetch_plex_container = fake_fetch_container
+        monitor._lookup_youtube_music_artist_url = AsyncMock(return_value="")
+        monitor._lookup_qobuz_url = AsyncMock(return_value="")
+
+        data = await monitor.get_artist_details("2313", base_url="https://shisho.amcloud.dev")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["name"], "YOASOBI")
+        self.assertEqual(data["total_albums"], 0)
+        self.assertEqual(data["albums"], [])
+        self.assertEqual(data["total_singles"], 2)
+        self.assertEqual(len(data["singles"]), 2)
+        single_titles = [s["title"] for s in data["singles"]]
+        self.assertIn("THE BOOK 3", single_titles)
+        self.assertIn("ハルカ - Single", single_titles)
+        self.assertTrue(all(s["cover_url"].startswith("https://shisho.amcloud.dev/api/plex/cover") for s in data["singles"]))
+
+        # Test cache hit
+        cached = await monitor.get_artist_details("2313", base_url="https://shisho.amcloud.dev")
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["total_singles"], 2)
+        self.assertEqual(len(cached["singles"]), 2)
 
         await monitor.close()
 
